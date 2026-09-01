@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI WorkMate · Storage</title>
+    <link rel="stylesheet" href="./storage-settings.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">✦</span><span>AI WorkMate</span></div>
+        <div class="workspace-label">WORKSPACE</div>
+        <nav aria-label="Workspace">
+          <a href="#overview"><span class="nav-icon">◈</span> Overview</a>
+          <a href="#meetings"><span class="nav-icon">◷</span> Meetings</a>
+          <a href="#projects"><span class="nav-icon">▦</span> Projects</a>
+        </nav>
+        <div class="workspace-label settings-label">SETTINGS</div>
+        <nav aria-label="Settings">
+          <a class="active" href="#storage"><span class="nav-icon">◫</span> Storage <span class="active-dot"></span></a>
+          <a href="#privacy"><span class="nav-icon">◉</span> Privacy</a>
+          <a href="#integrations"><span class="nav-icon">⌁</span> Integrations</a>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="local-badge"><span class="status-dot"></span><div><strong>Local workspace</strong><small>Your data stays on this device</small></div></div>
+          <div class="version">AI WorkMate <span>v0.1 foundation</span></div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div><div class="eyebrow">SETTINGS / STORAGE</div><h1>AI WorkMate Storage</h1></div>
+          <div class="topbar-actions"><span id="sync-status" class="sync-status"><span class="status-dot"></span> Local-first</span><button id="refresh-button" class="icon-button" title="Refresh storage statistics">↻</button></div>
+        </header>
+
+        <section class="hero-card">
+          <div class="hero-icon">⌂</div>
+          <div class="hero-copy"><div class="section-kicker">DATA STORAGE</div><h2>Local by default</h2><p>Recordings, transcripts, analysis, tasks, and your local database are stored on your computer. Nothing is uploaded as a primary data store.</p></div>
+          <div class="hero-pill"><span class="status-dot"></span> LOCAL</div>
+        </section>
+
+        <section class="section-block" id="storage">
+          <div class="section-heading"><div><h2>Data location</h2><p>The selected folder owns your AI WorkMate workspace.</p></div><button id="change-location-button" class="button primary">Change location <span>→</span></button></div>
+          <div class="location-card"><div class="folder-icon">⌁</div><div class="location-copy"><span class="label">DATA LOCATION</span><strong id="data-location">Loading…</strong><small id="last-check">Integrity has not been checked yet</small></div><button id="open-folder-button" class="button secondary">Open folder</button></div>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading"><div><h2>Storage overview</h2><p>Live size information from the local filesystem.</p></div><span id="availability" class="availability">Checking space…</span></div>
+          <div class="stat-grid">
+            <div class="stat-card stat-total"><span class="stat-label">STORAGE USED</span><strong id="total-size">—</strong><div class="stat-meta"><span id="file-count">— files</span><span id="meeting-count">— meetings</span></div></div>
+            <div class="stat-card"><span class="stat-label">RECORDINGS</span><strong id="recordings-size">—</strong><div class="progress"><span id="recordings-bar"></span></div><small>Original and normalized media</small></div>
+            <div class="stat-card"><span class="stat-label">AUDIO</span><strong id="audio-size">—</strong><div class="progress blue"><span id="audio-bar"></span></div><small>Local audio artifacts</small></div>
+            <div class="stat-card"><span class="stat-label">TRANSCRIPTS</span><strong id="transcripts-size">—</strong><div class="progress violet"><span id="transcripts-bar"></span></div><small>JSON, TXT, VTT, and SRT</small></div>
+            <div class="stat-card"><span class="stat-label">DOCUMENTS</span><strong id="documents-size">—</strong><div class="progress green"><span id="documents-bar"></span></div><small>Analysis, exports, attachments</small></div>
+            <div class="stat-card"><span class="stat-label">LOCAL DATABASE</span><strong id="database-size">—</strong><div class="db-chip">SQLite · indexed metadata</div></div>
+          </div>
+        </section>
+
+        <section class="lower-grid">
+          <div class="panel" id="privacy"><div class="panel-heading"><div class="panel-icon shield">◇</div><div><h2>Cloud processing policy</h2><p>Local storage does not automatically mean local AI.</p></div></div><label class="select-label" for="ai-policy">AI PROCESSING</label><select id="ai-policy"><option value="ASK_EACH_TIME">Ask each time</option><option value="LOCAL_ONLY">Local models only</option><option value="CLOUD_ALLOWED">Cloud allowed</option></select><p id="policy-description" class="helper">You will be told what content leaves this computer, why, and which provider receives it before each cloud request.</p></div>
+          <div class="panel actions-panel"><div class="panel-heading"><div class="panel-icon">⚙</div><div><h2>Protect your workspace</h2><p>Portable, verifiable, and recoverable.</p></div></div><div class="action-list"><button id="verify-button" class="action-row"><span class="action-symbol">✓</span><span><strong>Verify storage</strong><small>Check hashes and relationships</small></span><span>›</span></button><button id="repair-button" class="action-row"><span class="action-symbol">⌁</span><span><strong>Repair index</strong><small>Re-index known orphaned files</small></span><span>›</span></button><button id="backup-button" class="action-row"><span class="action-symbol">↓</span><span><strong>Create backup</strong><small>Standard ZIP, locally selected</small></span><span>›</span></button><button id="restore-button" class="action-row"><span class="action-symbol">↑</span><span><strong>Restore backup</strong><small>Restore into a separate folder</small></span><span>›</span></button></div></div>
+        </section>
+
+        <div id="notice" class="notice" role="status" aria-live="polite"></div>
+        <footer class="privacy-footnote"><span class="status-dot"></span><strong>Privacy by architecture</strong><span>DATA_ROOT is controlled by the desktop process. The web renderer receives authorized operations only.</span></footer>
+      </main>
+    </div>
+    <script src="./storage-settings.js"></script>
+  </body>
+</html>

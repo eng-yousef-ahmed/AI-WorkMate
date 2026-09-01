@@ -1,0 +1,63 @@
+{
+  "name": "ai-workmate",
+  "version": "0.1.0",
+  "description": "Local-first meeting workspace for AI WorkMate",
+  "private": true,
+  "main": "dist/src/desktop/main.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/copy-renderer.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests scripts --max-warnings=0",
+    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
+    "desktop": "npm run build && electron dist/src/desktop/main.js",
+    "package:win": "npm run build && electron-builder --win"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eng-yousef-ahmed/AI-WorkMate.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "unzipper": "^0.12.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/archiver": "^8.0.0",
+    "@types/node": "^26.4.0",
+    "@types/unzipper": "^0.10.11",
+    "electron": "^44.1.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.9.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0"
+  },
+  "build": {
+    "appId": "com.aiworkmate.desktop",
+    "productName": "AI WorkMate",
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "AI-WorkMate-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
+  }
+}
