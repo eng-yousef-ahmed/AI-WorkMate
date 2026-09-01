@@ -25,6 +25,8 @@ Electron main process
    │     └── MicrosoftGraphCalendarProvider / MicrosoftGraphClient (auth + transport injected)
    ├── LocalRecordingCaptureEngine
    │     └── LocalStorageService staged writes + LocalFirstStore journal commit
+   ├── NativeCaptureCoordinator / WindowsCaptureAdapter
+   │     └── capability discovery + policy + real native-provider handoff
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```
@@ -59,9 +61,17 @@ The adapter enforces exactly one active capture per meeting and rejects wrong-me
 
 Capture writes use the same storage guarantees as other artifacts: same-directory `.tmp-*` files, exclusive temp creation, per-chunk file sync, pre-rename SHA-256 verification, atomic rename, directory sync, post-rename SHA-256 verification, and SQLite indexing only after finalization succeeds. Successful capture commit moves the meeting through `FINALIZING` to `PROCESSING`. Abort, insufficient/unknown disk space, and monitor critical-space safe-stop mark the capture and meeting `INCOMPLETE`; finalization/storage failures mark them `FAILED`. Restart recovery leaves interrupted captures incomplete/reportable and never silently completes partial `.tmp-*` recordings.
 
+## Native capture source boundary (Phase 6A)
+
+`NativeCaptureAdapter` is the production-facing source boundary above the local capture engine. It reports structured capabilities for microphone audio, system audio, screen capture, and window capture with explicit `AVAILABLE`, `UNAVAILABLE`, `UNSUPPORTED`, or `PERMISSION_DENIED` status and typed errors. Capability source descriptors contain safe source IDs/labels only and no filesystem paths.
+
+`WindowsCaptureAdapter` does not capture by itself and does not fabricate media. On non-Windows platforms, `createNativeCaptureAdapter()` returns an unsupported adapter. On Windows, the adapter reports `NATIVE_PROVIDER_NOT_CONFIGURED` until a real native provider is registered by the desktop/native layer. If a real provider later supplies chunks, `NativeCaptureCoordinator` feeds those chunks into `LocalRecordingCaptureEngine` in sequence so the same SHA-256, atomic write, journal, metadata, lifecycle, recovery, and disk-space rules apply.
+
+Native capture policy is default-deny for microphone audio, system audio, screen, and window. The coordinator rejects denied or unavailable capabilities before creating a local recording, keys active ownership by the internal meeting UUID, rejects wrong-meeting stop/abort calls, and rejects caller-supplied output paths. No native capture IPC exists in Phase 6A, so renderer filesystem/capture isolation remains unchanged. Linux/headless tests use injected adapter doubles to verify orchestration; actual Windows device/API capture is **WINDOWS-UNVERIFIED**.
+
 ## Disk and path safety
 
-Recording/capture preflight requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During active capture, each chunk is checked through the same disk-space boundary before append. The monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
+Recording/capture preflight, including native-source capture once a real provider is available, requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During active capture, each chunk is checked through the same disk-space boundary before append. The monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
 
 The data-root policy rejects the application installation directory and boundary-aware Windows protected roots including `Program Files`, `Program Files (x86)`, `Windows`, `WindowsApps`, `ProgramData`, common program-file roots, and environment-derived system roots. Windows-style policy cases run on Linux; actual Windows ACL, path, and disk behavior still requires a Windows host.
 
@@ -113,7 +123,7 @@ Provider responses are written through the local store when the application choo
 
 ## Meeting lifecycle contract (Phase 3)
 
-The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 capture adapter starts from scheduled/detected meetings through the recording path and commits completed local captures to `PROCESSING` for future transcription/AI work. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
+The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 local capture adapter and Phase 6A native coordinator start from scheduled/detected meetings through the recording path and commit completed local captures to `PROCESSING` for future transcription/AI work. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
 
 `ingestRecording()` accepts a real, already-materialized source file plus source type, MIME, original filename, timestamps, and optional size. It does not create bytes. `ingestTranscript()` accepts real plain text or structured JSON (and records requested VTT/SRT derivatives) and does not transcribe. `processTranscriptWithProvider()` invokes the existing `AIProvider`, validates meeting identity and analysis JSON, then calls `saveAnalysis()`; provider errors leave a non-success state.
 

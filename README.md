@@ -1,6 +1,6 @@
 # AI WorkMate
 
-AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, and Phase 5 local recording/capture boundary required before real platform capture and transcription are added. Existing meeting data is owned by the desktop process:
+AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5 local recording/capture boundary, and Phase 6A native Windows capture source boundary required before real platform capture and transcription are added. Existing meeting data is owned by the desktop process:
 
 ```text
 Windows desktop
@@ -9,6 +9,7 @@ Windows desktop
    ├── OS-protected credentials (Electron userData, outside DATA_ROOT)
    ├── Microsoft Graph calendar adapter boundary (auth/provider injected)
    ├── LocalRecordingCaptureEngine (local chunk/stream boundary only)
+   ├── NativeCaptureAdapter / WindowsCaptureAdapter boundary (capability discovery, fail-closed without provider)
    └── Optional provider adapters (local or cloud, policy-gated)
 ```
 
@@ -86,6 +87,14 @@ The local adapter stages bytes through `LocalStorageService.beginStagedArtifactW
 
 **Important limit:** this is not a Teams, Zoom, Google Meet, browser, screen, microphone, or system-audio recorder. No transcription or AI processing is started by Phase 5. Windows capture-device behavior remains **WINDOWS-UNVERIFIED** because no Windows audio/video capture is implemented or tested.
 
+## Native Windows capture source boundary (Phase 6A)
+
+Phase 6A adds the production native-source boundary above the Phase 5 local capture engine. `NativeCaptureAdapter` describes structured capability discovery for microphone audio, system audio, screen capture, and window capture. `WindowsCaptureAdapter` is fail-closed: on non-Windows platforms it reports `UNSUPPORTED`, and on Windows without a registered real native provider it reports `NATIVE_PROVIDER_NOT_CONFIGURED` rather than fabricating capture support.
+
+`NativeCaptureCoordinator` applies explicit capture policy, rejects denied/unavailable capabilities before creating a local recording, owns duplicate active capture checks by internal meeting UUID, rejects wrong-meeting stop/abort calls, passes real native chunks into `LocalRecordingCaptureEngine` in sequence, and preserves the existing local storage, SHA-256, artifact journal, lifecycle, and disk-space semantics. No capture IPC was added, so the renderer still receives no filesystem path or direct capture controls.
+
+**Verification limit:** Linux/headless tests use injected adapter doubles at the boundary to verify orchestration and failure behavior. Actual Windows microphone/system-audio/screen/window capture provider execution is **WINDOWS-UNVERIFIED** and remains a future native integration.
+
 ## Location migration
 
 Changing the location is an explicit migration:
@@ -125,8 +134,8 @@ The desktop renderer receives an allow-listed preload API, not `fs`, `path`, `ip
 
 Credentials are represented by an OS-encrypted vault adapter using Electron `safeStorage`/Windows DPAPI semantics and are never placed in meeting folders or DATA_ROOT backups. The AI abstraction supports local and injected cloud adapters. `LOCAL_ONLY`, `CLOUD_ALLOWED`, and `ASK_EACH_TIME` are checked before content is handed to a provider.
 
-Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen/microphone/system-audio capture, a transcription engine, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
+Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen/microphone/system-audio capture, a transcription engine, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
 
 ## Scope of this change
 
-This change deliberately implements only local recording boundary/storage control. It does **not** implement actual meeting platform recording, Windows audio/video capture, transcription, advanced AI, live OAuth sign-in UX, background calendar scheduling, Zoom/Google Meet-specific integrations, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity are Windows/environment-unverified because this checkout is validated in a Linux/headless sandbox. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.
+This change deliberately implements only local recording boundary/storage control plus the native Windows capture source abstraction/policy boundary. It does **not** implement actual meeting platform recording, a verified Windows microphone/system-audio/screen/window capture provider, transcription, advanced AI, live OAuth sign-in UX, background calendar scheduling, Zoom/Google Meet-specific integrations, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity are Windows/environment-unverified because this checkout is validated in a Linux/headless sandbox. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.

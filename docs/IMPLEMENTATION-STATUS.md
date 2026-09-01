@@ -2,8 +2,8 @@
 
 Updated: 2026-09-01
 
-This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, and implements the Phase 5 local recording/capture boundary. It does not
-implement real Teams/Zoom/Google Meet/browser/audio/video automation, transcription, or the full AI pipeline. The persistent meeting store
+This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, and adds the Phase 6A native Windows capture source boundary. It does not
+implement real Teams/Zoom/Google Meet/browser/audio/video automation, a verified Windows native capture provider, transcription, or the full AI pipeline. The persistent meeting store
 remains local SQLite plus filesystem artifacts; that does **not** mean that an
 explicitly approved cloud AI request is local.
 
@@ -17,6 +17,16 @@ explicitly approved cloud AI request is local.
 - **REMAINING GAP** — intentionally deferred work or a limitation of this phase.
 
 ## IMPLEMENTED
+
+## PHASE 6A native Windows capture source boundary
+
+- **IMPLEMENTED / TESTED:** `NativeCaptureAdapter` defines explicit structured capability discovery for `MICROPHONE_AUDIO`, `SYSTEM_AUDIO`, `SCREEN`, and `WINDOW`, including availability status, safe source descriptors, permission requirements, adapter/platform identity, and typed native error metadata. Capabilities expose safe IDs/labels only, not filesystem paths.
+- **IMPLEMENTED / TESTED:** `WindowsCaptureAdapter` and `createNativeCaptureAdapter()` fail closed. Non-Windows/headless platforms report `UNSUPPORTED`; Windows without a registered real native provider reports `NATIVE_PROVIDER_NOT_CONFIGURED` for all capabilities and rejects capture start. No production mock, fixture, or fake-byte fallback is registered.
+- **IMPLEMENTED / TESTED:** `NativeCaptureCoordinator` bridges a real native adapter session into `LocalRecordingCaptureEngine`. It checks capability availability before local recording creation, enforces an explicit capture policy that denies microphone/system-audio/screen/window by default, rejects duplicate active meeting ownership, rejects wrong meeting IDs, and rejects caller-supplied output/source/relative paths.
+- **IMPLEMENTED / TESTED:** When an injected native adapter produces actual chunks, the coordinator passes them through the existing local capture/storage pipeline in sequence. Existing chunk validation, SHA-256 verification, atomic staged writes, artifact journal transitions, recording metadata, lifecycle to `PROCESSING`, and disk-space fail-closed behavior remain the authority.
+- **IMPLEMENTED / TESTED:** Native startup failure does not create a local recording or mark a meeting completed. Native safe-stop/abort marks the local capture `INCOMPLETE`; native stream failure and finalization/storage failure mark `FAILED`; unsupported or unavailable capabilities never create fake recordings.
+- **IMPLEMENTED / TESTED / CODE-VERIFIED:** No capture IPC was added. Existing Electron guarantees remain intact: context isolation, disabled node integration, sandboxed renderer, trusted sender/frame checks, preload-only allow-listed channels, and no renderer filesystem path exposure.
+- **CODE-VERIFIED / WINDOWS-UNVERIFIED / REMAINING GAP:** The Windows native provider implementation that talks to actual microphone, loopback/system-audio, screen, or window capture APIs is not implemented or executed in this Linux/headless sandbox. The Phase 6A boundary is ready for a real provider, but Windows native capture is not claimed complete.
 
 ## PHASE 5 local recording/capture boundary
 
@@ -98,15 +108,15 @@ explicitly approved cloud AI request is local.
 
 ## TESTED
 
-The following commands completed successfully in the Linux sandbox after the Phase 5 capture changes:
+The following commands completed successfully in the Linux sandbox after the Phase 6A native capture boundary changes:
 
 - `npm run lint` — **PASSED**, ESLint with zero warnings.
 - `npm run typecheck` — **PASSED**.
-- `npm test` — **PASSED: 64/64 tests**; its nested build also passed.
+- `npm test` — **PASSED: 79/79 tests**; its nested build also passed.
 - `npm run test:storage` — **PASSED: 26/26 storage tests** for the complete `storage*.test.js` suite; its nested build also passed.
 - `npm run build` — **PASSED** (TypeScript output and renderer asset copy).
 
-Automated coverage includes local capture start/state/chunk/stream/finalize/abort behavior, exact meeting ownership, duplicate-finalize/late-write rejection, empty/invalid/out-of-order chunk rejection, caller output-path rejection, SHA-256 verification, safe recording metadata persistence, capture lifecycle to `PROCESSING`, capture journal `COMMITTED`/`FAILED`/`INCOMPLETE` states, critical and unknown disk-space safe-stop behavior, interrupted-capture restart recovery, renderer non-exposure of capture IPC, Graph event normalization, Microsoft Graph pagination through injected transport, event lookup, Teams/other-online/normal event detection, duplicate and idempotent calendar synchronization, cancellation handling, Graph error reporting, external event uniqueness, lifecycle preservation, renderer-safe sync results, credential redaction, active-webContents/exact-URL IPC authorization, sandbox policy, remote-navigation/new-window policy, path-free IPC results, safe snapshots/statistics, failed and interrupted artifact operations, orphan/unknown-folder preservation, missing database detection, protected Windows-style paths, migration phase fault injection, migration source preservation, backup/restore, export, transcript formats, duplicate identities, and local database integrity.
+Automated coverage includes native capture capability discovery, supported vs unsupported platform behavior, Windows-provider-not-configured fail-closed behavior, unavailable/permission-denied native capabilities, microphone/system-audio/screen/window capture policy, duplicate active native ownership, wrong meeting ID rejection, native lifecycle to `PROCESSING`, native startup failure, native safe-stop, native finalization failure, no production fake/mock fallback behavior, native-to-artifact-journal interaction, native disk-space preflight failure, native stream failure, renderer non-exposure of native capture IPC, local capture start/state/chunk/stream/finalize/abort behavior, exact meeting ownership, duplicate-finalize/late-write rejection, empty/invalid/out-of-order chunk rejection, caller output-path rejection, SHA-256 verification, safe recording metadata persistence, capture lifecycle to `PROCESSING`, capture journal `COMMITTED`/`FAILED`/`INCOMPLETE` states, critical and unknown disk-space safe-stop behavior, interrupted-capture restart recovery, Graph event normalization, Microsoft Graph pagination through injected transport, event lookup, Teams/other-online/normal event detection, duplicate and idempotent calendar synchronization, cancellation handling, Graph error reporting, external event uniqueness, lifecycle preservation, renderer-safe sync results, credential redaction, active-webContents/exact-URL IPC authorization, sandbox policy, remote-navigation/new-window policy, path-free IPC results, safe snapshots/statistics, failed and interrupted artifact operations, orphan/unknown-folder preservation, missing database detection, protected Windows-style paths, migration phase fault injection, migration source preservation, backup/restore, export, transcript formats, duplicate identities, and local database integrity.
 
 ## CODE-VERIFIED
 
@@ -114,7 +124,7 @@ Automated coverage includes local capture start/state/chunk/stream/finalize/abor
 - `StorageRuntime` wires the installation directory from `dirname(app.getPath("exe"))`; no DATA_ROOT default is derived from the installation directory or Program Files.
 - The `StorageConfigService` uses a separate atomically replaced, file-synced configuration file. SQLite uses WAL with `synchronous = FULL`; artifact and migration state is durable in those stores.
 - The NSIS configuration is present and keeps application data by default. DATA_ROOT remains outside packaged files when selected through the runtime.
-- Static type checking, linting, and the production build verify the Linux-buildable Electron, storage, local capture, calendar, and Graph adapter code paths.
+- Static type checking, linting, and the production build verify the Linux-buildable Electron, storage, local capture, native capture boundary, calendar, and Graph adapter code paths.
 - The Microsoft Graph HTTP adapter is production code and has no fake data source; it requires an injected OAuth/MSAL-compatible auth provider before live Graph access can occur.
 
 ## NOT TESTED
@@ -122,17 +132,18 @@ Automated coverage includes local capture start/state/chunk/stream/finalize/abor
 - No end-to-end Electron GUI test was run in the headless Linux test command. The pure window-policy tests do not prove Chromium/Electron event delivery.
 - No signed installer artifact, update cycle, uninstall wizard, or real Windows drive/ACL exercise was run.
 - No physical power-loss or forced-process termination test was run; crash handling is covered by durable-state, restart-recovery, and fault-injection tests rather than an actual crash harness.
+- No real Windows microphone, system-audio/loopback, screen, or window capture API was executed. Native capture tests use injected boundary doubles and do not certify Windows GUI/device behavior.
 - No live Microsoft OAuth/MSAL sign-in, tenant consent, token acquisition, or live Microsoft Graph calendar request was executed.
 
 ## WINDOWS-UNVERIFIED
 
-- Actual Windows `Program Files`/ACL behavior, junction/symlink semantics, Windows path parsing under the running Electron app, and Windows-specific `statfs`/disk-full behavior require a Windows host.
+- Actual Windows `Program Files`/ACL behavior, junction/symlink semantics, Windows path parsing under the running Electron app, Windows-specific `statfs`/disk-full behavior, and native microphone/system-audio/screen/window capture APIs require a Windows host.
 - Electron GUI navigation/webview behavior, `safeStorage`/DPAPI, Windows credential protection, Microsoft MSAL desktop redirect/broker behavior, NSIS update/uninstall behavior, and preservation of user-selected DATA_ROOT across installer operations were not executable in this Linux sandbox.
 - The Linux tests do include Windows-style path policy cases and verify the code's boundary/case rules, but those results are not a Windows execution claim.
 
 ## REMAINING GAP
 
-- **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, and the local capture/storage boundary are implemented, but actual Teams/Zoom/Google Meet/browser/screen/microphone/system-audio capture, transcription, and meeting processing remain intentionally out of scope.
+- **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, the local capture/storage boundary, and the native source abstraction/policy/coordinator are implemented, but actual Teams/Zoom/Google Meet/browser automation and a verified Windows microphone/system-audio/screen/window capture provider remain intentionally out of scope.
 - **AI is not end-to-end:** **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end.** The provider/policy abstraction and manual local `saveAnalysis()` facade exist, but automatic transcription, provider invocation, and analysis persistence are not connected.
 - Migration recovery can safely activate a fully copied destination or mark an interrupted copy incomplete; resumable copying/progress/cancellation UI is not implemented.
 - A signed production installer, a user-facing Keep/Delete uninstall choice, full Microsoft OAuth/MSAL sign-in UX, ordinary meeting-file encryption-at-rest, and automated backup retention are not implemented.
@@ -161,7 +172,9 @@ Automated coverage includes local capture start/state/chunk/stream/finalize/abor
 | Teams vs other-online vs normal detection | IMPLEMENTED / TESTED | Platform is stored as `TEAMS`, `OTHER_ONLINE`, or `NONE`; non-Teams online meetings are not classified as Teams. |
 | Calendar association idempotency | IMPLEMENTED / TESTED | `calendar_event_associations` links provider/external ID to internal UUID with uniqueness and lifecycle preservation. |
 | Renderer-safe calendar sync IPC | IMPLEMENTED / TESTED | Sync IPC returns counts and sanitized error codes only; no credentials/raw Graph/path data. |
-| Local capture boundary | IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED | `CaptureEngine` + `LocalRecordingCaptureEngine` control local chunk/stream writes, ownership, journal, SHA-256, disk-space safe-stop, and recovery. Actual Windows audio/video capture is not implemented or tested. |
+| Local capture boundary | IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED | `CaptureEngine` + `LocalRecordingCaptureEngine` control local chunk/stream writes, ownership, journal, SHA-256, disk-space safe-stop, and recovery. Actual Windows audio/video capture provider execution is not implemented or tested. |
+| Native Windows capture source boundary | IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-UNVERIFIED | `NativeCaptureAdapter`, `WindowsCaptureAdapter`, and `NativeCaptureCoordinator` define capability discovery, default-deny policy, ownership, source-to-local pipeline orchestration, typed errors, and fail-closed unsupported/provider-missing behavior. Tests use injected boundary doubles; actual Windows APIs are unverified. |
+| No fake production capture fallback | IMPLEMENTED / TESTED | Production factory reports unsupported/provider-not-configured instead of creating mock bytes; test doubles are confined to tests. |
 | Full AI/meeting pipeline | NOT TESTED / REMAINING GAP | Intentionally not implemented in this phase; the transcript-to-provider-to-saveAnalysis path is not wired. |
 
 ## Final verification boundary

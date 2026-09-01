@@ -10,6 +10,7 @@ import type {
   CaptureChunkRequest,
   CaptureEngine,
   CaptureErrorInfo,
+  CaptureFailRequest,
   CaptureFinalizeRequest,
   CaptureSessionState,
   CaptureStartRequest,
@@ -203,6 +204,23 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
         await this.failSession(session, true, errorMessage(error));
         throw error;
       }
+    });
+  }
+
+  public async failCapture(request: CaptureFailRequest): Promise<CaptureStateSnapshot> {
+    const session = this.requireSession(request.captureId);
+    return this.enqueue(session, async () => {
+      if (session.operation.meetingId !== request.meetingId) {
+        throw new StorageError("Capture meeting ID does not match the session owner.");
+      }
+      if (session.state === "COMPLETED") {
+        throw new StorageError("A completed capture cannot be failed.");
+      }
+      if (session.state === "INCOMPLETE" || session.state === "FAILED") {
+        return snapshot(session);
+      }
+      await this.failSession(session, true, request.reason);
+      return snapshot(session);
     });
   }
 

@@ -46,6 +46,12 @@ export interface CaptureAbortRequest {
   reason: string;
 }
 
+export interface CaptureFailRequest {
+  captureId: string;
+  meetingId: string;
+  reason: string;
+}
+
 export interface CaptureStateSnapshot {
   captureId: string;
   meetingId: string;
@@ -71,4 +77,5 @@ export interface CaptureEngine {
   appendStream(request: CaptureStreamRequest): Promise<CaptureStateSnapshot>;
   finalizeCapture(request: CaptureFinalizeRequest): Promise<CaptureStateSnapshot>;
   abortCapture(request: CaptureAbortRequest): Promise<CaptureStateSnapshot>;
+  failCapture(request: CaptureFailRequest): Promise<CaptureStateSnapshot>;
 }
