@@ -3,6 +3,7 @@ import type {
   AnalysisArtifacts,
   AnalysisDocument,
   Artifact,
+  ArtifactOperation,
   Meeting,
   MeetingStatus,
   RecordingArtifactInput,
@@ -23,6 +24,7 @@ import {
   slugify,
   type ArtifactWriteRequest,
   type LocalStorageServiceOptions,
+  type StorageMigrationPhaseHandler,
 } from "./LocalStorageService";
 import { DataRootValidationError, DuplicateMeetingError, StorageError } from "./errors";
 
@@ -92,6 +94,7 @@ export class LocalFirstStore {
   public exports!: ExportService;
   private readonly clock: () => Date;
   private readonly approvalEngine: ApprovalEngine;
+  private readonly interruptedRecordingMeetingIds = new Set<string>();
   private databaseWasMissingAtOpen = false;
   private initialized = false;
 
@@ -111,6 +114,8 @@ export class LocalFirstStore {
     this.databaseWasMissingAtOpen = hadStorageManifest && !hadDatabase;
     this.database = new LocalDatabase(this.storage.databasePath, this.clock);
     this.database.setMetadata("storageVersion", String(STORAGE_VERSION));
+    this.recoverInterruptedRecordings();
+    await this.recoverArtifactOperations();
     this.refreshServices();
     this.initialized = true;
   }
@@ -276,7 +281,7 @@ export class LocalFirstStore {
       throw new DuplicateMeetingError(`This recording is already indexed for meeting ${duplicate.meetingId}.`, duplicate.meetingId);
     }
 
-    const artifact = await this.saveAndIndexArtifact(
+    return this.saveAndIndexArtifact(
       {
         meeting,
         artifactType: variant === "ORIGINAL" ? "RECORDING_ORIGINAL" : "RECORDING_NORMALIZED",
@@ -288,20 +293,21 @@ export class LocalFirstStore {
         expectedSha256: sha256,
       },
       false,
+      (artifact) => {
+        this.database.registerRecording(randomUUID(), meeting.meetingId, artifact.fileId, variant, this.clock().toISOString());
+        const preserveIncomplete = this.database.getMeeting(meeting.meetingId)?.status === "INCOMPLETE";
+        const incomplete = options.complete === false || preserveIncomplete;
+        this.database.updateMeetingStatus(meeting.meetingId, incomplete ? "INCOMPLETE" : "COMPLETED");
+        this.database.appendAudit(
+          this.audit(incomplete ? "RECORDING_STOPPED_INCOMPLETE" : "RECORDING_STOPPED", meeting.meetingId, {
+            fileId: artifact.fileId,
+            sha256: artifact.sha256,
+            size: artifact.size,
+            variant,
+          }),
+        );
+      },
     );
-    this.database.transaction(() => {
-      this.database.registerRecording(randomUUID(), meeting.meetingId, artifact.fileId, variant, this.clock().toISOString());
-      this.database.updateMeetingStatus(meeting.meetingId, options.complete === false ? "INCOMPLETE" : "COMPLETED");
-      this.database.appendAudit(
-        this.audit(options.complete === false ? "RECORDING_STOPPED_INCOMPLETE" : "RECORDING_STOPPED", meeting.meetingId, {
-          fileId: artifact.fileId,
-          sha256: artifact.sha256,
-          size: artifact.size,
-          variant,
-        }),
-      );
-    });
-    return artifact;
   }
 
   public async saveAudio(
@@ -481,15 +487,22 @@ export class LocalFirstStore {
     return this.storage.getStorageStats(this.database.countMeetings());
   }
 
-  public async migrateDataRoot(destination: string) {
+  public async migrateDataRoot(
+    destination: string,
+    onPhase?: StorageMigrationPhaseHandler,
+  ) {
     const oldStorage = this.storage;
     const oldDatabase = this.database;
     const oldMeetings = oldDatabase.listMeetings();
     oldDatabase.checkpoint();
     oldDatabase.close();
     try {
-      const result = await oldStorage.migrateTo(destination);
-      const newStorage = new LocalStorageService(result.destination, { spaceSafetyMarginBytes: oldStorage.spaceSafetyMarginBytes, clock: this.clock });
+      const result = await oldStorage.migrateTo(destination, onPhase);
+      const newStorage = new LocalStorageService(result.destination, {
+        spaceSafetyMarginBytes: oldStorage.spaceSafetyMarginBytes,
+        clock: this.clock,
+        installationDirectory: oldStorage.installationDirectoryPath,
+      });
       await newStorage.initialize();
       const newDatabase = new LocalDatabase(newStorage.databasePath, this.clock);
       const newIds = new Set(newDatabase.listMeetings().map((meeting) => meeting.meetingId));
@@ -502,6 +515,7 @@ export class LocalFirstStore {
       this.databaseWasMissingAtOpen = false;
       this.database.appendAudit(this.audit("DATA_ROOT_CHANGED", undefined, { from: oldStorage.dataRoot, to: result.destination }));
       this.refreshServices();
+      await onPhase?.("RUNTIME_SWITCHED");
       return result;
     } catch (error: unknown) {
       // The source was deliberately preserved. Reopen it so the app remains
@@ -553,16 +567,122 @@ export class LocalFirstStore {
     }
   }
 
-  private async saveAndIndexArtifact(request: ArtifactWriteRequest, appendAudit: boolean): Promise<Artifact> {
-    const artifact = await this.storage.writeArtifact(request);
-    const { absolutePath: _absolutePath, ...indexArtifact } = artifact;
-    this.database.transaction(() => {
-      this.database.registerArtifact(indexArtifact);
-      if (appendAudit) {
-        this.database.appendAudit(this.audit("FILE_CREATED", artifact.meetingId, { fileId: artifact.fileId, relativePath: artifact.relativePath }));
+  private async saveAndIndexArtifact(
+    request: ArtifactWriteRequest,
+    appendAudit: boolean,
+    afterIndexed?: (artifact: Artifact) => void,
+  ): Promise<Artifact> {
+    const relativePath = request.relativePath === undefined
+      ? this.storage.buildArtifactRelativePath(request.meeting, request.artifactType, request.extension)
+      : this.storage.assertRelativePath(request.relativePath);
+    const operation: ArtifactOperation = {
+      operationId: randomUUID(),
+      meetingId: request.meeting.meetingId,
+      relativePath,
+      artifactType: request.artifactType,
+      state: "STARTED",
+      createdAt: this.clock().toISOString(),
+      updatedAt: this.clock().toISOString(),
+    };
+    if (request.expectedSha256 !== undefined) {
+      operation.expectedSha256 = request.expectedSha256;
+    }
+    this.database.startArtifactOperation(operation);
+
+    try {
+      this.database.updateArtifactOperation(operation.operationId, { state: "WRITING" });
+      const artifact = await this.storage.writeArtifact({ ...request, relativePath });
+      this.database.updateArtifactOperation(operation.operationId, {
+        state: "FINALIZING",
+        fileId: artifact.fileId,
+        actualSha256: artifact.sha256,
+        size: artifact.size,
+      });
+      const { absolutePath: _absolutePath, ...indexArtifact } = artifact;
+      this.database.transaction(() => {
+        this.database.registerArtifact(indexArtifact);
+        afterIndexed?.(indexArtifact);
+        this.database.updateArtifactOperation(operation.operationId, { state: "COMMITTED" });
+        if (appendAudit) {
+          this.database.appendAudit(this.audit("FILE_CREATED", artifact.meetingId, { fileId: artifact.fileId, relativePath: artifact.relativePath }));
+        }
+      });
+      return indexArtifact;
+    } catch (error: unknown) {
+      const verification = await this.storage.inspectFile(relativePath).catch(() => ({ status: "MISSING" as const }));
+      const state = verification.status === "AVAILABLE" ? "INCOMPLETE" : "FAILED";
+      this.database.updateArtifactOperation(operation.operationId, {
+        state,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  private recoverInterruptedRecordings(): void {
+    for (const meeting of this.database.listMeetings()) {
+      if (meeting.status !== "RECORDING") {
+        continue;
       }
-    });
-    return indexArtifact;
+      this.interruptedRecordingMeetingIds.add(meeting.meetingId);
+      this.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+      this.database.appendAudit(this.audit("RECORDING_RECOVERED_INCOMPLETE", meeting.meetingId, {
+        reason: "APPLICATION_RESTARTED_DURING_RECORDING",
+      }));
+    }
+  }
+
+  private async recoverArtifactOperations(): Promise<void> {
+    for (const operation of this.database.listPendingArtifactOperations()) {
+      let verification: Awaited<ReturnType<LocalStorageService["inspectFile"]>>;
+      try {
+        verification = await this.storage.inspectFile(
+          operation.relativePath,
+          operation.actualSha256 ?? operation.expectedSha256,
+        );
+      } catch (error: unknown) {
+        this.database.updateArtifactOperation(operation.operationId, {
+          state: "INCOMPLETE",
+          error: `The unfinished artifact operation could not be inspected: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        continue;
+      }
+
+      const indexedArtifact = operation.fileId === undefined ? undefined : this.database.getArtifact(operation.fileId);
+      if (
+        indexedArtifact !== undefined &&
+        indexedArtifact.meetingId === operation.meetingId &&
+        indexedArtifact.relativePath === operation.relativePath &&
+        verification.status === "AVAILABLE"
+      ) {
+        this.database.updateArtifactOperation(operation.operationId, {
+          state: "COMMITTED",
+          actualSha256: verification.actualSha256,
+          size: verification.size,
+        });
+        continue;
+      }
+
+      if (indexedArtifact !== undefined && verification.status !== "AVAILABLE") {
+        this.database.updateArtifactVerification(
+          indexedArtifact.fileId,
+          verification.status === "MISSING" ? "MISSING" : "CORRUPTED",
+        );
+      }
+      this.database.updateArtifactOperation(operation.operationId, {
+        state: "INCOMPLETE",
+        error: verification.status === "AVAILABLE"
+          ? "The final file exists but its SQLite artifact transaction was not committed. It remains an orphan until explicitly re-indexed."
+          : `The artifact operation ended before a verified final file existed (${verification.status}).`,
+      });
+      this.database.appendAudit({
+        auditId: randomUUID(),
+        action: "ARTIFACT_OPERATION_RECOVERED",
+        meetingId: operation.meetingId,
+        details: { operationId: operation.operationId, path: operation.relativePath, state: "INCOMPLETE" },
+        createdAt: this.clock().toISOString(),
+      });
+    }
   }
 
   private requireDatabase(): LocalDatabase {
@@ -581,7 +701,13 @@ export class LocalFirstStore {
   }
 
   private refreshServices(): void {
-    this.recovery = new RecoveryScanner(this.storage, this.database, this.clock, this.databaseWasMissingAtOpen);
+    this.recovery = new RecoveryScanner(
+      this.storage,
+      this.database,
+      this.clock,
+      this.databaseWasMissingAtOpen,
+      this.interruptedRecordingMeetingIds,
+    );
     this.integrity = this.recovery;
     this.backups = new BackupService(this.storage, this.database, this.clock);
     this.exports = new ExportService(this.storage, this.database, this.clock);

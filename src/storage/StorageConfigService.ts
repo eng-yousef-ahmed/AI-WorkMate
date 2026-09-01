@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { AIProcessingPolicy } from "../domain/models";
+import type { AIProcessingPolicy, MigrationJournal } from "../domain/models";
 import { DataRootValidationError } from "./errors";
 import { normalizeAbsolutePath } from "./LocalStorageService";
 
@@ -11,6 +11,7 @@ export interface AppStorageConfig {
   dataRoot?: string;
   aiProcessingPolicy: AIProcessingPolicy;
   lastIntegrityCheckAt?: string;
+  pendingMigration?: MigrationJournal;
   updatedAt: string;
 }
 
@@ -48,6 +49,12 @@ export class StorageConfigService {
       }
       if (typeof value.lastIntegrityCheckAt === "string") {
         config.lastIntegrityCheckAt = value.lastIntegrityCheckAt;
+      }
+      if (value.pendingMigration !== undefined) {
+        if (!isMigrationJournal(value.pendingMigration)) {
+          throw new DataRootValidationError("The pending DATA_ROOT migration journal is invalid.");
+        }
+        config.pendingMigration = value.pendingMigration;
       }
       return config;
     } catch (error: unknown) {
@@ -88,6 +95,21 @@ export class StorageConfigService {
     return this.write({ ...current, lastIntegrityCheckAt });
   }
 
+  public async setMigrationJournal(pendingMigration: MigrationJournal): Promise<AppStorageConfig> {
+    if (!isMigrationJournal(pendingMigration)) {
+      throw new DataRootValidationError("The DATA_ROOT migration journal is invalid.");
+    }
+    const current = await this.read();
+    return this.write({ ...current, pendingMigration });
+  }
+
+  public async clearMigrationJournal(): Promise<AppStorageConfig> {
+    const current = await this.read();
+    const next = { ...current };
+    delete next.pendingMigration;
+    return this.write(next);
+  }
+
   private async write(config: AppStorageConfig): Promise<AppStorageConfig> {
     const next: AppStorageConfig = {
       ...config,
@@ -103,6 +125,7 @@ export class StorageConfigService {
       await handle.close();
       handle = undefined;
       await rename(temporary, this.configPath);
+      await syncDirectory(dirname(this.configPath));
       return next;
     } catch (error: unknown) {
       if (handle !== undefined) {
@@ -118,6 +141,43 @@ function isProcessingPolicy(value: unknown): value is AIProcessingPolicy {
   return value === "LOCAL_ONLY" || value === "CLOUD_ALLOWED" || value === "ASK_EACH_TIME";
 }
 
+function isMigrationJournal(value: unknown): value is MigrationJournal {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<MigrationJournal>;
+  return (
+    typeof candidate.operationId === "string" &&
+    typeof candidate.source === "string" &&
+    typeof candidate.destination === "string" &&
+    typeof candidate.updatedAt === "string" &&
+    (candidate.state === "STARTED" ||
+      candidate.state === "COPYING" ||
+      candidate.state === "VERIFIED" ||
+      candidate.state === "ACTIVATING" ||
+      candidate.state === "ACTIVATED" ||
+      candidate.state === "RUNTIME_SWITCHED" ||
+      candidate.state === "CONFIGURATION_UPDATED" ||
+      candidate.state === "FAILED" ||
+      candidate.state === "INCOMPLETE") &&
+    (candidate.error === undefined || typeof candidate.error === "string")
+  );
+}
+
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  try {
+    const handle = await open(directory, "r");
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // Directory fsync is unavailable on some Windows filesystems. The config
+    // file itself is still fsynced before its atomic rename.
+  }
 }

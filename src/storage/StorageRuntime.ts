@@ -1,16 +1,24 @@
+import { randomUUID } from "node:crypto";
+
 import { STORAGE_VERSION } from "../domain/models";
 import type {
   AIProcessingPolicy,
   IntegrityReport,
+  MigrationJournal,
   MigrationPlan,
   MigrationResult,
   StorageSnapshot,
 } from "../domain/models";
 import type { CredentialStore } from "../security/CredentialStore";
+import { LocalDatabase } from "./LocalDatabase";
 import { LocalFirstStore } from "./LocalFirstStore";
 import type { StorageConfigService } from "./StorageConfigService";
 import { DataRootValidationError, StorageError } from "./errors";
-import { LocalStorageService, normalizeAbsolutePath } from "./LocalStorageService";
+import {
+  LocalStorageService,
+  normalizeAbsolutePath,
+  type LocalStorageServiceOptions,
+} from "./LocalStorageService";
 
 export interface ChangeDataRootResult {
   migrated: boolean;
@@ -23,22 +31,27 @@ export class StorageRuntime {
   public store: LocalFirstStore | undefined;
   public readonly credentialStore: CredentialStore | undefined;
   private readonly config: StorageConfigService;
+  private readonly storageOptions: LocalStorageServiceOptions;
 
   public constructor(
     config: StorageConfigService,
     private readonly clock: () => Date = () => new Date(),
     credentialStore?: CredentialStore,
+    storageOptions: LocalStorageServiceOptions = {},
   ) {
     this.config = config;
     this.credentialStore = credentialStore;
+    this.storageOptions = storageOptions;
   }
 
   public async initialize(): Promise<boolean> {
+    const initialConfig = await this.config.read();
+    await this.recoverPendingMigration(initialConfig.pendingMigration);
     const dataRoot = await this.config.getDataRoot();
     if (dataRoot === undefined) {
       return false;
     }
-    const store = new LocalFirstStore(dataRoot, { clock: this.clock });
+    const store = new LocalFirstStore(dataRoot, { ...this.storageOptions, clock: this.clock });
     await store.initialize();
     this.store = store;
     return true;
@@ -49,12 +62,12 @@ export class StorageRuntime {
       throw new StorageError("DATA_ROOT is already configured.");
     }
     const normalized = normalizeAbsolutePath(dataRoot);
-    const probe = new LocalStorageService(normalized);
+    const probe = new LocalStorageService(normalized, this.storageOptions);
     const validation = await probe.validateDataRoot(normalized);
     if (!validation.valid) {
       throw new DataRootValidationError(validation.errors.join(" "));
     }
-    const store = new LocalFirstStore(normalized, { clock: this.clock });
+    const store = new LocalFirstStore(normalized, { ...this.storageOptions, clock: this.clock });
     await store.initialize();
     await this.config.setDataRoot(normalized);
     this.store = store;
@@ -70,20 +83,76 @@ export class StorageRuntime {
     if (!migrateExistingData) {
       return { migrated: false, plan };
     }
-    const result = await store.migrateDataRoot(plan.destination);
-    await this.config.setDataRoot(result.destination);
-    return { migrated: true, plan: result.plan, result };
+
+    const operationId = randomUUID();
+    const journal: MigrationJournal = {
+      operationId,
+      source: plan.source,
+      destination: plan.destination,
+      state: "STARTED",
+      updatedAt: this.clock().toISOString(),
+    };
+    await this.config.setMigrationJournal(journal);
+    try {
+      await this.config.setMigrationJournal({ ...journal, state: "COPYING", updatedAt: this.clock().toISOString() });
+      const result = await store.migrateDataRoot(plan.destination, async (phase) => {
+        await this.config.setMigrationJournal({
+          ...journal,
+          state: phase,
+          updatedAt: this.clock().toISOString(),
+        });
+      });
+      const switchedJournal: MigrationJournal = {
+        ...journal,
+        state: "RUNTIME_SWITCHED",
+        updatedAt: this.clock().toISOString(),
+      };
+      await this.config.setMigrationJournal(switchedJournal);
+      await this.config.setDataRoot(result.destination);
+      await this.config.setMigrationJournal({
+        ...switchedJournal,
+        state: "CONFIGURATION_UPDATED",
+        updatedAt: this.clock().toISOString(),
+      });
+      await this.config.clearMigrationJournal();
+      return { migrated: true, plan: result.plan, result };
+    } catch (error: unknown) {
+      try {
+        const current = await this.config.read();
+        if (current.pendingMigration?.operationId === operationId) {
+          await this.config.setMigrationJournal({
+            ...current.pendingMigration,
+            state: "INCOMPLETE",
+            error: error instanceof Error ? error.message : String(error),
+            updatedAt: this.clock().toISOString(),
+          });
+        }
+      } catch {
+        // Preserve the original migration error if the configuration journal
+        // itself cannot be updated.
+      }
+      if (this.store !== undefined && !samePath(this.store.storage.dataRoot, plan.source)) {
+        this.store.close();
+        const sourceStore = new LocalFirstStore(plan.source, { ...this.storageOptions, clock: this.clock });
+        await sourceStore.initialize();
+        this.store = sourceStore;
+      }
+      throw error;
+    }
   }
 
   public async getSnapshot(): Promise<StorageSnapshot> {
     const store = this.requireStore();
     const config = await this.config.read();
     const snapshot: StorageSnapshot = {
-      dataLocation: store.storage.dataRoot,
+      dataLocation: { type: "LOCAL", label: "Local workspace (path hidden)", pathExposed: false },
       stats: await store.getStorageStats(),
       storageVersion: STORAGE_VERSION,
       aiProcessingPolicy: config.aiProcessingPolicy,
     };
+    if (config.pendingMigration !== undefined) {
+      snapshot.migrationRecoveryRequired = config.pendingMigration.state === "INCOMPLETE" || config.pendingMigration.state === "FAILED";
+    }
     const lastIntegrityCheckAt = store.database.getLastIntegrityCheckAt() ?? config.lastIntegrityCheckAt;
     if (lastIntegrityCheckAt !== undefined) {
       snapshot.lastIntegrityCheckAt = lastIntegrityCheckAt;
@@ -111,10 +180,125 @@ export class StorageRuntime {
     return this.requireStore().storage.dataRoot;
   }
 
+  private async recoverPendingMigration(journal: MigrationJournal | undefined): Promise<void> {
+    if (journal === undefined || journal.state === "FAILED" || journal.state === "INCOMPLETE") {
+      return;
+    }
+
+    const configuredRoot = await this.config.getDataRoot();
+    const destinationReady = await this.isMigrationDestinationReady(journal.destination, journal.source);
+    const configuredDestination = configuredRoot !== undefined && samePath(configuredRoot, journal.destination);
+    const canActivateDestination = journal.state === "ACTIVATING" || journal.state === "ACTIVATED" || journal.state === "RUNTIME_SWITCHED" || journal.state === "CONFIGURATION_UPDATED";
+
+    if (destinationReady && (configuredDestination || canActivateDestination)) {
+      if (!configuredDestination) {
+        await this.config.setDataRoot(journal.destination);
+      }
+      await this.config.clearMigrationJournal();
+      return;
+    }
+
+    if (configuredDestination && !destinationReady) {
+      const sourceReady = await this.isMigrationDestinationReady(journal.source);
+      if (!sourceReady) {
+        throw new StorageError("The interrupted DATA_ROOT migration has neither a verified source nor a verified destination.");
+      }
+      await this.config.setDataRoot(journal.source);
+    }
+    await this.config.setMigrationJournal({
+      ...journal,
+      state: "INCOMPLETE",
+      error: "The migration was interrupted before a verified destination could be activated; the source remains the active location.",
+      updatedAt: this.clock().toISOString(),
+    });
+  }
+
+  private async isMigrationDestinationReady(destination: string, sourceRoot?: string): Promise<boolean> {
+    try {
+      const storage = new LocalStorageService(destination, this.storageOptions);
+      if (!(await storage.exists("storage.json")) || !(await storage.exists("Database/ai-workmate.sqlite"))) {
+        return false;
+      }
+      const manifest = await storage.readJson<{ storageVersion?: unknown }>("storage.json");
+      if (manifest.storageVersion !== STORAGE_VERSION) {
+        return false;
+      }
+      if (sourceRoot === undefined) {
+        const database = new LocalDatabase(storage.databasePath, this.clock);
+        database.close();
+        return true;
+      }
+
+      const sourceStorage = new LocalStorageService(sourceRoot, this.storageOptions);
+      if (
+        !(await sourceStorage.exists("storage.json")) ||
+        !(await sourceStorage.exists("Database/ai-workmate.sqlite"))
+      ) {
+        return false;
+      }
+      const [sourceFiles, destinationFiles] = await Promise.all([
+        sourceStorage.listFiles(),
+        storage.listFiles(),
+      ]);
+      // The migration updates storage.json after activation so its label names
+      // the destination. Runtime switching also appends one audit record to the
+      // destination database, so database relationships are compared through a
+      // stable fingerprint instead of a raw database-file hash.
+      const isDatabaseFile = (relativePath: string): boolean =>
+        relativePath === "Database/ai-workmate.sqlite" ||
+        relativePath === "Database/ai-workmate.sqlite-wal" ||
+        relativePath === "Database/ai-workmate.sqlite-shm";
+      const sourceFilesToCompare = sourceFiles.filter(
+        (file) => file.relativePath !== "storage.json" && !isDatabaseFile(file.relativePath),
+      );
+      const destinationFilesToCompare = destinationFiles.filter(
+        (file) => file.relativePath !== "storage.json" && !isDatabaseFile(file.relativePath),
+      );
+      if (sourceFilesToCompare.length !== destinationFilesToCompare.length) {
+        return false;
+      }
+      const destinationByRelativePath = new Map(
+        destinationFilesToCompare.map((file) => [file.relativePath, file]),
+      );
+      for (const sourceFile of sourceFilesToCompare) {
+        const destinationFile = destinationByRelativePath.get(sourceFile.relativePath);
+        if (
+          destinationFile === undefined ||
+          destinationFile.size !== sourceFile.size ||
+          (await sourceStorage.hashFile(sourceFile.absolutePath)) !==
+            (await storage.hashFile(destinationFile.absolutePath))
+        ) {
+          return false;
+        }
+      }
+
+      const sourceDatabase = new LocalDatabase(sourceStorage.databasePath, this.clock);
+      try {
+        const destinationDatabase = new LocalDatabase(storage.databasePath, this.clock);
+        try {
+          return sourceDatabase.getMigrationFingerprint() === destinationDatabase.getMigrationFingerprint();
+        } finally {
+          destinationDatabase.close();
+        }
+      } finally {
+        sourceDatabase.close();
+      }
+    } catch {
+      return false;
+    }
+  }
+
   private requireStore(): LocalFirstStore {
     if (this.store === undefined) {
       throw new StorageError("Choose a local data location before using AI WorkMate.");
     }
     return this.store;
   }
+}
+
+function samePath(left: string, right: string): boolean {
+  if (process.platform === "win32") {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
 }

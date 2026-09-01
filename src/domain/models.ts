@@ -1,5 +1,5 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 1;
+export const DATABASE_SCHEMA_VERSION = 2;
 
 export type MeetingStatus = "PLANNED" | "RECORDING" | "COMPLETED" | "INCOMPLETE";
 
@@ -152,7 +152,6 @@ export interface AnalysisArtifacts {
 }
 
 export interface StorageStats {
-  dataRoot: string;
   totalBytes: number;
   recordingsBytes: number;
   audioBytes: number;
@@ -194,6 +193,49 @@ export interface MigrationResult {
   copiedFiles: number;
 }
 
+export type MigrationJournalState =
+  | "STARTED"
+  | "COPYING"
+  | "VERIFIED"
+  | "ACTIVATING"
+  | "ACTIVATED"
+  | "RUNTIME_SWITCHED"
+  | "CONFIGURATION_UPDATED"
+  | "FAILED"
+  | "INCOMPLETE";
+
+export interface MigrationJournal {
+  operationId: string;
+  source: string;
+  destination: string;
+  state: MigrationJournalState;
+  updatedAt: string;
+  error?: string;
+}
+
+export type ArtifactOperationState =
+  | "STARTED"
+  | "WRITING"
+  | "FINALIZING"
+  | "COMMITTED"
+  | "FAILED"
+  | "INCOMPLETE";
+
+export interface ArtifactOperation {
+  operationId: string;
+  meetingId: string;
+  relativePath: string;
+  artifactType: ArtifactType;
+  state: ArtifactOperationState;
+  fileId?: string;
+  expectedSha256?: string;
+  actualSha256?: string;
+  size?: number;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface IntegrityIssue {
   kind:
     | "MISSING_ARTIFACT"
@@ -202,7 +244,8 @@ export interface IntegrityIssue {
     | "UNKNOWN_MEETING_FOLDER"
     | "INCOMPLETE_RECORDING"
     | "MISSING_DATABASE"
-    | "INVALID_MANIFEST";
+    | "INVALID_MANIFEST"
+    | "INCOMPLETE_ARTIFACT_OPERATION";
   path: string;
   meetingId?: string;
   fileId?: string;
@@ -224,12 +267,19 @@ export interface StorageManifest {
   dataRootLabel: string;
 }
 
+export interface StorageLocationMetadata {
+  type: "LOCAL";
+  label: string;
+  pathExposed: false;
+}
+
 export interface StorageSnapshot {
-  dataLocation: string;
+  dataLocation: StorageLocationMetadata;
   stats: StorageStats;
   storageVersion: number;
   aiProcessingPolicy: AIProcessingPolicy;
   lastIntegrityCheckAt?: string;
+  migrationRecoveryRequired?: boolean;
 }
 
 export type AIProcessingPolicy = "LOCAL_ONLY" | "CLOUD_ALLOWED" | "ASK_EACH_TIME";

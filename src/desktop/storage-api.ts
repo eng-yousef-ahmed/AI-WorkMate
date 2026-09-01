@@ -1,10 +1,14 @@
 import type {
   AIProcessingPolicy,
   IntegrityReport,
-  MigrationPlan,
   StorageSnapshot,
 } from "../domain/models";
-import type { ChangeDataRootResult } from "../storage/StorageRuntime";
+export interface LocationChangeResult {
+  migrated: boolean;
+  verified?: boolean;
+  sourcePreserved?: boolean;
+  copiedFiles?: number;
+}
 
 export const STORAGE_IPC_CHANNELS = {
   getSnapshot: "storage:get-snapshot",
@@ -35,14 +39,14 @@ export interface StorageRendererAPI {
   getSnapshot(): Promise<StorageSnapshot>;
   chooseInitialLocation(): Promise<StorageSnapshot | null>;
   prepareLocationChange(): Promise<LocationChangePreview>;
-  confirmLocationChange(requestId: string, migrateExistingData: boolean): Promise<ChangeDataRootResult>;
+  confirmLocationChange(requestId: string, migrateExistingData: boolean): Promise<LocationChangeResult>;
   openDataFolder(): Promise<void>;
   verifyStorage(): Promise<IntegrityReport>;
   repairStorage(): Promise<IntegrityReport>;
-  createBackup(): Promise<{ path: string; size: number } | null>;
-  restoreBackup(): Promise<{ destination: string; verified: boolean; restoredFiles: number } | null>;
-  exportMeeting(meetingId: string): Promise<{ path: string; size: number } | null>;
+  createBackup(): Promise<{ size: number } | null>;
+  restoreBackup(): Promise<{ verified: boolean; restoredFiles: number } | null>;
+  exportMeeting(meetingId: string): Promise<{ size: number } | null>;
   setAiProcessingPolicy(policy: AIProcessingPolicy): Promise<void>;
 }
 
-export type { AIProcessingPolicy, IntegrityReport, MigrationPlan, StorageSnapshot };
+export type { AIProcessingPolicy, IntegrityReport, StorageSnapshot };

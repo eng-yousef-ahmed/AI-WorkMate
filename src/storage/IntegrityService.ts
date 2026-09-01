@@ -18,6 +18,7 @@ export class StorageIntegrityService {
     private readonly database: LocalDatabase,
     private readonly clock: () => Date = () => new Date(),
     private readonly databaseWasMissingAtOpen = false,
+    private readonly interruptedRecordingMeetingIds: ReadonlySet<string> = new Set(),
   ) {}
 
   public async verifyStorage(): Promise<IntegrityReport> {
@@ -25,6 +26,30 @@ export class StorageIntegrityService {
     const issues: IntegrityIssue[] = [];
     const artifacts = this.database.listArtifacts();
     let availableArtifacts = 0;
+
+    const unfinishedOperations = [
+      ...this.database.listPendingArtifactOperations(),
+      ...this.database.listIncompleteArtifactOperations(),
+    ];
+    for (const operation of unfinishedOperations) {
+      issues.push({
+        kind: "INCOMPLETE_ARTIFACT_OPERATION",
+        path: operation.relativePath,
+        meetingId: operation.meetingId,
+        details: operation.error ?? `Artifact operation ${operation.operationId} did not reach COMMITTED state.`,
+      });
+    }
+    for (const meetingId of this.interruptedRecordingMeetingIds) {
+      const meeting = this.database.getMeeting(meetingId);
+      if (meeting !== undefined) {
+        issues.push({
+          kind: "INCOMPLETE_RECORDING",
+          path: meeting.folderRelativePath,
+          meetingId,
+          details: "The meeting was still marked RECORDING when the application restarted and was safely marked INCOMPLETE.",
+        });
+      }
+    }
 
     for (const artifact of artifacts) {
       const meeting = this.database.getMeeting(artifact.meetingId);
@@ -100,6 +125,11 @@ export class StorageIntegrityService {
             details: "A temporary recording file was left after an interrupted write.",
           });
         }
+        issues.push({
+          kind: "INCOMPLETE_ARTIFACT_OPERATION",
+          path: file.relativePath,
+          details: "A temporary artifact file was left after an interrupted write.",
+        });
         continue;
       }
       const folder = getMeetingFolderFromPath(file.relativePath);

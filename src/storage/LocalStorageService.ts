@@ -14,7 +14,7 @@ import {
   lstat,
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 
@@ -63,6 +63,8 @@ export interface LocalStorageServiceOptions {
   clock?: () => Date;
   spaceSafetyMarginBytes?: number;
   layoutMigrator?: StorageLayoutMigrator;
+  installationDirectory?: string;
+  availableBytesProvider?: () => Promise<number | null>;
 }
 
 export interface ArtifactWriteRequest {
@@ -93,6 +95,9 @@ export interface StorageTreeEntry {
   modifiedAt: string;
 }
 
+export type StorageMigrationPhase = "COPYING" | "VERIFIED" | "ACTIVATING" | "ACTIVATED" | "RUNTIME_SWITCHED";
+export type StorageMigrationPhaseHandler = (phase: StorageMigrationPhase) => Promise<void>;
+
 /**
  * The only service that is allowed to perform data-root filesystem operations.
  * Database code stores relative paths and never reaches into this service's
@@ -104,16 +109,30 @@ export class LocalStorageService {
   public readonly spaceSafetyMarginBytes: number;
   private readonly clock: () => Date;
   private readonly layoutMigrator: StorageLayoutMigrator | undefined;
+  private readonly installationDirectory: string | undefined;
+  private readonly availableBytesProvider: () => Promise<number | null>;
 
   public constructor(dataRoot: string, options: LocalStorageServiceOptions = {}) {
     this.dataRoot = normalizeAbsolutePath(dataRoot);
+    this.installationDirectory = options.installationDirectory === undefined
+      ? undefined
+      : normalizeAbsolutePath(options.installationDirectory);
+    const protectionError = getDataRootProtectionError(this.dataRoot, this.installationDirectory);
+    if (protectionError !== undefined) {
+      throw new DataRootValidationError(protectionError);
+    }
     this.clock = options.clock ?? (() => new Date());
     this.spaceSafetyMarginBytes = options.spaceSafetyMarginBytes ?? DEFAULT_SPACE_SAFETY_MARGIN;
     this.layoutMigrator = options.layoutMigrator;
+    this.availableBytesProvider = options.availableBytesProvider ?? (() => getAvailableBytes(this.dataRoot));
   }
 
   public get databasePath(): string {
     return join(this.dataRoot, "Database", "ai-workmate.sqlite");
+  }
+
+  public get installationDirectoryPath(): string | undefined {
+    return this.installationDirectory;
   }
 
   public get manifestRelativePath(): string {
@@ -485,7 +504,7 @@ export class LocalStorageService {
   }
 
   public async getAvailableBytes(): Promise<number | null> {
-    return getAvailableBytes(this.dataRoot);
+    return this.availableBytesProvider();
   }
 
   public async checkDiskSpace(requiredBytes: number): Promise<void> {
@@ -494,7 +513,7 @@ export class LocalStorageService {
     }
     const requiredWithMargin = requiredBytes + this.spaceSafetyMarginBytes;
     const availableBytes = await this.getAvailableBytes();
-    if (availableBytes !== null && availableBytes < requiredWithMargin) {
+    if (availableBytes === null || availableBytes < requiredWithMargin) {
       throw new InsufficientDiskSpaceError(availableBytes, requiredWithMargin);
     }
   }
@@ -502,7 +521,6 @@ export class LocalStorageService {
   public async getStorageStats(meetingCount = 0): Promise<StorageStats> {
     const files = await this.listFiles();
     const stats: StorageStats = {
-      dataRoot: this.dataRoot,
       totalBytes: 0,
       recordingsBytes: 0,
       audioBytes: 0,
@@ -589,10 +607,16 @@ export class LocalStorageService {
     }
 
     const availableBytes = await getAvailableBytes(probePath);
-    if (availableBytes !== null && availableBytes < requiredBytes) {
+    if (availableBytes === null && requiredBytes > 0) {
+      errors.push("Available disk space could not be determined safely.");
+    } else if (availableBytes !== null && availableBytes < requiredBytes) {
       errors.push(
         `Insufficient disk space: ${availableBytes.toLocaleString("en-US")} bytes available, ${requiredBytes.toLocaleString("en-US")} required.`,
       );
+    }
+    const protectionError = getDataRootProtectionError(normalized, this.installationDirectory);
+    if (protectionError !== undefined) {
+      errors.push(protectionError);
     }
     return {
       path: normalized,
@@ -650,12 +674,16 @@ export class LocalStorageService {
     };
   }
 
-  public async migrateTo(destination: string): Promise<MigrationResult> {
+  public async migrateTo(
+    destination: string,
+    onPhase?: StorageMigrationPhaseHandler,
+  ): Promise<MigrationResult> {
     const plan = await this.createMigrationPlan(destination);
     const parent = dirname(plan.destination);
     const staging = join(parent, `.ai-workmate-migration-${randomUUID()}`);
     await mkdir(staging, { recursive: true });
     try {
+      await onPhase?.("COPYING");
       const sourceFiles = await this.listFiles();
       for (const file of sourceFiles) {
         const relativePath = file.relativePath;
@@ -663,9 +691,11 @@ export class LocalStorageService {
       }
       const destinationFiles = await listFilesAt(staging);
       await verifyFileSets(this.dataRoot, staging, sourceFiles, destinationFiles);
+      await onPhase?.("VERIFIED");
 
       // Never overwrite a non-empty destination. An existing empty folder is
       // moved aside rather than deleted so an interrupted migration is recoverable.
+      await onPhase?.("ACTIVATING");
       if (await pathExists(plan.destination)) {
         const preservedEmptyDestination = `${plan.destination}.previous-${randomUUID()}`;
         await rename(plan.destination, preservedEmptyDestination);
@@ -675,8 +705,10 @@ export class LocalStorageService {
       const migratedStorage = new LocalStorageService(plan.destination, {
         clock: this.clock,
         spaceSafetyMarginBytes: this.spaceSafetyMarginBytes,
+        installationDirectory: this.installationDirectory,
       });
       await migratedStorage.updateManifest({ dataRootLabel: plan.destination });
+      await onPhase?.("ACTIVATED");
       return {
         plan,
         verified: true,
@@ -889,6 +921,50 @@ export function normalizeAbsolutePath(value: string): string {
   return resolve(value);
 }
 
+/** Returns a user-facing violation for install/system locations. */
+export function getDataRootProtectionError(
+  candidate: string,
+  installationDirectory?: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform === "win32") {
+    if (!win32.isAbsolute(candidate)) {
+      return "DATA_ROOT must be an absolute Windows path.";
+    }
+    const normalizedCandidate = win32.normalize(candidate);
+    const driveRoot = win32.parse(normalizedCandidate).root;
+    const protectedRoots = [
+      `${driveRoot}Program Files`,
+      `${driveRoot}Program Files (x86)`,
+      `${driveRoot}Windows`,
+      `${driveRoot}WindowsApps`,
+      `${driveRoot}ProgramData`,
+      `${driveRoot}Users\\Default`,
+      process.env.ProgramFiles,
+      process.env["ProgramFiles(x86)"],
+      process.env.ProgramW6432,
+      process.env.CommonProgramFiles,
+      process.env["CommonProgramFiles(x86)"],
+      process.env.CommonProgramW6432,
+      process.env.ProgramData,
+      process.env.SystemRoot,
+      process.env.WINDIR,
+    ].filter((value): value is string => value !== undefined && value.length > 0);
+    if (installationDirectory !== undefined && isWindowsPathInside(installationDirectory, normalizedCandidate)) {
+      return "DATA_ROOT cannot be inside the AI WorkMate application installation directory.";
+    }
+    if (protectedRoots.some((root) => isWindowsPathInside(root, normalizedCandidate))) {
+      return "DATA_ROOT cannot be inside a protected Windows application or system directory such as Program Files.";
+    }
+    return undefined;
+  }
+
+  if (installationDirectory !== undefined && isPathInside(installationDirectory, candidate)) {
+    return "DATA_ROOT cannot be inside the application installation directory.";
+  }
+  return undefined;
+}
+
 export function isPathInside(parent: string, candidate: string): boolean {
   const parentResolved = resolve(parent);
   const candidateResolved = resolve(candidate);
@@ -897,6 +973,19 @@ export function isPathInside(parent: string, candidate: string): boolean {
   }
   const pathDifference = relative(parentResolved, candidateResolved);
   return pathDifference !== "" && !pathDifference.startsWith("..") && !isAbsolute(pathDifference);
+}
+
+function isWindowsPathInside(parent: string, candidate: string): boolean {
+  if (!win32.isAbsolute(parent) || !win32.isAbsolute(candidate)) {
+    return false;
+  }
+  const parentResolved = win32.normalize(parent);
+  const candidateResolved = win32.normalize(candidate);
+  if (parentResolved.toLowerCase() === candidateResolved.toLowerCase()) {
+    return true;
+  }
+  const pathDifference = win32.relative(parentResolved, candidateResolved);
+  return pathDifference !== "" && !pathDifference.startsWith("..") && !win32.isAbsolute(pathDifference);
 }
 
 export async function getAvailableBytes(directory: string): Promise<number | null> {

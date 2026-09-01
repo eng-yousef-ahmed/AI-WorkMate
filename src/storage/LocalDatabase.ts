@@ -6,6 +6,8 @@ import {
   DATABASE_SCHEMA_VERSION,
   type ActionItem,
   type Artifact,
+  type ArtifactOperation,
+  type ArtifactOperationState,
   type ArtifactStatus,
   type Decision,
   type Meeting,
@@ -72,6 +74,14 @@ export interface AuditRecord {
   artifactId?: string;
   details?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface ArtifactOperationUpdate {
+  state: ArtifactOperationState;
+  fileId?: string;
+  actualSha256?: string;
+  size?: number;
+  error?: string;
 }
 
 type SqlValue = string | number | bigint | Uint8Array | null;
@@ -146,6 +156,23 @@ CREATE INDEX IF NOT EXISTS artifacts_meeting_index ON artifacts(meeting_id);
 CREATE INDEX IF NOT EXISTS artifacts_type_index ON artifacts(artifact_type);
 CREATE INDEX IF NOT EXISTS artifacts_status_index ON artifacts(status);
 CREATE INDEX IF NOT EXISTS artifacts_hash_index ON artifacts(sha256);
+
+CREATE TABLE IF NOT EXISTS artifact_operations (
+  operation_id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('STARTED', 'WRITING', 'FINALIZING', 'COMMITTED', 'FAILED', 'INCOMPLETE')),
+  file_id TEXT,
+  expected_sha256 TEXT,
+  actual_sha256 TEXT,
+  size INTEGER CHECK (size IS NULL OR size >= 0),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS artifact_operations_state_index ON artifact_operations(state);
+CREATE INDEX IF NOT EXISTS artifact_operations_meeting_index ON artifact_operations(meeting_id);
 
 CREATE TABLE IF NOT EXISTS recordings (
   recording_id TEXT PRIMARY KEY,
@@ -471,6 +498,75 @@ export class LocalDatabase {
     return rows.map((row) => mapArtifact(row as SqlRow));
   }
 
+  public startArtifactOperation(operation: ArtifactOperation): void {
+    this.database
+      .prepare(
+        `INSERT INTO artifact_operations (
+          operation_id, meeting_id, relative_path, artifact_type, state,
+          file_id, expected_sha256, actual_sha256, size, error, created_at, updated_at
+        ) VALUES (
+          $operationId, $meetingId, $relativePath, $artifactType, $state,
+          $fileId, $expectedSha256, $actualSha256, $size, $error, $createdAt, $updatedAt
+        )`,
+      )
+      .run({
+        $operationId: operation.operationId,
+        $meetingId: operation.meetingId,
+        $relativePath: operation.relativePath,
+        $artifactType: operation.artifactType,
+        $state: operation.state,
+        $fileId: operation.fileId ?? null,
+        $expectedSha256: operation.expectedSha256 ?? null,
+        $actualSha256: operation.actualSha256 ?? null,
+        $size: operation.size ?? null,
+        $error: operation.error ?? null,
+        $createdAt: operation.createdAt,
+        $updatedAt: operation.updatedAt,
+      });
+  }
+
+  public updateArtifactOperation(operationId: string, update: ArtifactOperationUpdate): void {
+    this.database
+      .prepare(
+        `UPDATE artifact_operations SET
+          state = $state,
+          file_id = COALESCE($fileId, file_id),
+          actual_sha256 = COALESCE($actualSha256, actual_sha256),
+          size = COALESCE($size, size),
+          error = COALESCE($error, error),
+          updated_at = $updatedAt
+         WHERE operation_id = $operationId`,
+      )
+      .run({
+        $operationId: operationId,
+        $state: update.state,
+        $fileId: update.fileId ?? null,
+        $actualSha256: update.actualSha256 ?? null,
+        $size: update.size ?? null,
+        $error: update.error ?? null,
+        $updatedAt: this.clock().toISOString(),
+      });
+  }
+
+  public listArtifactOperations(): ArtifactOperation[] {
+    const rows = this.database.prepare("SELECT * FROM artifact_operations ORDER BY created_at").all();
+    return rows.map((row) => mapArtifactOperation(row as SqlRow));
+  }
+
+  public listPendingArtifactOperations(): ArtifactOperation[] {
+    const rows = this.database
+      .prepare("SELECT * FROM artifact_operations WHERE state IN ('STARTED', 'WRITING', 'FINALIZING') ORDER BY created_at")
+      .all();
+    return rows.map((row) => mapArtifactOperation(row as SqlRow));
+  }
+
+  public listIncompleteArtifactOperations(): ArtifactOperation[] {
+    const rows = this.database
+      .prepare("SELECT * FROM artifact_operations WHERE state = 'INCOMPLETE' ORDER BY created_at")
+      .all();
+    return rows.map((row) => mapArtifactOperation(row as SqlRow));
+  }
+
   public updateArtifactVerification(
     fileId: string,
     status: ArtifactStatus,
@@ -734,6 +830,36 @@ export class LocalDatabase {
     return numberValue(row.count);
   }
 
+  /** Stable copy-verification view that excludes the append-only audit log. */
+  public getMigrationFingerprint(): string {
+    const tables = [
+      "schema_migrations",
+      "app_metadata",
+      "meetings",
+      "participants",
+      "meeting_participants",
+      "artifacts",
+      "artifact_operations",
+      "recordings",
+      "transcripts",
+      "analysis_records",
+      "projects",
+      "decisions",
+      "tasks",
+    ];
+    return JSON.stringify(
+      tables.map((table) => {
+        const rows = this.database.prepare(`SELECT * FROM ${table}`).all() as SqlRow[];
+        return {
+          table,
+          rows: rows
+            .map((row) => Object.fromEntries(Object.entries(row).sort(([left], [right]) => left.localeCompare(right))))
+            .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+        };
+      }),
+    );
+  }
+
   public deleteMeetingMetadata(meetingId: string): void {
     this.transaction(() => {
       this.database.prepare("DELETE FROM meetings WHERE meeting_id = $meetingId").run({ $meetingId: meetingId });
@@ -762,6 +888,25 @@ export class LocalDatabase {
       throw new StorageError("The local database is closed.");
     }
   }
+}
+
+function mapArtifactOperation(row: SqlRow): ArtifactOperation {
+  const operation: ArtifactOperation = {
+    operationId: stringValue(row.operation_id),
+    meetingId: stringValue(row.meeting_id),
+    relativePath: stringValue(row.relative_path),
+    artifactType: stringValue(row.artifact_type) as Artifact["artifactType"],
+    state: stringValue(row.state) as ArtifactOperationState,
+    createdAt: stringValue(row.created_at),
+    updatedAt: stringValue(row.updated_at),
+  };
+  addOptional(operation, "fileId", optionalString(row.file_id));
+  addOptional(operation, "expectedSha256", optionalString(row.expected_sha256));
+  addOptional(operation, "actualSha256", optionalString(row.actual_sha256));
+  const size = row.size === undefined || row.size === null ? undefined : numberValue(row.size);
+  addOptional(operation, "size", size);
+  addOptional(operation, "error", optionalString(row.error));
+  return operation;
 }
 
 function mapMeeting(row: SqlRow): Meeting {

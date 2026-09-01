@@ -39,7 +39,7 @@ async function loadSnapshot(): Promise<void> {
 }
 
 function renderSnapshot(snapshot: StorageSnapshot): void {
-  $("data-location").textContent = snapshot.dataLocation;
+  $("data-location").textContent = snapshot.dataLocation.label;
   $("last-check").textContent = snapshot.lastIntegrityCheckAt
     ? `Last verified ${formatDate(snapshot.lastIntegrityCheckAt)}`
     : "Integrity has not been checked yet";
@@ -112,7 +112,7 @@ async function restoreBackup(): Promise<void> {
   try {
     const result = await storage.restoreBackup();
     if (result === null) return;
-    showNotice(`Backup restored and verified into ${result.destination}. The active location was not changed.`);
+    showNotice(`Backup restored and verified into the selected folder. The active location was not changed.`);
   } catch (error: unknown) {
     showError(error);
   }

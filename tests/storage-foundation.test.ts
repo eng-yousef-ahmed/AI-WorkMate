@@ -6,7 +6,11 @@ import { test } from "node:test";
 
 import type { TranscriptDocument } from "../src/domain/models";
 import { DuplicateMeetingError, InsufficientDiskSpaceError } from "../src/storage/errors";
-import { buildMeetingFolderName, LocalStorageService } from "../src/storage/LocalStorageService";
+import {
+  buildMeetingFolderName,
+  getDataRootProtectionError,
+  LocalStorageService,
+} from "../src/storage/LocalStorageService";
 import { withTempStore } from "./helpers";
 
 test("creates the required local DATA_ROOT layout and SQLite index", async () => {
@@ -111,6 +115,7 @@ test("preserves original recordings and keeps normalized media in a separate var
     assert.notEqual(original.relativePath, normalized.relativePath);
     assert.equal(store.database.listArtifacts(meeting.meetingId).filter((artifact) => artifact.artifactType.startsWith("RECORDING")).length, 2);
     assert.equal((await store.storage.listFiles()).some((file) => file.relativePath.includes(".tmp-")), false);
+    assert.equal(store.database.listArtifactOperations().every((operation) => operation.state === "COMMITTED"), true);
     assert.equal(original.sha256, store.storage.hashBytes("original bytes"));
   });
 });
@@ -190,7 +195,71 @@ test("checks available space before recording and fails loudly when the safety m
     const constrained = new LocalStorageService(store.storage.dataRoot, { spaceSafetyMarginBytes: Number.MAX_SAFE_INTEGER });
     await assert.rejects(constrained.checkDiskSpace(0), InsufficientDiskSpaceError);
     await assert.rejects(store.prepareRecording(meeting.meetingId, Number.MAX_SAFE_INTEGER), InsufficientDiskSpaceError);
+    store.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+    await store.saveRecording({
+      meetingId: meeting.meetingId,
+      extension: "mp4",
+      mimeType: "video/mp4",
+      contents: Buffer.from("final incomplete recording"),
+    });
+    assert.equal(store.getMeeting(meeting.meetingId)?.status, "INCOMPLETE");
   });
+});
+
+test("records failed artifact writes without indexing a missing file", async () => {
+  await withTempStore(async (store) => {
+    const meeting = await store.createMeeting({ title: "Failed artifact", meetingDate: "2026-09-01" });
+    await assert.rejects(
+      store.saveAudio(meeting.meetingId, {
+        extension: "m4a",
+        mimeType: "audio/mp4",
+        sourcePath: "/definitely/missing/ai-workmate-recording.m4a",
+      }),
+    );
+    const operations = store.database.listArtifactOperations();
+    assert.equal(operations.at(-1)?.state, "FAILED");
+    assert.equal(store.database.listArtifacts(meeting.meetingId).length, 1);
+  });
+});
+
+test("fails closed when available disk space cannot be determined", async () => {
+  await withTempStore(async (store) => {
+    const meeting = await store.createMeeting({ title: "Unknown space", meetingDate: "2026-09-01" });
+    await assert.rejects(store.storage.checkDiskSpace(1), /could not be determined safely/);
+    let critical: number | null | undefined;
+    const monitor = store.createRecordingDiskMonitor(meeting.meetingId, {
+      criticalFreeBytes: 0,
+      onCritical: (available) => {
+        critical = available;
+      },
+    });
+    await monitor.start();
+    assert.equal(critical, null);
+    assert.equal(store.getMeeting(meeting.meetingId)?.status, "INCOMPLETE");
+  }, { spaceSafetyMarginBytes: 0, availableBytesProvider: async () => null });
+});
+
+test("rejects Windows protected locations and the configured installation directory", () => {
+  assert.match(
+    getDataRootProtectionError("C:\\Program Files\\AI WorkMate\\Data", "C:\\Program Files\\AI WorkMate", "win32") ?? "",
+    /protected|installation/i,
+  );
+  assert.match(
+    getDataRootProtectionError("C:\\Windows\\AI WorkMate\\Data", undefined, "win32") ?? "",
+    /protected/i,
+  );
+  assert.match(
+    getDataRootProtectionError("D:\\Apps\\AI WorkMate\\Data", "D:\\Apps\\AI WorkMate", "win32") ?? "",
+    /installation/i,
+  );
+  assert.equal(
+    getDataRootProtectionError("C:\\Program Files Data\\AI WorkMate", "C:\\Program Files\\AI Workmate", "win32"),
+    undefined,
+  );
+  assert.equal(
+    getDataRootProtectionError("C:\\Users\\Ada\\AI WorkMate Data", "C:\\Program Files\\AI Workmate", "win32"),
+    undefined,
+  );
 });
 
 test("rejects unsafe relative paths and still supports the platform-independent storage contract", async () => {

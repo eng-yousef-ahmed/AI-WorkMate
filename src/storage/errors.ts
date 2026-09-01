@@ -18,7 +18,9 @@ export class InsufficientDiskSpaceError extends StorageError {
 
   public constructor(availableBytes: number | null, requiredBytes: number) {
     super(
-      `Insufficient disk space: ${formatBytes(availableBytes)} available, ${formatBytes(requiredBytes)} required.`,
+      availableBytes === null
+        ? `Available disk space could not be determined safely; recording is blocked (${formatBytes(requiredBytes)} required).`
+        : `Insufficient disk space: ${formatBytes(availableBytes)} available, ${formatBytes(requiredBytes)} required.`,
     );
     this.name = "InsufficientDiskSpaceError";
     this.availableBytes = availableBytes;

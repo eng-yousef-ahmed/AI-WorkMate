@@ -26,6 +26,8 @@ export interface StorageIpcDependencies {
   dialog: DialogLike;
   shell: ShellLike;
   runtime: StorageRuntime;
+  getAuthorizedWebContentsId: () => number | undefined;
+  getAuthorizedRendererUrl: () => string;
 }
 
 /**
@@ -33,10 +35,17 @@ export interface StorageIpcDependencies {
  * an allow-listed policy; all filesystem paths come from native dialogs or the
  * runtime's already-authorized DATA_ROOT.
  */
-export function registerStorageIpc({ ipcMain, dialog, shell, runtime }: StorageIpcDependencies): void {
+export function registerStorageIpc({
+  ipcMain,
+  dialog,
+  shell,
+  runtime,
+  getAuthorizedWebContentsId,
+  getAuthorizedRendererUrl,
+}: StorageIpcDependencies): void {
   const pendingLocationChanges = new Map<string, string>();
   const handle = (channel: string, listener: (...args: unknown[]) => unknown): void => {
-    ipcMain.handle(channel, secureHandler(listener));
+    ipcMain.handle(channel, secureHandler(listener, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
   };
 
   handle(STORAGE_IPC_CHANNELS.getSnapshot, async (): Promise<StorageSnapshot> => runtime.getSnapshot());
@@ -81,7 +90,13 @@ export function registerStorageIpc({ ipcMain, dialog, shell, runtime }: StorageI
         throw new StorageError("The storage migration request has expired or was already used.");
       }
       pendingLocationChanges.delete(requestId);
-      return runtime.changeDataRoot(selected, migrateExistingData);
+      const result = await runtime.changeDataRoot(selected, migrateExistingData);
+      return {
+        migrated: result.migrated,
+        verified: result.result?.verified,
+        sourcePreserved: result.result?.sourcePreserved,
+        copiedFiles: result.result?.copiedFiles,
+      };
     },
   );
 
@@ -95,7 +110,7 @@ export function registerStorageIpc({ ipcMain, dialog, shell, runtime }: StorageI
     const selected = await chooseDirectory(dialog, "Choose a local backup folder.");
     if (selected === null) return null;
     const created = await requireStore(runtime).backups.createBackup(selected);
-    return { path: created.path, size: created.size };
+    return { size: created.size };
   });
 
   handle(STORAGE_IPC_CHANNELS.restoreBackup, async () => {
@@ -107,7 +122,7 @@ export function registerStorageIpc({ ipcMain, dialog, shell, runtime }: StorageI
     const destination = await chooseDirectory(dialog, "Choose an empty folder to restore this backup into.");
     if (destination === null) return null;
     const restored = await requireStore(runtime).backups.restore(backupSelection.filePaths[0], destination);
-    return { destination: restored.destination, verified: restored.verified, restoredFiles: restored.restoredFiles };
+    return { verified: restored.verified, restoredFiles: restored.restoredFiles };
   });
 
   handle(STORAGE_IPC_CHANNELS.exportMeeting, async (_event: unknown, meetingId: unknown) => {
@@ -117,7 +132,7 @@ export function registerStorageIpc({ ipcMain, dialog, shell, runtime }: StorageI
     const destination = await chooseDirectory(dialog, "Choose where to export this meeting.");
     if (destination === null) return null;
     const created = await requireStore(runtime).exports.exportMeeting(meetingId, destination);
-    return { path: created.path, size: created.size };
+    return { size: created.size };
   });
 
   handle(STORAGE_IPC_CHANNELS.setAiProcessingPolicy, async (_event: unknown, policy: unknown) => {
@@ -128,23 +143,34 @@ export function registerStorageIpc({ ipcMain, dialog, shell, runtime }: StorageI
   });
 }
 
-function secureHandler(listener: (...args: unknown[]) => unknown): (...args: unknown[]) => unknown {
+function secureHandler(
+  listener: (...args: unknown[]) => unknown,
+  getAuthorizedWebContentsId: () => number | undefined,
+  getAuthorizedRendererUrl: () => string,
+): (...args: unknown[]) => unknown {
   return (event: unknown, ...args: unknown[]) => {
-    assertAuthorizedSender(event);
+    assertAuthorizedSender(event, getAuthorizedWebContentsId(), getAuthorizedRendererUrl());
     return listener(event, ...args);
   };
 }
 
-function assertAuthorizedSender(event: unknown): void {
+function assertAuthorizedSender(event: unknown, authorizedWebContentsId: number | undefined, authorizedRendererUrl: string): void {
   if (
+    authorizedWebContentsId === undefined ||
     typeof event !== "object" ||
     event === null ||
+    !("sender" in event) ||
+    typeof event.sender !== "object" ||
+    event.sender === null ||
+    !("id" in event.sender) ||
+    typeof event.sender.id !== "number" ||
+    event.sender.id !== authorizedWebContentsId ||
     !("senderFrame" in event) ||
     typeof event.senderFrame !== "object" ||
     event.senderFrame === null ||
     !("url" in event.senderFrame) ||
     typeof event.senderFrame.url !== "string" ||
-    !event.senderFrame.url.startsWith("file://")
+    event.senderFrame.url !== authorizedRendererUrl
   ) {
     throw new StorageError("Storage IPC request rejected: unauthorized renderer.");
   }
