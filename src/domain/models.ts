@@ -1,7 +1,32 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 2;
+export const DATABASE_SCHEMA_VERSION = 3;
 
-export type MeetingStatus = "PLANNED" | "RECORDING" | "COMPLETED" | "INCOMPLETE";
+export type MeetingStatus =
+  | "SCHEDULED"
+  | "DETECTED"
+  | "PREPARING"
+  | "RECORDING"
+  | "FINALIZING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "INCOMPLETE"
+  | "FAILED"
+  | "CANCELLED";
+
+/** Explicit lifecycle transitions. No implicit status changes are allowed. */
+export const MEETING_STATUS_TRANSITIONS: Readonly<Record<MeetingStatus, readonly MeetingStatus[]>> = {
+  SCHEDULED: ["DETECTED", "PREPARING", "PROCESSING", "INCOMPLETE", "CANCELLED", "FAILED"],
+  DETECTED: ["PREPARING", "CANCELLED", "FAILED"],
+  PREPARING: ["RECORDING", "CANCELLED", "FAILED", "INCOMPLETE"],
+  RECORDING: ["FINALIZING", "INCOMPLETE", "FAILED", "CANCELLED"],
+  FINALIZING: ["PROCESSING", "COMPLETED", "INCOMPLETE", "FAILED"],
+  PROCESSING: ["COMPLETED", "INCOMPLETE", "FAILED"],
+  COMPLETED: ["PROCESSING", "INCOMPLETE"],
+  INCOMPLETE: ["PREPARING", "FINALIZING", "PROCESSING", "FAILED", "CANCELLED"],
+  FAILED: ["PREPARING", "INCOMPLETE", "CANCELLED"],
+  CANCELLED: [],
+};
+
 
 export type ArtifactStatus =
   | "AVAILABLE"
@@ -82,6 +107,9 @@ export interface RecordingArtifactInput {
   sourcePath?: string;
   contents?: Uint8Array;
   expectedSha256?: string;
+  originalFilename?: string;
+  capturedAt?: string;
+  sourceMetadata?: Record<string, string | number | boolean | null>;
 }
 
 export interface TranscriptSpeaker {

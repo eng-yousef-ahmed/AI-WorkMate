@@ -47,6 +47,7 @@ DATA_ROOT/
     YYYY/
       MM/
         YYYY-MM-DD_Meeting-slug_UUID/
+          Meeting.json
           Recording/
             Original/
             Normalized/
@@ -102,7 +103,7 @@ The desktop renderer receives an allow-listed preload API, not `fs`, `path`, `ip
 
 Credentials are represented by an OS-encrypted vault adapter using Electron `safeStorage`/Windows DPAPI semantics and are never placed in meeting folders or DATA_ROOT backups. The AI abstraction supports local and injected cloud adapters. `LOCAL_ONLY`, `CLOUD_ALLOWED`, and `ASK_EACH_TIME` are checked before content is handed to a provider.
 
-The full AI path is intentionally not part of this phase: **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end.** Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
+Phase 3 adds strict meeting lifecycle transitions, real recording/transcript ingestion boundaries, and a provider-to-validated-analysis pipeline. The application still does not supply a capture engine, transcription engine, or AI provider; no fake content or external service is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
 
 ## Scope of this change
 

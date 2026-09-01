@@ -11,7 +11,8 @@ import type {
   TranscriptArtifacts,
   TranscriptDocument,
 } from "../domain/models";
-import { STORAGE_VERSION } from "../domain/models";
+import { STORAGE_VERSION, type TranscriptSegment } from "../domain/models";
+import type { AIProvider } from "../ai/AIProvider";
 import { BackupService } from "./BackupService";
 import { ExportService } from "./ExportService";
 import { LocalDatabase, type AuditRecord, type DuplicateMeetingKeys, type ParticipantRecord, type TranscriptRecord } from "./LocalDatabase";
@@ -43,6 +44,26 @@ export interface NewMeetingInput {
 
 export interface RecordingSaveOptions extends RecordingArtifactInput {
   complete?: boolean;
+}
+
+export interface RecordingIngestionRequest {
+  meetingId: string;
+  sourceType: "FILE" | "STREAM";
+  sourcePath: string;
+  originalFilename?: string;
+  mimeType: string;
+  capturedAt?: string;
+  startedAt?: string;
+  endedAt?: string;
+  size?: number;
+}
+
+export interface TranscriptIngestionRequest {
+  meetingId: string;
+  format: "PLAIN_TEXT" | "JSON" | "VTT" | "SRT";
+  content: string;
+  language: string;
+  createdAt?: string;
 }
 
 export interface TranscriptSaveOptions {
@@ -155,7 +176,7 @@ export class LocalFirstStore {
       meetingDate,
       createdAt: now,
       updatedAt: now,
-      status: input.status ?? "PLANNED",
+      status: input.status ?? "SCHEDULED",
       storageVersion: STORAGE_VERSION,
     };
     addOptional(meeting, "startedAt", startedAt);
@@ -232,8 +253,8 @@ export class LocalFirstStore {
       throw new DataRootValidationError("estimatedBytes must be a non-negative finite number.");
     }
     await this.storage.checkDiskSpace(estimatedBytes);
-    this.database.updateMeetingStatus(meeting.meetingId, "RECORDING");
-    this.database.appendAudit(this.audit("RECORDING_STARTED", meetingId, { estimatedBytes }));
+    this.transitionMeeting(meeting.meetingId, "PREPARING");
+    this.database.appendAudit(this.audit("RECORDING_PREPARED", meetingId, { estimatedBytes }));
     return { meetingId, estimatedBytes, status: "READY" };
   }
 
@@ -258,8 +279,39 @@ export class LocalFirstStore {
     this.database.appendAudit(this.audit("RECORDING_STOPPED_INCOMPLETE", meetingId, { reason }));
   }
 
+  /** Production capture boundary: only a real file supplied by a capture engine is accepted. */
+  public async ingestRecording(request: RecordingIngestionRequest): Promise<Artifact> {
+    if (request.sourceType !== "FILE") {
+      throw new StorageError("STREAM ingestion requires a capture adapter that materializes a verified file first.");
+    }
+    const extension = request.originalFilename?.split(".").pop() ?? mimeExtension(request.mimeType);
+    return this.saveRecording({
+      meetingId: request.meetingId, sourcePath: request.sourcePath, extension, mimeType: request.mimeType,
+      originalFilename: request.originalFilename, capturedAt: request.capturedAt,
+      sourceMetadata: { sourceType: request.sourceType, ...(request.size === undefined ? {} : { size: request.size }) },
+    });
+  }
+
+  /** Production transcription boundary; content is supplied by a real transcription engine. */
+  public async ingestTranscript(request: TranscriptIngestionRequest): Promise<TranscriptArtifacts> {
+    if (!request.content) throw new DataRootValidationError("Transcript content cannot be empty.");
+    const createdAt = request.createdAt ?? this.clock().toISOString();
+    let document: TranscriptDocument;
+    if (request.format === "JSON") {
+      document = JSON.parse(request.content) as TranscriptDocument;
+    } else {
+      const segment: TranscriptSegment = { segmentId: randomUUID(), startMs: 0, endMs: 0, text: request.content };
+      document = { meetingId: request.meetingId, speakers: [], timestamps: false, segments: [segment], language: request.language, createdAt };
+    }
+    if (document.meetingId !== request.meetingId) throw new DataRootValidationError("Transcript meeting ID does not match ingestion request.");
+    return this.saveTranscript(document, { includeVtt: request.format === "VTT", includeSrt: request.format === "SRT" });
+  }
+
   public async saveRecording(options: RecordingSaveOptions): Promise<Artifact> {
     const meeting = this.requireMeeting(options.meetingId);
+    if (meeting.status === "SCHEDULED" || meeting.status === "DETECTED") this.transitionMeeting(meeting.meetingId, "PREPARING");
+    if (this.getMeeting(meeting.meetingId)?.status === "PREPARING") this.transitionMeeting(meeting.meetingId, "RECORDING");
+    if (this.getMeeting(meeting.meetingId)?.status === "RECORDING") this.transitionMeeting(meeting.meetingId, "FINALIZING");
     const variant = options.variant ?? "ORIGINAL";
     const contents = options.contents;
     const sourcePath = options.sourcePath;
@@ -475,6 +527,24 @@ export class LocalFirstStore {
     };
   }
 
+  /** Runs the real provider boundary and persists only a validated result locally. */
+  public async processTranscriptWithProvider(document: TranscriptDocument, provider: AIProvider): Promise<AnalysisDocument> {
+    const meeting = this.requireMeeting(document.meetingId);
+    this.transitionMeeting(meeting.meetingId, "PROCESSING");
+    try {
+      const result = await provider.process({ meetingId: document.meetingId, purpose: "SUMMARY", content: JSON.stringify(document), language: document.language });
+      let analysis: AnalysisDocument;
+      try { analysis = JSON.parse(result.output) as AnalysisDocument; } catch { throw new StorageError("AI provider returned invalid analysis JSON; nothing was persisted."); }
+      if (analysis.meetingId !== document.meetingId) throw new StorageError("AI provider returned analysis for the wrong meeting.");
+      await this.saveAnalysis(analysis);
+      this.transitionMeeting(meeting.meetingId, "COMPLETED");
+      return analysis;
+    } catch (error) {
+      this.transitionMeeting(meeting.meetingId, "FAILED");
+      throw error;
+    }
+  }
+
   public async verifyStorage() {
     return this.integrity.verifyStorage();
   }
@@ -685,6 +755,10 @@ export class LocalFirstStore {
     }
   }
 
+  private transitionMeeting(meetingId: string, status: MeetingStatus): void {
+    this.database.updateMeetingStatus(meetingId, status);
+  }
+
   private requireDatabase(): LocalDatabase {
     if (!this.initialized) {
       throw new StorageError("LocalFirstStore.initialize() must be called before use.");
@@ -728,8 +802,8 @@ export class DenyAllApprovalEngine implements ApprovalEngine {
 }
 
 function validateTranscript(document: TranscriptDocument): void {
-  if (!document.language || !document.createdAt || document.timestamps !== true) {
-    throw new DataRootValidationError("A transcript must include language, createdAt, and timestamps.");
+  if (!document.language || !document.createdAt || typeof document.timestamps !== "boolean") {
+    throw new DataRootValidationError("A transcript must include language, createdAt, and a timestamp-presence flag.");
   }
   for (const segment of document.segments) {
     if (
@@ -812,4 +886,9 @@ function addOptional<T extends object, K extends keyof T>(object: T, key: K, val
 
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function mimeExtension(mimeType: string): string {
+  const extension = mimeType.split("/")[1]?.split(";")[0];
+  return extension && /^[a-z0-9]+$/i.test(extension) ? extension : "bin";
 }

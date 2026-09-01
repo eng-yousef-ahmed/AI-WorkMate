@@ -67,3 +67,8 @@ function formatBytes(bytes: number | null): string {
   }
   return `${bytes.toLocaleString("en-US")} bytes`;
 }
+
+
+export class InvalidMeetingTransitionError extends StorageError {
+  public readonly code = "INVALID_MEETING_TRANSITION";
+}

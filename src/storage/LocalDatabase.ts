@@ -12,9 +12,10 @@ import {
   type Decision,
   type Meeting,
   type MeetingStatus,
+  MEETING_STATUS_TRANSITIONS,
   type RecordingVariant,
 } from "../domain/models";
-import { DuplicateMeetingError, StorageError } from "./errors";
+import { DuplicateMeetingError, StorageError, InvalidMeetingTransitionError } from "./errors";
 
 export interface DuplicateMeetingKeys {
   providerMeetingId?: string;
@@ -112,7 +113,7 @@ CREATE TABLE IF NOT EXISTS meetings (
   updated_at TEXT NOT NULL,
   provider_meeting_id TEXT,
   calendar_event_id TEXT,
-  status TEXT NOT NULL CHECK (status IN ('PLANNED', 'RECORDING', 'COMPLETED', 'INCOMPLETE')),
+  status TEXT NOT NULL CHECK (status IN ('SCHEDULED', 'DETECTED', 'PREPARING', 'RECORDING', 'FINALIZING', 'PROCESSING', 'COMPLETED', 'INCOMPLETE', 'FAILED', 'CANCELLED')),
   storage_version INTEGER NOT NULL,
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
@@ -392,6 +393,11 @@ export class LocalDatabase {
   }
 
   public updateMeetingStatus(meetingId: string, status: MeetingStatus, endedAt?: string): void {
+    const meeting = this.getMeeting(meetingId);
+    if (meeting === undefined) throw new StorageError(`Meeting not found: ${meetingId}`);
+    if (meeting.status !== status && !isValidMeetingTransition(meeting.status, status)) {
+      throw new InvalidMeetingTransitionError(`Invalid meeting transition: ${meeting.status} -> ${status}`);
+    }
     this.database
       .prepare(
         "UPDATE meetings SET status = $status, ended_at = COALESCE($endedAt, ended_at), updated_at = $updatedAt WHERE meeting_id = $meetingId",
@@ -877,6 +883,11 @@ export class LocalDatabase {
       );
     }
     if (currentVersion < DATABASE_SCHEMA_VERSION) {
+      if (currentVersion > 0 && currentVersion < 3) {
+        this.database.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE; ALTER TABLE meetings RENAME TO meetings_legacy;" +
+          SCHEMA_SQL.match(/CREATE TABLE IF NOT EXISTS meetings \([\s\S]*?\);/)?.[0].replace("meetings", "meetings") +
+          "INSERT INTO meetings SELECT * FROM meetings_legacy; DROP TABLE meetings_legacy; COMMIT; PRAGMA foreign_keys = ON;");
+      }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
         .run({ $version: DATABASE_SCHEMA_VERSION, $appliedAt: this.clock().toISOString() });
@@ -978,4 +989,8 @@ function numberValue(value: SqlValue | undefined): number {
 
 function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Error && error.message.toLowerCase().includes("unique constraint");
+}
+
+function isValidMeetingTransition(from: MeetingStatus, to: MeetingStatus): boolean {
+  return MEETING_STATUS_TRANSITIONS[from].includes(to);
 }

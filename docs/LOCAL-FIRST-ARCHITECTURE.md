@@ -76,3 +76,12 @@ Backups are standard ZIP files with a consistent SQLite snapshot, storage metada
 - `ASK_EACH_TIME`: a cloud request requires explicit approval.
 
 Provider responses are written through the local store when the application chooses to persist them. **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end in this phase.** Automatic transcription, provider invocation, and analysis persistence are deliberately deferred; no provider is allowed to become the primary database.
+
+
+## Meeting lifecycle contract (Phase 3)
+
+The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. A recording saved through the compatibility storage method advances through the recording/finalization states; capture engines should use `prepareRecording()` and `ingestRecording()` at the handoff boundary.
+
+`ingestRecording()` accepts a real, already-materialized source file plus source type, MIME, original filename, timestamps, and optional size. It does not create bytes. `ingestTranscript()` accepts real plain text or structured JSON (and records requested VTT/SRT derivatives) and does not transcribe. `processTranscriptWithProvider()` invokes the existing `AIProvider`, validates meeting identity and analysis JSON, then calls `saveAnalysis()`; provider errors leave a non-success state.
+
+The canonical per-meeting layout is `Meetings/YYYY/MM/YYYY-MM-DD_<slug>_<UUID>/` containing `Meeting.json`, `Recording/Original`, `Recording/Normalized`, `Audio`, `Transcript`, `Analysis`, `Attachments`, and `Exports`. Every indexed artifact path is under its owning folder and includes the UUID where a filename is generated.
