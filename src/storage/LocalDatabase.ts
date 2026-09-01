@@ -16,6 +16,8 @@ import {
   type MeetingStatus,
   MEETING_STATUS_TRANSITIONS,
   type MeetingPlatform,
+  type RecordingFinalStatus,
+  type RecordingMetadata,
   type RecordingVariant,
 } from "../domain/models";
 import { DuplicateMeetingError, StorageError, InvalidMeetingTransitionError } from "./errors";
@@ -87,6 +89,8 @@ export interface ArtifactOperationUpdate {
   size?: number;
   error?: string;
 }
+
+export type RecordingRecord = RecordingMetadata;
 
 type SqlValue = string | number | bigint | Uint8Array | null;
 type SqlRow = Record<string, SqlValue>;
@@ -210,7 +214,16 @@ CREATE TABLE IF NOT EXISTS recordings (
   meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id) ON DELETE CASCADE,
   artifact_id TEXT NOT NULL UNIQUE REFERENCES artifacts(file_id) ON DELETE RESTRICT,
   recording_variant TEXT NOT NULL CHECK (recording_variant IN ('ORIGINAL', 'NORMALIZED')),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  format TEXT,
+  capture_started_at TEXT,
+  capture_ended_at TEXT,
+  duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+  byte_size INTEGER CHECK (byte_size IS NULL OR byte_size >= 0),
+  sha256 TEXT,
+  relative_path TEXT,
+  capture_source TEXT,
+  final_status TEXT CHECK (final_status IS NULL OR final_status IN ('COMMITTED', 'INCOMPLETE', 'FAILED'))
 );
 CREATE INDEX IF NOT EXISTS recordings_meeting_index ON recordings(meeting_id);
 
@@ -672,6 +685,13 @@ export class LocalDatabase {
       });
   }
 
+  public getArtifactOperation(operationId: string): ArtifactOperation | undefined {
+    const row = this.database
+      .prepare("SELECT * FROM artifact_operations WHERE operation_id = $operationId")
+      .get({ $operationId: operationId }) as SqlRow | undefined;
+    return row === undefined ? undefined : mapArtifactOperation(row);
+  }
+
   public listArtifactOperations(): ArtifactOperation[] {
     const rows = this.database.prepare("SELECT * FROM artifact_operations ORDER BY created_at").all();
     return rows.map((row) => mapArtifactOperation(row as SqlRow));
@@ -716,19 +736,44 @@ export class LocalDatabase {
       });
   }
 
-  public registerRecording(
-    recordingId: string,
-    meetingId: string,
-    artifactId: string,
-    recordingVariant: RecordingVariant,
-    createdAt: string,
-  ): void {
+  public registerRecording(record: RecordingRecord): void {
     this.database
       .prepare(
-        `INSERT INTO recordings (recording_id, meeting_id, artifact_id, recording_variant, created_at)
-         VALUES ($recordingId, $meetingId, $artifactId, $recordingVariant, $createdAt)`,
+        `INSERT INTO recordings (
+          recording_id, meeting_id, artifact_id, recording_variant, created_at,
+          format, capture_started_at, capture_ended_at, duration_ms, byte_size,
+          sha256, relative_path, capture_source, final_status
+        ) VALUES (
+          $recordingId, $meetingId, $artifactId, $recordingVariant, $createdAt,
+          $format, $captureStartedAt, $captureEndedAt, $durationMs, $byteSize,
+          $sha256, $relativePath, $captureSource, $finalStatus
+        )`,
       )
-      .run({ $recordingId: recordingId, $meetingId: meetingId, $artifactId: artifactId, $recordingVariant: recordingVariant, $createdAt: createdAt });
+      .run({
+        $recordingId: record.recordingId,
+        $meetingId: record.meetingId,
+        $artifactId: record.artifactId,
+        $recordingVariant: record.recordingVariant,
+        $createdAt: record.createdAt,
+        $format: record.format ?? null,
+        $captureStartedAt: record.captureStartedAt ?? null,
+        $captureEndedAt: record.captureEndedAt ?? null,
+        $durationMs: record.durationMs ?? null,
+        $byteSize: record.byteSize ?? null,
+        $sha256: record.sha256 ?? null,
+        $relativePath: record.relativePath ?? null,
+        $captureSource: record.captureSource ?? null,
+        $finalStatus: record.finalStatus ?? null,
+      });
+  }
+
+  public listRecordings(meetingId?: string): RecordingRecord[] {
+    const rows = meetingId === undefined
+      ? this.database.prepare("SELECT * FROM recordings ORDER BY created_at").all()
+      : this.database
+          .prepare("SELECT * FROM recordings WHERE meeting_id = $meetingId ORDER BY created_at")
+          .all({ $meetingId: meetingId });
+    return rows.map((row) => mapRecording(row as SqlRow));
   }
 
   public registerTranscript(record: TranscriptRecord): void {
@@ -1007,10 +1052,34 @@ export class LocalDatabase {
           SCHEMA_SQL.match(/CREATE TABLE IF NOT EXISTS meetings \([\s\S]*?\);/)?.[0].replace("meetings", "meetings") +
           "INSERT INTO meetings SELECT * FROM meetings_legacy; DROP TABLE meetings_legacy; COMMIT; PRAGMA foreign_keys = ON;");
       }
+      if (currentVersion > 0 && currentVersion < 5) {
+        this.applyRecordingMetadataMigration();
+      }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
         .run({ $version: DATABASE_SCHEMA_VERSION, $appliedAt: this.clock().toISOString() });
     }
+  }
+
+  private applyRecordingMetadataMigration(): void {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(recordings)").all() as SqlRow[])
+        .map((row) => stringValue(row.name)),
+    );
+    const addColumn = (name: string, definition: string): void => {
+      if (!columns.has(name)) {
+        this.database.exec(`ALTER TABLE recordings ADD COLUMN ${definition};`);
+      }
+    };
+    addColumn("format", "format TEXT");
+    addColumn("capture_started_at", "capture_started_at TEXT");
+    addColumn("capture_ended_at", "capture_ended_at TEXT");
+    addColumn("duration_ms", "duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0)");
+    addColumn("byte_size", "byte_size INTEGER CHECK (byte_size IS NULL OR byte_size >= 0)");
+    addColumn("sha256", "sha256 TEXT");
+    addColumn("relative_path", "relative_path TEXT");
+    addColumn("capture_source", "capture_source TEXT");
+    addColumn("final_status", "final_status TEXT CHECK (final_status IS NULL OR final_status IN ('COMMITTED', 'INCOMPLETE', 'FAILED'))");
   }
 
   private ensureOpen(): void {
@@ -1018,6 +1087,29 @@ export class LocalDatabase {
       throw new StorageError("The local database is closed.");
     }
   }
+}
+
+
+function mapRecording(row: SqlRow): RecordingRecord {
+  const record: RecordingRecord = {
+    recordingId: stringValue(row.recording_id),
+    meetingId: stringValue(row.meeting_id),
+    artifactId: stringValue(row.artifact_id),
+    recordingVariant: stringValue(row.recording_variant) as RecordingVariant,
+    createdAt: stringValue(row.created_at),
+  };
+  addOptional(record, "format", optionalString(row.format));
+  addOptional(record, "captureStartedAt", optionalString(row.capture_started_at));
+  addOptional(record, "captureEndedAt", optionalString(row.capture_ended_at));
+  const durationMs = row.duration_ms === undefined || row.duration_ms === null ? undefined : numberValue(row.duration_ms);
+  const byteSize = row.byte_size === undefined || row.byte_size === null ? undefined : numberValue(row.byte_size);
+  addOptional(record, "durationMs", durationMs);
+  addOptional(record, "byteSize", byteSize);
+  addOptional(record, "sha256", optionalString(row.sha256));
+  addOptional(record, "relativePath", optionalString(row.relative_path));
+  addOptional(record, "captureSource", optionalString(row.capture_source));
+  addOptional(record, "finalStatus", optionalString(row.final_status) as RecordingFinalStatus | undefined);
+  return record;
 }
 
 function mapCalendarEventAssociation(row: SqlRow): CalendarEventAssociation {

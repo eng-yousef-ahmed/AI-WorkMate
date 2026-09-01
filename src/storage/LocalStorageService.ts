@@ -95,6 +95,12 @@ export interface StorageTreeEntry {
   modifiedAt: string;
 }
 
+export interface StagedArtifactWrite {
+  relativePath: string;
+  absolutePath: string;
+  temporaryPath: string;
+}
+
 export type StorageMigrationPhase = "COPYING" | "VERIFIED" | "ACTIVATING" | "ACTIVATED" | "RUNTIME_SWITCHED";
 export type StorageMigrationPhaseHandler = (phase: StorageMigrationPhase) => Promise<void>;
 
@@ -420,6 +426,64 @@ export class LocalStorageService {
     }
   }
 
+  public async beginStagedArtifactWrite(relativePath: string): Promise<StagedArtifactWrite> {
+    const safePath = this.assertRelativePath(relativePath);
+    const destination = this.absolutePathFor(safePath);
+    await mkdir(dirname(destination), { recursive: true });
+    if (await pathExists(destination)) {
+      throw new DataRootValidationError(`Refusing to overwrite an existing artifact: ${safePath}`);
+    }
+    const temporaryPath = `${destination}.tmp-${randomUUID()}`;
+    const handle = await open(temporaryPath, "wx", 0o600);
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    return { relativePath: safePath, absolutePath: destination, temporaryPath };
+  }
+
+  public async appendToStagedArtifact(stage: StagedArtifactWrite, chunk: Uint8Array): Promise<void> {
+    this.assertValidStage(stage);
+    if (chunk.byteLength === 0) {
+      throw new DataRootValidationError("A staged artifact chunk cannot be empty.");
+    }
+    const handle = await open(stage.temporaryPath, "a", 0o600);
+    try {
+      await handle.writeFile(chunk);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  public async finalizeStagedArtifact(stage: StagedArtifactWrite, expectedSha256?: string): Promise<FileVerification> {
+    this.assertValidStage(stage);
+    if (await pathExists(stage.absolutePath)) {
+      throw new DataRootValidationError(`Refusing to overwrite an existing artifact: ${stage.relativePath}`);
+    }
+    const temporaryVerification = await this.inspectAbsoluteFile(stage.temporaryPath);
+    if (!temporaryVerification.exists || temporaryVerification.actualSha256 === undefined) {
+      throw new MigrationVerificationError(`Temporary artifact could not be verified before rename: ${stage.relativePath}`);
+    }
+    if (expectedSha256 !== undefined && temporaryVerification.actualSha256 !== expectedSha256.toLowerCase()) {
+      throw new MigrationVerificationError(`Temporary artifact hash did not match expected SHA-256: ${stage.relativePath}`);
+    }
+    await rename(stage.temporaryPath, stage.absolutePath);
+    await syncDirectory(dirname(stage.absolutePath));
+    const finalVerification = await this.inspectFile(stage.relativePath, expectedSha256);
+    if (finalVerification.status !== "AVAILABLE" || finalVerification.sha256 === undefined || finalVerification.modifiedAt === undefined) {
+      throw new MigrationVerificationError(`Artifact could not be verified after finalizing staged write: ${stage.relativePath}`);
+    }
+    return finalVerification;
+  }
+
+  public async discardStagedArtifact(stage: StagedArtifactWrite): Promise<void> {
+    this.assertValidStage(stage);
+    await rm(stage.temporaryPath, { force: true }).catch(() => undefined);
+    await syncDirectory(dirname(stage.temporaryPath)).catch(() => undefined);
+  }
+
   public async exists(relativePath: string): Promise<boolean> {
     return pathExists(this.absolutePathFor(relativePath));
   }
@@ -725,6 +789,17 @@ export class LocalStorageService {
         `Data migration was not completed: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
+    }
+  }
+
+  private assertValidStage(stage: StagedArtifactWrite): void {
+    const safePath = this.assertRelativePath(stage.relativePath);
+    const destination = this.absolutePathFor(safePath);
+    if (stage.absolutePath !== destination || !stage.temporaryPath.startsWith(`${destination}.tmp-`)) {
+      throw new UnsafePathError(stage.relativePath);
+    }
+    if (!isPathInside(this.dataRoot, stage.temporaryPath)) {
+      throw new UnsafePathError(stage.temporaryPath);
     }
   }
 

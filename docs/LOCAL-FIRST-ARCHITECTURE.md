@@ -23,6 +23,8 @@ Electron main process
    │     └── local audit and artifact-operation journals
    ├── CalendarSyncService
    │     └── MicrosoftGraphCalendarProvider / MicrosoftGraphClient (auth + transport injected)
+   ├── LocalRecordingCaptureEngine
+   │     └── LocalStorageService staged writes + LocalFirstStore journal commit
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```
@@ -37,7 +39,7 @@ The Linux-runnable tests exercise the pure security policy and IPC authorization
 
 ## Database/filesystem contract
 
-SQLite indexes relationships, calendar associations, and metadata. Filesystem artifacts hold large media and portable user-visible formats. An artifact is complete only when:
+SQLite indexes relationships, calendar associations, recording metadata, and artifact metadata. Filesystem artifacts hold large media and portable user-visible formats. An artifact is complete only when:
 
 1. a durable SQLite `artifact_operations` row is recorded as `STARTED` and then `WRITING`;
 2. a same-directory temporary file has been written, flushed, and hash-verified;
@@ -45,13 +47,21 @@ SQLite indexes relationships, calendar associations, and metadata. Filesystem ar
 4. the journal reaches `FINALIZING`; and
 5. the artifact and relationship rows plus the journal reach `COMMITTED` in one SQLite transaction.
 
-The journal also records `FAILED` and `INCOMPLETE`. On restart, pending operations are verified. A valid indexed file can be completed as `COMMITTED`; an ambiguous final or temporary file is retained, marked/reportable as incomplete or orphaned, and is not silently imported. If a user deletes or modifies a file, the next verification marks the row `MISSING` or `CORRUPTED`. Calendar discovery metadata is held in `calendar_event_associations` and keyed by `(provider, external_event_id)`, so a Microsoft Graph event maps to an internal meeting UUID without replacing that UUID.
+The journal also records `FAILED` and `INCOMPLETE`. SQLite schema version 5 records safe committed-recording metadata — recording/file UUIDs, meeting UUID, container/format, capture start/end/duration, byte size, SHA-256, relative path, capture source/adapter, and final status — without storing recording bytes. On restart, pending operations are verified. A valid indexed file can be completed as `COMMITTED`; an ambiguous final or temporary file is retained, marked/reportable as incomplete or orphaned, and is not silently imported. If a user deletes or modifies a file, the next verification marks the row `MISSING` or `CORRUPTED`. Calendar discovery metadata is held in `calendar_event_associations` and keyed by `(provider, external_event_id)`, so a Microsoft Graph event maps to an internal meeting UUID without replacing that UUID.
 
 A meeting still marked `RECORDING` when the application opens is safely changed to `INCOMPLETE`. Recovery reports known orphans, temporary recordings, unknown meeting-shaped folders, invalid manifests, missing databases, and missing/corrupt artifacts. Unknown data is preserved. Re-indexing is limited to orphaned files inside a folder whose meeting ID is already known in SQLite; no meeting record is invented from an unknown folder.
 
+## Local recording/capture boundary (Phase 5)
+
+`CaptureEngine` is the Phase 5 abstraction for local recording ownership. It starts capture by internal meeting UUID, exposes state/error snapshots, accepts controlled binary chunks or async/iterable streams, finalizes once, and aborts safely. The interface does not accept caller output paths. `LocalRecordingCaptureEngine` is the local Windows-suitable file-backed adapter for bytes supplied by a future real capture source; it does not automate Teams, Zoom, Google Meet, browsers, microphones, speakers, or screen capture.
+
+The adapter enforces exactly one active capture per meeting and rejects wrong-meeting writes/finalization, duplicate finalization, writes after finalization, empty or non-binary chunks, unsafe container extensions/MIME types, and out-of-order explicit chunk sequences. It keeps absolute temp/final paths inside `LocalStorageService` and returns only safe metadata such as meeting UUID, capture ID, state, byte/chunk counts, relative path, SHA-256, and journaled error information.
+
+Capture writes use the same storage guarantees as other artifacts: same-directory `.tmp-*` files, exclusive temp creation, per-chunk file sync, pre-rename SHA-256 verification, atomic rename, directory sync, post-rename SHA-256 verification, and SQLite indexing only after finalization succeeds. Successful capture commit moves the meeting through `FINALIZING` to `PROCESSING`. Abort, insufficient/unknown disk space, and monitor critical-space safe-stop mark the capture and meeting `INCOMPLETE`; finalization/storage failures mark them `FAILED`. Restart recovery leaves interrupted captures incomplete/reportable and never silently completes partial `.tmp-*` recordings.
+
 ## Disk and path safety
 
-Recording preflight requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During an active recording, the monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
+Recording/capture preflight requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During active capture, each chunk is checked through the same disk-space boundary before append. The monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
 
 The data-root policy rejects the application installation directory and boundary-aware Windows protected roots including `Program Files`, `Program Files (x86)`, `Windows`, `WindowsApps`, `ProgramData`, common program-file roots, and environment-derived system roots. Windows-style policy cases run on Linux; actual Windows ACL, path, and disk behavior still requires a Windows host.
 
@@ -103,7 +113,7 @@ Provider responses are written through the local store when the application choo
 
 ## Meeting lifecycle contract (Phase 3)
 
-The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. A recording saved through the compatibility storage method advances through the recording/finalization states; capture engines should use `prepareRecording()` and `ingestRecording()` at the handoff boundary.
+The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 capture adapter starts from scheduled/detected meetings through the recording path and commits completed local captures to `PROCESSING` for future transcription/AI work. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
 
 `ingestRecording()` accepts a real, already-materialized source file plus source type, MIME, original filename, timestamps, and optional size. It does not create bytes. `ingestTranscript()` accepts real plain text or structured JSON (and records requested VTT/SRT derivatives) and does not transcribe. `processTranscriptWithProvider()` invokes the existing `AIProvider`, validates meeting identity and analysis JSON, then calls `saveAnalysis()`; provider errors leave a non-success state.
 

@@ -9,6 +9,7 @@ import type {
   Meeting,
   MeetingStatus,
   RecordingArtifactInput,
+  RecordingVariant,
   StorageStats,
   TranscriptArtifacts,
   TranscriptDocument,
@@ -27,6 +28,7 @@ import {
   LocalStorageService,
   slugify,
   type ArtifactWriteRequest,
+  type FileVerification,
   type LocalStorageServiceOptions,
   type StorageMigrationPhaseHandler,
 } from "./LocalStorageService";
@@ -102,6 +104,40 @@ export interface RecordingReservation {
   meetingId: string;
   estimatedBytes: number;
   status: "READY";
+}
+
+export interface RecordingCaptureStartInput {
+  meetingId: string;
+  extension: string;
+  mimeType: string;
+  estimatedBytes?: number;
+  captureSource: string;
+  startedAt?: string;
+  recordingVariant?: RecordingVariant;
+}
+
+export interface RecordingCaptureOperation {
+  operationId: string;
+  meetingId: string;
+  relativePath: string;
+  extension: string;
+  mimeType: string;
+  captureSource: string;
+  startedAt: string;
+  recordingVariant: RecordingVariant;
+}
+
+export interface RecordingCaptureCommitInput extends RecordingCaptureOperation {
+  verification: FileVerification & { sha256: string; modifiedAt: string };
+  endedAt: string;
+  durationMs?: number;
+}
+
+export interface RecordingCaptureFailureInput {
+  meetingId: string;
+  operationId: string;
+  reason: string;
+  failed?: boolean;
 }
 
 /**
@@ -367,6 +403,149 @@ export class LocalFirstStore {
     return { meetingId, estimatedBytes, status: "READY" };
   }
 
+  public async beginRecordingCapture(input: RecordingCaptureStartInput): Promise<RecordingCaptureOperation> {
+    const meeting = this.requireMeeting(input.meetingId);
+    const estimatedBytes = input.estimatedBytes ?? 0;
+    if (!Number.isFinite(estimatedBytes) || estimatedBytes < 0) {
+      throw new DataRootValidationError("estimatedBytes must be a non-negative finite number.");
+    }
+    try {
+      await this.storage.checkDiskSpace(estimatedBytes);
+    } catch (error: unknown) {
+      this.transitionCaptureFailure(meeting.meetingId, true);
+      this.database.appendAudit(this.audit("CAPTURE_PREFLIGHT_FAILED", meeting.meetingId, {
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+      throw error;
+    }
+
+    const recordingVariant = input.recordingVariant ?? "ORIGINAL";
+    const artifactType = recordingVariant === "ORIGINAL" ? "RECORDING_ORIGINAL" : "RECORDING_NORMALIZED";
+    const relativePath = this.storage.buildArtifactRelativePath(meeting, artifactType, input.extension);
+    const operation: ArtifactOperation = {
+      operationId: randomUUID(),
+      meetingId: meeting.meetingId,
+      relativePath,
+      artifactType,
+      state: "STARTED",
+      createdAt: this.clock().toISOString(),
+      updatedAt: this.clock().toISOString(),
+    };
+    const startedAt = input.startedAt ?? this.clock().toISOString();
+    this.database.transaction(() => {
+      this.transitionMeetingForCaptureStart(meeting.meetingId);
+      this.database.startArtifactOperation(operation);
+      this.database.appendAudit(this.audit("CAPTURE_STARTED", meeting.meetingId, {
+        operationId: operation.operationId,
+        relativePath,
+        captureSource: input.captureSource,
+      }));
+    });
+    return {
+      operationId: operation.operationId,
+      meetingId: meeting.meetingId,
+      relativePath,
+      extension: input.extension,
+      mimeType: input.mimeType,
+      captureSource: input.captureSource,
+      startedAt,
+      recordingVariant,
+    };
+  }
+
+  public markRecordingCaptureWriting(operationId: string): void {
+    const operation = this.requireArtifactOperation(operationId);
+    if (operation.state !== "STARTED") {
+      throw new StorageError(`Capture operation ${operationId} cannot move to WRITING from ${operation.state}.`);
+    }
+    this.database.updateArtifactOperation(operationId, { state: "WRITING" });
+  }
+
+  public commitRecordingCapture(input: RecordingCaptureCommitInput): Artifact {
+    const meeting = this.requireMeeting(input.meetingId);
+    const operation = this.requireArtifactOperation(input.operationId);
+    const expectedType = input.recordingVariant === "ORIGINAL" ? "RECORDING_ORIGINAL" : "RECORDING_NORMALIZED";
+    if (operation.meetingId !== meeting.meetingId || operation.relativePath !== input.relativePath || operation.artifactType !== expectedType) {
+      throw new StorageError("Capture operation does not match the meeting-owned recording artifact.");
+    }
+    if (operation.state !== "WRITING" && operation.state !== "FINALIZING") {
+      throw new StorageError(`Capture operation ${operation.operationId} cannot be committed from ${operation.state}.`);
+    }
+    if (input.verification.status !== "AVAILABLE") {
+      throw new StorageError(`Capture artifact is not available for commit: ${input.verification.status}.`);
+    }
+    const now = this.clock().toISOString();
+    const artifact: Artifact = {
+      fileId: randomUUID(),
+      meetingId: meeting.meetingId,
+      relativePath: input.relativePath,
+      artifactType: expectedType,
+      mimeType: input.mimeType,
+      size: input.verification.size,
+      createdAt: now,
+      modifiedAt: input.verification.modifiedAt,
+      sha256: input.verification.sha256,
+      status: "AVAILABLE",
+      recordingVariant: input.recordingVariant,
+    };
+    this.database.transaction(() => {
+      this.database.updateMeetingStatus(meeting.meetingId, "FINALIZING");
+      this.database.registerArtifact(artifact);
+      this.database.registerRecording({
+        recordingId: randomUUID(),
+        meetingId: meeting.meetingId,
+        artifactId: artifact.fileId,
+        recordingVariant: input.recordingVariant,
+        createdAt: now,
+        format: input.extension,
+        captureStartedAt: input.startedAt,
+        captureEndedAt: input.endedAt,
+        durationMs: input.durationMs,
+        byteSize: artifact.size,
+        sha256: artifact.sha256,
+        relativePath: artifact.relativePath,
+        captureSource: input.captureSource,
+        finalStatus: "COMMITTED",
+      });
+      this.database.updateArtifactOperation(input.operationId, {
+        state: "FINALIZING",
+        fileId: artifact.fileId,
+        actualSha256: artifact.sha256,
+        size: artifact.size,
+      });
+      this.database.updateArtifactOperation(input.operationId, { state: "COMMITTED" });
+      this.database.updateMeetingStatus(meeting.meetingId, "PROCESSING");
+      this.database.appendAudit(this.audit("CAPTURE_COMMITTED", meeting.meetingId, {
+        operationId: input.operationId,
+        fileId: artifact.fileId,
+        sha256: artifact.sha256,
+        size: artifact.size,
+      }));
+    });
+    return artifact;
+  }
+
+  public failRecordingCapture(input: RecordingCaptureFailureInput): void {
+    const operation = this.requireArtifactOperation(input.operationId);
+    if (operation.meetingId !== input.meetingId) {
+      throw new StorageError("Capture failure does not match the meeting-owned recording operation.");
+    }
+    if (operation.state === "COMMITTED") {
+      throw new StorageError("A committed capture operation cannot be failed.");
+    }
+    this.database.transaction(() => {
+      this.database.updateArtifactOperation(input.operationId, {
+        state: input.failed === true ? "FAILED" : "INCOMPLETE",
+        error: input.reason,
+      });
+      this.transitionCaptureFailure(input.meetingId, input.failed === true);
+      this.database.appendAudit(this.audit(input.failed === true ? "CAPTURE_FAILED" : "CAPTURE_INCOMPLETE", input.meetingId, {
+        operationId: input.operationId,
+        reason: input.reason,
+      }));
+    });
+  }
+
   public createRecordingDiskMonitor(
     meetingId: string,
     options: RecordingDiskMonitorOptions,
@@ -455,9 +634,26 @@ export class LocalFirstStore {
       },
       false,
       (artifact) => {
-        this.database.registerRecording(randomUUID(), meeting.meetingId, artifact.fileId, variant, this.clock().toISOString());
         const preserveIncomplete = this.database.getMeeting(meeting.meetingId)?.status === "INCOMPLETE";
         const incomplete = options.complete === false || preserveIncomplete;
+        const recordingCreatedAt = this.clock().toISOString();
+        const metadata = options.sourceMetadata ?? {};
+        this.database.registerRecording({
+          recordingId: randomUUID(),
+          meetingId: meeting.meetingId,
+          artifactId: artifact.fileId,
+          recordingVariant: variant,
+          createdAt: recordingCreatedAt,
+          format: options.extension,
+          captureStartedAt: stringMetadata(metadata.captureStartedAt) ?? options.capturedAt,
+          captureEndedAt: stringMetadata(metadata.captureEndedAt),
+          durationMs: numberMetadata(metadata.durationMs),
+          byteSize: artifact.size,
+          sha256: artifact.sha256,
+          relativePath: artifact.relativePath,
+          captureSource: stringMetadata(metadata.captureSource) ?? stringMetadata(metadata.sourceType) ?? (options.sourcePath === undefined ? "MEMORY" : "FILE"),
+          finalStatus: incomplete ? "INCOMPLETE" : "COMMITTED",
+        });
         this.database.updateMeetingStatus(meeting.meetingId, incomplete ? "INCOMPLETE" : "COMPLETED");
         this.database.appendAudit(
           this.audit(incomplete ? "RECORDING_STOPPED_INCOMPLETE" : "RECORDING_STOPPED", meeting.meetingId, {
@@ -868,6 +1064,60 @@ export class LocalFirstStore {
     this.database.updateMeetingStatus(meetingId, status);
   }
 
+  private transitionMeetingForCaptureStart(meetingId: string): void {
+    const meeting = this.database.getMeeting(meetingId);
+    if (meeting === undefined) {
+      throw new StorageError(`Meeting not found: ${meetingId}`);
+    }
+    switch (meeting.status) {
+      case "SCHEDULED":
+        this.database.updateMeetingStatus(meetingId, "DETECTED");
+        this.database.updateMeetingStatus(meetingId, "PREPARING");
+        this.database.updateMeetingStatus(meetingId, "RECORDING");
+        return;
+      case "DETECTED":
+        this.database.updateMeetingStatus(meetingId, "PREPARING");
+        this.database.updateMeetingStatus(meetingId, "RECORDING");
+        return;
+      case "INCOMPLETE":
+      case "FAILED":
+        this.database.updateMeetingStatus(meetingId, "PREPARING");
+        this.database.updateMeetingStatus(meetingId, "RECORDING");
+        return;
+      case "PREPARING":
+        this.database.updateMeetingStatus(meetingId, "RECORDING");
+        return;
+      default:
+        throw new StorageError(`Cannot start capture while meeting ${meetingId} is ${meeting.status}.`);
+    }
+  }
+
+  private transitionCaptureFailure(meetingId: string, failed: boolean): void {
+    const meeting = this.database.getMeeting(meetingId);
+    if (meeting === undefined) {
+      return;
+    }
+    const target: MeetingStatus = failed ? "FAILED" : "INCOMPLETE";
+    if (meeting.status === target || meeting.status === "CANCELLED") {
+      return;
+    }
+    try {
+      this.database.updateMeetingStatus(meetingId, target);
+    } catch {
+      if (!failed && meeting.status !== "FAILED") {
+        this.database.updateMeetingStatus(meetingId, "FAILED");
+      }
+    }
+  }
+
+  private requireArtifactOperation(operationId: string): ArtifactOperation {
+    const operation = this.database.getArtifactOperation(operationId);
+    if (operation === undefined) {
+      throw new StorageError(`Artifact operation not found: ${operationId}`);
+    }
+    return operation;
+  }
+
   private requireDatabase(): LocalDatabase {
     if (!this.initialized) {
       throw new StorageError("LocalFirstStore.initialize() must be called before use.");
@@ -1025,6 +1275,20 @@ function analysisToMarkdown(document: AnalysisDocument): string {
     section("Questions", document.questions),
     section("Follow-ups", document.followups),
   ].join("\n");
+}
+
+function stringMetadata(value: string | number | boolean | null | undefined): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return String(value);
+}
+
+function numberMetadata(value: string | number | boolean | null | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return value;
 }
 
 function addOptional<T extends object, K extends keyof T>(object: T, key: K, value: T[K] | undefined): void {

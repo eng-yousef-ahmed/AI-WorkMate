@@ -20,3 +20,5 @@ export * from "./calendar/MeetingPlatformDetector";
 export * from "./integrations/microsoft/MicrosoftAuth";
 export * from "./integrations/microsoft/MicrosoftGraphClient";
 export * from "./integrations/microsoft/MicrosoftGraphCalendarProvider";
+export * from "./capture/CaptureEngine";
+export * from "./capture/LocalRecordingCaptureEngine";

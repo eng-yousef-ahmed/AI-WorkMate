@@ -2,8 +2,8 @@
 
 Updated: 2026-09-01
 
-This checkout hardens the existing local-first storage foundation and adds the Phase 4 Microsoft 365 calendar discovery integration layer. It does not
-implement the full meeting engine or AI pipeline. The persistent meeting store
+This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, and implements the Phase 5 local recording/capture boundary. It does not
+implement real Teams/Zoom/Google Meet/browser/audio/video automation, transcription, or the full AI pipeline. The persistent meeting store
 remains local SQLite plus filesystem artifacts; that does **not** mean that an
 explicitly approved cloud AI request is local.
 
@@ -18,13 +18,25 @@ explicitly approved cloud AI request is local.
 
 ## IMPLEMENTED
 
+## PHASE 5 local recording/capture boundary
+
+- **IMPLEMENTED / TESTED:** `CaptureEngine` and `LocalRecordingCaptureEngine` provide a local capture boundary with `startCapture()`, `getCaptureState()`, `appendChunk()`, `appendStream()`, `finalizeCapture()`, and `abortCapture()` operations keyed by the internal meeting UUID. They expose state and structured error metadata without exposing absolute filesystem paths.
+- **IMPLEMENTED / TESTED:** The local adapter enforces exactly one active capture owner per meeting, rejects wrong-meeting writes/finalization/abort, rejects duplicate finalization and writes after finalization, rejects empty or non-binary chunks, rejects unsafe format/MIME values, rejects out-of-order explicit chunk sequences, and rejects caller-supplied `outputPath`/`sourcePath`/`relativePath` values.
+- **IMPLEMENTED / TESTED:** Recording capture bytes are staged only through `LocalStorageService` and committed only through `LocalFirstStore`. Staged writes use same-directory `.tmp-*` files, exclusive creation, per-chunk file sync where supported, SHA-256 verification before and after rename, atomic rename, directory sync, and SQLite indexing only after successful finalization. No renderer or capture caller writes directly into `DATA_ROOT`.
+- **IMPLEMENTED / TESTED:** Capture lifecycle advances through the existing meeting state machine: scheduled/detected meetings move through `DETECTED`, `PREPARING`, `RECORDING`, `FINALIZING`, and successful capture commit moves to `PROCESSING` for later transcription/AI work. Invalid capture starts from progressed states are rejected by the service/lifecycle boundary. Abort, safe-stop, or disk-space write failure marks `INCOMPLETE`; finalization/storage failure marks `FAILED`.
+- **IMPLEMENTED / TESTED:** The durable `artifact_operations` journal is used for capture with states `STARTED`, `WRITING`, `FINALIZING`, `COMMITTED`, `FAILED`, and `INCOMPLETE`. Restart recovery preserves existing behavior: interrupted capture temp files and pending operations are reported/marked incomplete and are not silently completed, imported, or deleted.
+- **IMPLEMENTED / TESTED:** SQLite schema version 5 expands `recordings` metadata with safe committed-recording fields: recording/file UUIDs, meeting UUID, variant, container/format, capture start/end/duration, byte size, SHA-256, relative path, capture source/adapter, and final status. Recording binaries remain filesystem files and are not stored as SQLite BLOBs. Incomplete captures without a verified final file remain journal/recovery records rather than indexed recording rows.
+- **IMPLEMENTED / TESTED:** Existing disk-space protection is reused. Unknown free space fails closed at preflight; insufficient preflight space marks the meeting `FAILED`; insufficient/critical/unknown space during active capture stops safely as `INCOMPLETE` through the storage boundary.
+- **IMPLEMENTED / TESTED / CODE-VERIFIED:** No new capture IPC was exposed. Existing Electron security remains intact: context isolation, disabled node integration, sandboxed renderer, trusted sender/frame checks, preload-only allow-listed channels, and renderer-safe path-free responses. A regression test asserts there are no renderer capture/output-path IPC channels.
+- **CODE-VERIFIED / WINDOWS-UNVERIFIED / REMAINING GAP:** The local adapter is a file-backed chunk/stream boundary suitable for bytes from a future real Windows capture implementation, but it does not capture Teams, Zoom, Google Meet, browser tabs, screen video, microphone audio, system audio, or meeting media. No Windows capture-device execution occurred in this Linux/headless sandbox.
+
 ## PHASE 4 Microsoft 365 / Outlook Calendar discovery
 
 - **IMPLEMENTED / TESTED:** Microsoft Graph access is isolated behind `MicrosoftGraphClient`, `MicrosoftGraphCalendarProvider`, and injected `MicrosoftGraphTransport`/`MicrosoftGraphAuthProvider` boundaries. Pagination, event lookup, cancellation checks, and structured Graph errors are covered with fake transports at the test boundary only; tests do **not** call Microsoft Graph.
 - **IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED:** Microsoft credential handling now has a `CredentialBackedMicrosoftTokenCache` for an opaque MSAL-style token cache stored through the existing Electron safeStorage credential adapter outside `DATA_ROOT`. Access tokens, refresh tokens, and client secrets are not stored in SQLite or exposed through renderer-facing sync responses. Actual Windows DPAPI/MSAL execution was not run in this Linux sandbox.
 - **IMPLEMENTED / TESTED:** Graph events are normalized into internal calendar models capturing external event ID, subject, start/end, organizer, attendees, location, online meeting details, web URL, cancellation state, and last modified time. Raw Graph responses are not persisted by the sync layer.
 - **IMPLEMENTED / TESTED:** Deterministic Teams detection stores `meetingPlatform` as `TEAMS`, `OTHER_ONLINE`, or `NONE`. Teams classification uses Microsoft Graph online meeting provider values and Teams join/location signals; non-Teams online meetings such as Skype/Zoom-like online events are not classified as Teams.
-- **IMPLEMENTED / TESTED:** SQLite schema version 4 adds `calendar_event_associations`, keyed by `(provider, external_event_id)` and linked to the authoritative internal meeting UUID. Repeated syncs are idempotent, duplicate external events do not create duplicate meetings, and the old internal UUID remains authoritative.
+- **IMPLEMENTED / TESTED:** `calendar_event_associations` links `(provider, external_event_id)` to the authoritative internal meeting UUID in the current local schema. Repeated syncs are idempotent, duplicate external events do not create duplicate meetings, and the old internal UUID remains authoritative.
 - **IMPLEMENTED / TESTED:** `CalendarSyncService` retrieves events for a requested range, normalizes/platform-classifies them, upserts associations through `LocalFirstStore`, reports created/updated/unchanged/cancelled/error counts, handles cancelled events safely, and preserves progressed meeting lifecycle status. Calendar discovery creates future meetings as `SCHEDULED` only.
 - **IMPLEMENTED / TESTED:** A minimal Electron IPC/preload method exposes safe Microsoft calendar sync counts and sanitized error metadata. It does not return access tokens, refresh tokens, client secrets, raw credential objects, raw Graph responses, or absolute filesystem paths.
 - **CODE-VERIFIED / NOT TESTED:** The production Graph adapter uses real HTTP `fetch` and requires a real OAuth/MSAL auth provider. No fake production calendar data or mock production provider is wired. A live OAuth sign-in flow, tenant configuration, and live Microsoft Graph connectivity are not implemented or verified in this environment.
@@ -44,7 +56,7 @@ explicitly approved cloud AI request is local.
 - `DATA_ROOT` contains `Meetings`, `Database`, `Backups`, `Exports`, and `storage.json`. SQLite is `Database/ai-workmate.sqlite`; large audio/video bytes are never stored in SQLite.
 - Meeting folders and deterministic artifact names contain the authoritative UUID meeting ID. Original recordings remain separate from normalized recordings. Artifact metadata retains file ID, meeting ID, relative path, type, MIME type, size, timestamps, SHA-256, and status.
 - Transcript JSON preserves timestamps and speaker data; timestamp-preserving TXT, VTT, and SRT artifacts are supported. Analysis artifacts and decision/task relationships are stored locally.
-- The current SQLite schema version is 4. It retains the durable `artifact_operations` table and adds `calendar_event_associations` for Microsoft Graph event-to-meeting UUID mapping without replacing the existing architecture.
+- The current SQLite schema version is 5. It retains the durable `artifact_operations` table, adds `calendar_event_associations` for Microsoft Graph event-to-meeting UUID mapping, and records safe recording metadata without replacing the existing architecture or storing media BLOBs.
 
 ### Electron security and IPC
 
@@ -86,15 +98,15 @@ explicitly approved cloud AI request is local.
 
 ## TESTED
 
-The following commands completed successfully in the Linux sandbox after the hardening changes:
+The following commands completed successfully in the Linux sandbox after the Phase 5 capture changes:
 
 - `npm run lint` — **PASSED**, ESLint with zero warnings.
 - `npm run typecheck` — **PASSED**.
-- `npm test` — **PASSED: 48/48 tests**; its nested build also passed.
-- `npm run test:storage` — **PASSED** for the complete `storage*.test.js` suite (26 storage tests).
+- `npm test` — **PASSED: 64/64 tests**; its nested build also passed.
+- `npm run test:storage` — **PASSED: 26/26 storage tests** for the complete `storage*.test.js` suite; its nested build also passed.
 - `npm run build` — **PASSED** (TypeScript output and renderer asset copy).
 
-Automated coverage includes Graph event normalization, Microsoft Graph pagination through injected transport, event lookup, Teams/other-online/normal event detection, duplicate and idempotent calendar synchronization, cancellation handling, Graph error reporting, external event uniqueness, lifecycle preservation, renderer-safe sync results, credential redaction, active-webContents/exact-URL IPC authorization, sandbox policy, remote-navigation/new-window policy, path-free IPC results, safe snapshots/statistics, failed and interrupted artifact operations, restart recovery, incomplete recordings, orphan/unknown-folder preservation, missing database detection, unknown disk space, recording transition safety, protected Windows-style paths, migration phase fault injection, migration source preservation, backup/restore, export, transcript formats, duplicate identities, and local database integrity.
+Automated coverage includes local capture start/state/chunk/stream/finalize/abort behavior, exact meeting ownership, duplicate-finalize/late-write rejection, empty/invalid/out-of-order chunk rejection, caller output-path rejection, SHA-256 verification, safe recording metadata persistence, capture lifecycle to `PROCESSING`, capture journal `COMMITTED`/`FAILED`/`INCOMPLETE` states, critical and unknown disk-space safe-stop behavior, interrupted-capture restart recovery, renderer non-exposure of capture IPC, Graph event normalization, Microsoft Graph pagination through injected transport, event lookup, Teams/other-online/normal event detection, duplicate and idempotent calendar synchronization, cancellation handling, Graph error reporting, external event uniqueness, lifecycle preservation, renderer-safe sync results, credential redaction, active-webContents/exact-URL IPC authorization, sandbox policy, remote-navigation/new-window policy, path-free IPC results, safe snapshots/statistics, failed and interrupted artifact operations, orphan/unknown-folder preservation, missing database detection, protected Windows-style paths, migration phase fault injection, migration source preservation, backup/restore, export, transcript formats, duplicate identities, and local database integrity.
 
 ## CODE-VERIFIED
 
@@ -102,14 +114,14 @@ Automated coverage includes Graph event normalization, Microsoft Graph paginatio
 - `StorageRuntime` wires the installation directory from `dirname(app.getPath("exe"))`; no DATA_ROOT default is derived from the installation directory or Program Files.
 - The `StorageConfigService` uses a separate atomically replaced, file-synced configuration file. SQLite uses WAL with `synchronous = FULL`; artifact and migration state is durable in those stores.
 - The NSIS configuration is present and keeps application data by default. DATA_ROOT remains outside packaged files when selected through the runtime.
-- Static type checking, linting, and the production build verify the Linux-buildable Electron, storage, calendar, and Graph adapter code paths.
+- Static type checking, linting, and the production build verify the Linux-buildable Electron, storage, local capture, calendar, and Graph adapter code paths.
 - The Microsoft Graph HTTP adapter is production code and has no fake data source; it requires an injected OAuth/MSAL-compatible auth provider before live Graph access can occur.
 
 ## NOT TESTED
 
 - No end-to-end Electron GUI test was run in the headless Linux test command. The pure window-policy tests do not prove Chromium/Electron event delivery.
 - No signed installer artifact, update cycle, uninstall wizard, or real Windows drive/ACL exercise was run.
-- No physical power-loss or forced-process termination test was run; crash handling is covered by durable-state and fault-injection tests rather than an actual crash harness.
+- No physical power-loss or forced-process termination test was run; crash handling is covered by durable-state, restart-recovery, and fault-injection tests rather than an actual crash harness.
 - No live Microsoft OAuth/MSAL sign-in, tenant consent, token acquisition, or live Microsoft Graph calendar request was executed.
 
 ## WINDOWS-UNVERIFIED
@@ -120,7 +132,7 @@ Automated coverage includes Graph event normalization, Microsoft Graph paginatio
 
 ## REMAINING GAP
 
-- **No full meeting/recording pipeline:** Microsoft calendar discovery and Teams identification are implemented, but browser capture, live recording, automatic capture safe-stop/finalization, Zoom/Google Meet-specific integrations, and meeting processing remain intentionally out of scope.
+- **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, and the local capture/storage boundary are implemented, but actual Teams/Zoom/Google Meet/browser/screen/microphone/system-audio capture, transcription, and meeting processing remain intentionally out of scope.
 - **AI is not end-to-end:** **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end.** The provider/policy abstraction and manual local `saveAnalysis()` facade exist, but automatic transcription, provider invocation, and analysis persistence are not connected.
 - Migration recovery can safely activate a fully copied destination or mark an interrupted copy incomplete; resumable copying/progress/cancellation UI is not implemented.
 - A signed production installer, a user-facing Keep/Delete uninstall choice, full Microsoft OAuth/MSAL sign-in UX, ordinary meeting-file encryption-at-rest, and automated backup retention are not implemented.
@@ -149,6 +161,7 @@ Automated coverage includes Graph event normalization, Microsoft Graph paginatio
 | Teams vs other-online vs normal detection | IMPLEMENTED / TESTED | Platform is stored as `TEAMS`, `OTHER_ONLINE`, or `NONE`; non-Teams online meetings are not classified as Teams. |
 | Calendar association idempotency | IMPLEMENTED / TESTED | `calendar_event_associations` links provider/external ID to internal UUID with uniqueness and lifecycle preservation. |
 | Renderer-safe calendar sync IPC | IMPLEMENTED / TESTED | Sync IPC returns counts and sanitized error codes only; no credentials/raw Graph/path data. |
+| Local capture boundary | IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED | `CaptureEngine` + `LocalRecordingCaptureEngine` control local chunk/stream writes, ownership, journal, SHA-256, disk-space safe-stop, and recovery. Actual Windows audio/video capture is not implemented or tested. |
 | Full AI/meeting pipeline | NOT TESTED / REMAINING GAP | Intentionally not implemented in this phase; the transcript-to-provider-to-saveAnalysis path is not wired. |
 
 ## Final verification boundary

@@ -1,5 +1,5 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 4;
+export const DATABASE_SCHEMA_VERSION = 5;
 
 export type CalendarProvider = "MICROSOFT_GRAPH";
 
@@ -150,6 +150,26 @@ export interface RecordingArtifactInput {
   originalFilename?: string;
   capturedAt?: string;
   sourceMetadata?: Record<string, string | number | boolean | null>;
+}
+
+
+export type RecordingFinalStatus = "COMMITTED" | "INCOMPLETE" | "FAILED";
+
+export interface RecordingMetadata {
+  recordingId: string;
+  meetingId: string;
+  artifactId: string;
+  recordingVariant: RecordingVariant;
+  createdAt: string;
+  format?: string;
+  captureStartedAt?: string;
+  captureEndedAt?: string;
+  durationMs?: number;
+  byteSize?: number;
+  sha256?: string;
+  relativePath?: string;
+  captureSource?: string;
+  finalStatus?: RecordingFinalStatus;
 }
 
 export interface TranscriptSpeaker {

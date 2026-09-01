@@ -167,3 +167,10 @@ test("authorizes storage IPC only for the active application webContents and exa
     snapshot,
   );
 });
+
+test("does not expose local recording capture controls or output paths through renderer IPC", () => {
+  const channelNames = Object.keys(STORAGE_IPC_CHANNELS);
+  const channelValues = Object.values(STORAGE_IPC_CHANNELS);
+  assert.equal(channelNames.some((name) => /capture|recording/i.test(name)), false);
+  assert.equal(channelValues.some((channel) => /capture|recording|output-path|source-path/i.test(channel)), false);
+});
