@@ -3,6 +3,7 @@ import type {
   IntegrityReport,
   StorageSnapshot,
 } from "../domain/models";
+import type { RendererCalendarSyncResult } from "../calendar/CalendarModels";
 export interface LocationChangeResult {
   migrated: boolean;
   verified?: boolean;
@@ -22,6 +23,7 @@ export const STORAGE_IPC_CHANNELS = {
   restoreBackup: "storage:restore-backup",
   exportMeeting: "storage:export-meeting",
   setAiProcessingPolicy: "storage:set-ai-processing-policy",
+  syncMicrosoftCalendar: "calendar:sync-microsoft",
 } as const;
 
 export interface LocationChangePreview {
@@ -33,6 +35,11 @@ export interface LocationChangePreview {
   destinationAvailableBytes?: number | null;
   requiredBytes?: number;
   explanation?: string[];
+}
+
+export interface MicrosoftCalendarSyncRequest {
+  startTime: string;
+  endTime: string;
 }
 
 export interface StorageRendererAPI {
@@ -47,6 +54,7 @@ export interface StorageRendererAPI {
   restoreBackup(): Promise<{ verified: boolean; restoredFiles: number } | null>;
   exportMeeting(meetingId: string): Promise<{ size: number } | null>;
   setAiProcessingPolicy(policy: AIProcessingPolicy): Promise<void>;
+  syncMicrosoftCalendar(request: MicrosoftCalendarSyncRequest): Promise<RendererCalendarSyncResult>;
 }
 
-export type { AIProcessingPolicy, IntegrityReport, StorageSnapshot };
+export type { AIProcessingPolicy, IntegrityReport, RendererCalendarSyncResult, StorageSnapshot };

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { STORAGE_VERSION } from "../domain/models";
+import { CalendarSyncService } from "../calendar/CalendarSyncService";
 import type {
   AIProcessingPolicy,
   IntegrityReport,
@@ -9,6 +10,7 @@ import type {
   MigrationResult,
   StorageSnapshot,
 } from "../domain/models";
+import type { CalendarEventProvider, CalendarSyncRange, CalendarSyncResult } from "../calendar/CalendarModels";
 import type { CredentialStore } from "../security/CredentialStore";
 import { LocalDatabase } from "./LocalDatabase";
 import { LocalFirstStore } from "./LocalFirstStore";
@@ -26,6 +28,10 @@ export interface ChangeDataRootResult {
   result?: MigrationResult;
 }
 
+export interface StorageRuntimeIntegrations {
+  microsoftCalendarProvider?: CalendarEventProvider;
+}
+
 /** Application lifecycle boundary for first-run setup and location changes. */
 export class StorageRuntime {
   public store: LocalFirstStore | undefined;
@@ -38,6 +44,7 @@ export class StorageRuntime {
     private readonly clock: () => Date = () => new Date(),
     credentialStore?: CredentialStore,
     storageOptions: LocalStorageServiceOptions = {},
+    private readonly integrations: StorageRuntimeIntegrations = {},
   ) {
     this.config = config;
     this.credentialStore = credentialStore;
@@ -170,6 +177,16 @@ export class StorageRuntime {
     const report = await this.requireStore().repairStorageIndex();
     await this.config.setLastIntegrityCheckAt(report.checkedAt);
     return report;
+  }
+
+  public async syncMicrosoftCalendar(range: CalendarSyncRange): Promise<CalendarSyncResult> {
+    const provider = this.integrations.microsoftCalendarProvider;
+    if (provider === undefined) {
+      throw new StorageError(
+        "Microsoft 365 calendar synchronization is not configured. Connect a Microsoft OAuth/MSAL provider before syncing.",
+      );
+    }
+    return new CalendarSyncService(provider, this.requireStore(), "MICROSOFT_GRAPH").syncRange(range);
   }
 
   public async setAiProcessingPolicy(policy: AIProcessingPolicy): Promise<void> {

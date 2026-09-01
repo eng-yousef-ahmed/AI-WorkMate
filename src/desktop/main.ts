@@ -2,6 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electro
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { MicrosoftAuthenticationRequiredProvider } from "../integrations/microsoft/MicrosoftAuth";
+import { MicrosoftGraphCalendarProvider } from "../integrations/microsoft/MicrosoftGraphCalendarProvider";
+import { MicrosoftGraphClient } from "../integrations/microsoft/MicrosoftGraphClient";
 import { ElectronSafeStorageCredentialStore } from "../security/CredentialStore";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
@@ -17,9 +20,12 @@ async function bootstrap(): Promise<void> {
     const userDataPath = app.getPath("userData");
     const config = new StorageConfigService(join(userDataPath, "storage-config.json"));
     const credentialStore = new ElectronSafeStorageCredentialStore(safeStorage, join(userDataPath, "credential-vault.json"));
+    const microsoftCalendarProvider = new MicrosoftGraphCalendarProvider(
+      new MicrosoftGraphClient(new MicrosoftAuthenticationRequiredProvider()),
+    );
     runtime = new StorageRuntime(config, () => new Date(), credentialStore, {
       installationDirectory: dirname(app.getPath("exe")),
-    });
+    }, { microsoftCalendarProvider });
   }
   const configured = await runtime.initialize();
   if (!configured) {

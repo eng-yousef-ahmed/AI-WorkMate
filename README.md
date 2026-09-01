@@ -1,12 +1,13 @@
 # AI WorkMate
 
-AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation required before a full meeting engine is added. Existing meeting data is owned by the desktop process:
+AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation plus the Phase 4 Microsoft 365 calendar discovery layer required before a full meeting engine is added. Existing meeting data is owned by the desktop process:
 
 ```text
 Windows desktop
    ├── Local SQLite index (DATA_ROOT/Database/ai-workmate.sqlite)
    ├── Local files (DATA_ROOT/Meetings/...)
    ├── OS-protected credentials (Electron userData, outside DATA_ROOT)
+   ├── Microsoft Graph calendar adapter boundary (auth/provider injected)
    └── Optional provider adapters (local or cloud, policy-gated)
 ```
 
@@ -91,6 +92,18 @@ Changing the location is an explicit migration:
 
 The configuration journal records `STARTED`, `COPYING`, `VERIFIED`, `ACTIVATING`, `ACTIVATED`, `RUNTIME_SWITCHED`, `CONFIGURATION_UPDATED`, `FAILED`, and `INCOMPLETE`. The source data root is retained. An existing empty destination is moved aside rather than silently deleted. If a process stops during migration, startup either activates a fully verified destination or keeps the verified source active and records an incomplete migration for explicit follow-up.
 
+## Microsoft 365 calendar discovery (Phase 4)
+
+The Microsoft 365 layer is implemented as a provider boundary, not scattered Graph calls. `MicrosoftGraphClient` accepts an injected OAuth/MSAL-style auth provider and transport, `MicrosoftGraphCalendarProvider` retrieves `calendarView` events with pagination and event lookup, and `CalendarSyncService` normalizes events before writing only local meeting associations. Tests inject fake transports at the boundary and never call Microsoft Graph. Production code does not ship fake calendar data.
+
+Normalized calendar events capture the Microsoft Graph event ID, subject, start/end time, organizer, attendees, location, online meeting details, Outlook web URL, cancellation state, and last modified timestamp. Teams detection is deterministic and stores the platform as `TEAMS`, `OTHER_ONLINE`, or `NONE`; it does not treat every online meeting as Teams.
+
+Discovered meetings are associated through SQLite schema version 4 in `calendar_event_associations`, keyed by `(provider, external_event_id)` and linked back to the authoritative AI WorkMate meeting UUID. The external Microsoft event ID never replaces the internal UUID. Repeated synchronization is idempotent and preserves existing recordings, transcripts, analysis, and progressed lifecycle states. Calendar discovery creates new future meetings as `SCHEDULED` only; it never implies recording has started.
+
+The Microsoft credential boundary uses the existing Electron `safeStorage`-backed credential store for an opaque MSAL-style token cache outside `DATA_ROOT`. Access tokens, refresh tokens, client secrets, and raw credential objects are not stored in SQLite and are not exposed to the renderer. The renderer-facing sync IPC returns only safe counts and sanitized error codes.
+
+**Environment note:** live Microsoft OAuth/MSAL sign-in, tenant consent, Windows DPAPI execution, and live Microsoft Graph connectivity were not executed in this Linux/headless sandbox. They remain documented as **NOT TESTED** or **WINDOWS-UNVERIFIED** rather than claimed as verified.
+
 ## Storage services
 
 `LocalStorageService` is the filesystem boundary. It owns directory creation, safe relative paths, meeting folders, artifact naming, streaming writes, SHA-256 hashing, disk-space checks, stats, migration, and recovery-safe file operations. `LocalDatabase` owns the local SQLite index and its durable artifact-operation state. `StorageIntegrityService` and `RecoveryScanner` report inconsistencies without deleting user data.
@@ -103,8 +116,8 @@ The desktop renderer receives an allow-listed preload API, not `fs`, `path`, `ip
 
 Credentials are represented by an OS-encrypted vault adapter using Electron `safeStorage`/Windows DPAPI semantics and are never placed in meeting folders or DATA_ROOT backups. The AI abstraction supports local and injected cloud adapters. `LOCAL_ONLY`, `CLOUD_ALLOWED`, and `ASK_EACH_TIME` are checked before content is handed to a provider.
 
-Phase 3 adds strict meeting lifecycle transitions, real recording/transcript ingestion boundaries, and a provider-to-validated-analysis pipeline. The application still does not supply a capture engine, transcription engine, or AI provider; no fake content or external service is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
+Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. The application still does not supply a capture engine, transcription engine, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
 
 ## Scope of this change
 
-This change deliberately does **not** implement Teams, Zoom, Google Meet attendance, calendar ingestion, browser/live recording, advanced AI, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, DPAPI/ACL, disk-full, signed installer, update, and uninstall behavior are Windows-unverified because this checkout is validated in a Linux/headless sandbox. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.
+This change deliberately does **not** implement meeting recording, transcription, advanced AI, live OAuth sign-in UX, background calendar scheduling, Zoom/Google Meet-specific integrations, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity are Windows/environment-unverified because this checkout is validated in a Linux/headless sandbox. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.

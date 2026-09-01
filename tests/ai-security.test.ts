@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   AIProcessingPolicyEnforcer,
+  CredentialBackedMicrosoftTokenCache,
   ElectronSafeStorageCredentialStore,
   LocalAIProvider,
   OpenAIProvider,
@@ -46,6 +47,34 @@ test("stores credentials only as OS-encrypted blobs outside DATA_ROOT", async ()
     assert.equal(vault.includes("secret-api-key"), false);
     await credentials.delete("openai", "default");
     assert.equal(await credentials.get("openai", "default"), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps Microsoft token cache behind the encrypted credential boundary outside DATA_ROOT", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-workmate-ms-credentials-"));
+  try {
+    const dataRoot = join(root, "DATA_ROOT");
+    const vaultPath = join(root, "userData", "credential-vault.json");
+    const primitive = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(value, "utf8").map((byte) => byte ^ 0x55),
+      decryptString: (value: Uint8Array) => Buffer.from(Array.from(value, (byte) => byte ^ 0x55)).toString("utf8"),
+    };
+    const credentials = new ElectronSafeStorageCredentialStore(primitive, vaultPath);
+    const tokenCache = new CredentialBackedMicrosoftTokenCache(credentials);
+    const serializedCache = JSON.stringify({ access_token: "ms-access", refresh_token: "ms-refresh" });
+
+    await tokenCache.write(serializedCache);
+
+    assert.equal(await tokenCache.read(), serializedCache);
+    const vault = await import("node:fs/promises").then(({ readFile }) => readFile(vaultPath, "utf8"));
+    assert.equal(vault.includes("ms-access"), false);
+    assert.equal(vault.includes("ms-refresh"), false);
+    assert.equal(vaultPath.startsWith(dataRoot), false);
+    await tokenCache.clear();
+    assert.equal(await tokenCache.read(), null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1,5 +1,46 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 3;
+export const DATABASE_SCHEMA_VERSION = 4;
+
+export type CalendarProvider = "MICROSOFT_GRAPH";
+
+export type MeetingPlatform = "TEAMS" | "OTHER_ONLINE" | "NONE";
+
+export interface CalendarEventPerson {
+  displayName?: string;
+  email?: string;
+}
+
+export interface CalendarEventAttendee extends CalendarEventPerson {
+  responseStatus?: string;
+  type?: string;
+}
+
+export interface CalendarOnlineMeetingInfo {
+  provider?: string;
+  joinUrl?: string;
+  conferenceId?: string;
+  tollNumber?: string;
+}
+
+export interface CalendarEventAssociation {
+  provider: CalendarProvider;
+  externalEventId: string;
+  meetingId: string;
+  subject: string;
+  startTime: string;
+  endTime: string;
+  organizer?: CalendarEventPerson;
+  attendees: CalendarEventAttendee[];
+  location?: string;
+  onlineMeeting?: CalendarOnlineMeetingInfo;
+  webUrl?: string;
+  isCancelled: boolean;
+  lastModifiedAt?: string;
+  meetingPlatform: MeetingPlatform;
+  normalizedFingerprint: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export type MeetingStatus =
   | "SCHEDULED"
@@ -26,7 +67,6 @@ export const MEETING_STATUS_TRANSITIONS: Readonly<Record<MeetingStatus, readonly
   FAILED: ["PREPARING", "INCOMPLETE", "CANCELLED"],
   CANCELLED: [],
 };
-
 
 export type ArtifactStatus =
   | "AVAILABLE"

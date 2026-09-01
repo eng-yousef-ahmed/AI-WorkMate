@@ -72,6 +72,58 @@ test("keeps migration, backup, and export IPC results free of filesystem paths",
   assert.deepEqual(await handlers.get(STORAGE_IPC_CHANNELS.exportMeeting)?.(event, "meeting-1"), { size: 20 });
 });
 
+
+test("returns renderer-safe Microsoft calendar sync results without credential material", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const runtime = {
+    syncMicrosoftCalendar: async () => ({
+      provider: "MICROSOFT_GRAPH",
+      startTime: "2026-09-01T00:00:00.000Z",
+      endTime: "2026-09-02T00:00:00.000Z",
+      createdCount: 1,
+      updatedCount: 2,
+      unchangedCount: 3,
+      cancelledCount: 4,
+      errorCount: 1,
+      errors: [{
+        provider: "MICROSOFT_GRAPH",
+        code: "InvalidAuthenticationToken",
+        message: "secret access_token=abc123 client_secret=do-not-render",
+        retryable: false,
+        status: 401,
+      }],
+    }),
+  } as unknown as StorageRuntime;
+  registerStorageIpc({
+    ipcMain: { handle: (channel, listener) => handlers.set(channel, listener) },
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+    shell: { openPath: async () => "" },
+    runtime,
+    getAuthorizedWebContentsId: () => 77,
+    getAuthorizedRendererUrl: () => "file:///AI-WorkMate/storage-settings.html",
+  });
+  const event = { sender: { id: 77 }, senderFrame: { url: "file:///AI-WorkMate/storage-settings.html" } };
+
+  const result = await handlers.get(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar)?.(event, {
+    startTime: "2026-09-01T00:00:00.000Z",
+    endTime: "2026-09-02T00:00:00.000Z",
+  });
+
+  assert.deepEqual(result, {
+    provider: "MICROSOFT_GRAPH",
+    createdCount: 1,
+    updatedCount: 2,
+    unchangedCount: 3,
+    cancelledCount: 4,
+    errorCount: 1,
+    errors: [{ code: "InvalidAuthenticationToken", retryable: false, status: 401 }],
+  });
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("abc123"), false);
+  assert.equal(serialized.includes("client_secret"), false);
+  assert.equal(serialized.includes("do-not-render"), false);
+});
+
 test("authorizes storage IPC only for the active application webContents and exact renderer URL", async () => {
   const handlers = new Map<string, IpcHandler>();
   const snapshot: StorageSnapshot = {

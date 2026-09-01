@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { toRendererCalendarSyncResult, type RendererCalendarSyncResult } from "../calendar/CalendarModels";
 import type { AIProcessingPolicy, StorageSnapshot } from "../domain/models";
 import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
@@ -106,6 +107,29 @@ export function registerStorageIpc({
   handle(STORAGE_IPC_CHANNELS.verifyStorage, async () => runtime.verifyStorage());
   handle(STORAGE_IPC_CHANNELS.repairStorage, async () => runtime.repairStorage());
 
+  handle(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar, async (_event: unknown, request: unknown): Promise<RendererCalendarSyncResult> => {
+    if (!isCalendarSyncRequest(request)) {
+      throw new StorageError("Invalid Microsoft calendar synchronization request.");
+    }
+    try {
+      const result = await runtime.syncMicrosoftCalendar({
+        startTime: request.startTime,
+        endTime: request.endTime,
+      });
+      return toRendererCalendarSyncResult(result);
+    } catch {
+      return {
+        provider: "MICROSOFT_GRAPH",
+        createdCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        cancelledCount: 0,
+        errorCount: 1,
+        errors: [{ code: "MICROSOFT_CALENDAR_SYNC_UNAVAILABLE", retryable: false }],
+      };
+    }
+  });
+
   handle(STORAGE_IPC_CHANNELS.createBackup, async () => {
     const selected = await chooseDirectory(dialog, "Choose a local backup folder.");
     if (selected === null) return null;
@@ -186,6 +210,22 @@ function requireStore(runtime: StorageRuntime) {
     throw new StorageError("Choose a local data location before using this action.");
   }
   return runtime.store;
+}
+
+function isCalendarSyncRequest(value: unknown): value is { startTime: string; endTime: string } {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const request = value as { startTime?: unknown; endTime?: unknown };
+  return typeof request.startTime === "string" &&
+    typeof request.endTime === "string" &&
+    isValidDateString(request.startTime) &&
+    isValidDateString(request.endTime) &&
+    new Date(request.endTime) > new Date(request.startTime);
+}
+
+function isValidDateString(value: string): boolean {
+  return !Number.isNaN(new Date(value).getTime());
 }
 
 function isProcessingPolicy(value: unknown): value is AIProcessingPolicy {

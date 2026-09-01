@@ -21,6 +21,8 @@ Electron main process
    │     ├── StorageIntegrityService / RecoveryScanner
    │     ├── BackupService / ExportService
    │     └── local audit and artifact-operation journals
+   ├── CalendarSyncService
+   │     └── MicrosoftGraphCalendarProvider / MicrosoftGraphClient (auth + transport injected)
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```
@@ -35,7 +37,7 @@ The Linux-runnable tests exercise the pure security policy and IPC authorization
 
 ## Database/filesystem contract
 
-SQLite indexes relationships and metadata. Filesystem artifacts hold large media and portable user-visible formats. An artifact is complete only when:
+SQLite indexes relationships, calendar associations, and metadata. Filesystem artifacts hold large media and portable user-visible formats. An artifact is complete only when:
 
 1. a durable SQLite `artifact_operations` row is recorded as `STARTED` and then `WRITING`;
 2. a same-directory temporary file has been written, flushed, and hash-verified;
@@ -43,7 +45,7 @@ SQLite indexes relationships and metadata. Filesystem artifacts hold large media
 4. the journal reaches `FINALIZING`; and
 5. the artifact and relationship rows plus the journal reach `COMMITTED` in one SQLite transaction.
 
-The journal also records `FAILED` and `INCOMPLETE`. On restart, pending operations are verified. A valid indexed file can be completed as `COMMITTED`; an ambiguous final or temporary file is retained, marked/reportable as incomplete or orphaned, and is not silently imported. If a user deletes or modifies a file, the next verification marks the row `MISSING` or `CORRUPTED`.
+The journal also records `FAILED` and `INCOMPLETE`. On restart, pending operations are verified. A valid indexed file can be completed as `COMMITTED`; an ambiguous final or temporary file is retained, marked/reportable as incomplete or orphaned, and is not silently imported. If a user deletes or modifies a file, the next verification marks the row `MISSING` or `CORRUPTED`. Calendar discovery metadata is held in `calendar_event_associations` and keyed by `(provider, external_event_id)`, so a Microsoft Graph event maps to an internal meeting UUID without replacing that UUID.
 
 A meeting still marked `RECORDING` when the application opens is safely changed to `INCOMPLETE`. Recovery reports known orphans, temporary recordings, unknown meeting-shaped folders, invalid manifests, missing databases, and missing/corrupt artifacts. Unknown data is preserved. Re-indexing is limited to orphaned files inside a folder whose meeting ID is already known in SQLite; no meeting record is invented from an unknown folder.
 
@@ -67,6 +69,28 @@ Migration preview and confirmation return counts, bytes, explanations, and safe 
 
 Backups are standard ZIP files with a consistent SQLite snapshot, storage metadata, all non-backup local files, and a hash manifest. They are written atomically to a user-selected location outside `DATA_ROOT`; old backup archives are not silently pruned. Restore uses a separate staging root and verifies the archive before activation. Meeting exports contain `Meeting.json`, ID-based artifacts, `MeetingMetadata.json`, and relationship metadata. IPC returns size/status data rather than archive paths.
 
+## Microsoft 365 calendar discovery boundary (Phase 4)
+
+Calendar discovery is a main-process/service-layer operation. Graph HTTP calls are isolated in `MicrosoftGraphClient`; calendar-specific retrieval and event lookup live in `MicrosoftGraphCalendarProvider`; sync orchestration lives in `CalendarSyncService`; persistence still goes through `LocalFirstStore` and `LocalDatabase`. The renderer can request synchronization only through an allow-listed IPC method that returns counts and sanitized error codes. It never receives access tokens, refresh tokens, client secrets, raw credential objects, raw Graph responses, or absolute paths.
+
+```text
+Future scheduler or authorized renderer action
+   │  start/end range only
+   ▼
+CalendarSyncService
+   ├── CalendarEventProvider.listEvents(range)
+   ├── deterministic Teams detector
+   └── LocalFirstStore.upsertCalendarMeeting(normalized event)
+          ├── meetings UUID remains authoritative
+          └── calendar_event_associations(provider, external_event_id) is unique
+```
+
+`MicrosoftGraphClient` requires an injected `MicrosoftGraphAuthProvider` and `MicrosoftGraphTransport`. The production transport uses real `fetch`; tests provide fake transports at the boundary and do not call Microsoft Graph. The auth boundary is compatible with OAuth/MSAL-style access-token acquisition and includes an encrypted, credential-store-backed opaque token cache outside `DATA_ROOT`; this phase does not implement or fake a live sign-in flow.
+
+Graph events are normalized before persistence. The stored association captures the external event ID, subject, start/end time, organizer, attendees, location, online meeting information, Outlook web URL, cancellation state, last modified timestamp, detected platform (`TEAMS`, `OTHER_ONLINE`, or `NONE`), and a deterministic fingerprint. Raw Graph JSON is not persisted unnecessarily.
+
+Calendar synchronization is idempotent. Discovering the same event repeatedly updates the existing association or reports it unchanged, and preserves recordings, transcripts, analysis, and any lifecycle state that has progressed beyond scheduling. A future calendar event creates a `SCHEDULED` meeting only; discovery alone never implies `DETECTED`, `PREPARING`, `RECORDING`, `PROCESSING`, or `COMPLETED`. Cancelled events are counted and update only safe local cancellation metadata/status for scheduled meetings.
+
 ## Cloud processing boundary and current AI gap
 
 `AIProvider` is a transient processing interface. `LocalAIProvider` and `OpenAIProvider` share the same contract, but `AIProcessingPolicyEnforcer` runs before any provider receives content:
@@ -75,8 +99,7 @@ Backups are standard ZIP files with a consistent SQLite snapshot, storage metada
 - `CLOUD_ALLOWED`: a configured cloud integration may process content.
 - `ASK_EACH_TIME`: a cloud request requires explicit approval.
 
-Provider responses are written through the local store when the application chooses to persist them. **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end in this phase.** Automatic transcription, provider invocation, and analysis persistence are deliberately deferred; no provider is allowed to become the primary database.
-
+Provider responses are written through the local store when the application chooses to persist them. **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end in this phase.** Automatic transcription, provider invocation, and analysis persistence are deliberately deferred; no provider is allowed to become the primary database. The Microsoft calendar provider is for discovery only and does not record, transcribe, or process meetings.
 
 ## Meeting lifecycle contract (Phase 3)
 
@@ -84,4 +107,4 @@ The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PRE
 
 `ingestRecording()` accepts a real, already-materialized source file plus source type, MIME, original filename, timestamps, and optional size. It does not create bytes. `ingestTranscript()` accepts real plain text or structured JSON (and records requested VTT/SRT derivatives) and does not transcribe. `processTranscriptWithProvider()` invokes the existing `AIProvider`, validates meeting identity and analysis JSON, then calls `saveAnalysis()`; provider errors leave a non-success state.
 
-The canonical per-meeting layout is `Meetings/YYYY/MM/YYYY-MM-DD_<slug>_<UUID>/` containing `Meeting.json`, `Recording/Original`, `Recording/Normalized`, `Audio`, `Transcript`, `Analysis`, `Attachments`, and `Exports`. Every indexed artifact path is under its owning folder and includes the UUID where a filename is generated.
+The canonical per-meeting layout is `Meetings/YYYY/MM/YYYY-MM-DD_<slug>_<UUID>/` containing `Meeting.json`, `Recording/Original`, `Recording/Normalized`, `Audio`, `Transcript`, `Analysis`, `Attachments`, and `Exports`. Every indexed artifact path is under its owning folder and includes the UUID where a filename is generated. Microsoft calendar sync may add or update an association for the meeting, but it must not move meeting folders or reset progressed lifecycle state.

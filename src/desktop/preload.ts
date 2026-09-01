@@ -17,6 +17,7 @@ const storageApi: StorageRendererAPI = {
   exportMeeting: (meetingId) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.exportMeeting, meetingId),
   setAiProcessingPolicy: (policy: AIProcessingPolicy) =>
     ipcRenderer.invoke(STORAGE_IPC_CHANNELS.setAiProcessingPolicy, policy),
+  syncMicrosoftCalendar: (request) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar, request),
 };
 
 contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi });

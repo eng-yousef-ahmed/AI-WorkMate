@@ -3,6 +3,8 @@ import type {
   AnalysisArtifacts,
   AnalysisDocument,
   Artifact,
+  CalendarEventAssociation,
+  MeetingPlatform,
   ArtifactOperation,
   Meeting,
   MeetingStatus,
@@ -12,6 +14,7 @@ import type {
   TranscriptDocument,
 } from "../domain/models";
 import { STORAGE_VERSION, type TranscriptSegment } from "../domain/models";
+import type { CalendarMeetingUpsertResult, NormalizedCalendarEvent } from "../calendar/CalendarModels";
 import type { AIProvider } from "../ai/AIProvider";
 import { BackupService } from "./BackupService";
 import { ExportService } from "./ExportService";
@@ -154,6 +157,112 @@ export class LocalFirstStore {
 
   public listMeetings(): Meeting[] {
     return this.requireDatabase().listMeetings();
+  }
+
+  public async upsertCalendarMeeting(
+    event: NormalizedCalendarEvent & { meetingPlatform: MeetingPlatform; normalizedFingerprint: string },
+  ): Promise<CalendarMeetingUpsertResult> {
+    const database = this.requireDatabase();
+    if (event.provider !== "MICROSOFT_GRAPH") {
+      throw new StorageError(`Unsupported calendar provider: ${event.provider}`);
+    }
+    let existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
+    let meeting = existingAssociation === undefined ? undefined : database.getMeeting(existingAssociation.meetingId);
+    if (existingAssociation !== undefined && meeting === undefined) {
+      throw new StorageError(`Calendar association points to a missing meeting: ${existingAssociation.meetingId}`);
+    }
+    if (meeting === undefined) {
+      meeting = database.findDuplicateMeeting({ calendarEventId: event.externalEventId }) ??
+        database.findDuplicateMeeting({ calendarEventId: `${event.provider}:${event.externalEventId}` });
+    }
+    if (event.isCancelled && meeting === undefined) {
+      return { action: "CANCELLED_SKIPPED" };
+    }
+
+    let createdMeeting = false;
+    if (meeting === undefined) {
+      try {
+        meeting = await this.createMeeting({
+          title: event.subject,
+          meetingDate: meetingDateFromCalendarStart(event.startTime),
+          startedAt: event.startTime,
+          endedAt: event.endTime,
+          calendarEventId: event.externalEventId,
+          status: "SCHEDULED",
+          metadata: {
+            calendarDiscovery: {
+              provider: event.provider,
+              externalEventId: event.externalEventId,
+              meetingPlatform: event.meetingPlatform,
+            },
+          },
+        });
+        createdMeeting = true;
+      } catch (error: unknown) {
+        if (!(error instanceof DuplicateMeetingError)) {
+          throw error;
+        }
+        if (error.meetingId === undefined) {
+          throw error;
+        }
+        meeting = database.getMeeting(error.meetingId);
+        if (meeting === undefined) {
+          throw error;
+        }
+      }
+    }
+
+    existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
+    const now = this.clock().toISOString();
+    const association = calendarAssociationFromEvent(
+      event,
+      meeting.meetingId,
+      existingAssociation?.createdAt ?? now,
+      now,
+    );
+
+    const transactionResult = database.transaction(() => {
+      const associationAction = database.upsertCalendarEventAssociation(association);
+      let statusChanged = false;
+      if (event.isCancelled && meeting.status === "SCHEDULED") {
+        database.updateMeetingStatus(meeting.meetingId, "CANCELLED");
+        statusChanged = true;
+      }
+      if (associationAction === "CREATED") {
+        database.appendAudit(this.audit("CALENDAR_EVENT_ASSOCIATED", meeting.meetingId, {
+          provider: event.provider,
+          externalEventId: event.externalEventId,
+          meetingPlatform: event.meetingPlatform,
+        }));
+      } else if (associationAction === "UPDATED") {
+        database.appendAudit(this.audit("CALENDAR_EVENT_UPDATED", meeting.meetingId, {
+          provider: event.provider,
+          externalEventId: event.externalEventId,
+          meetingPlatform: event.meetingPlatform,
+          isCancelled: event.isCancelled,
+        }));
+      }
+      if (statusChanged) {
+        database.appendAudit(this.audit("CALENDAR_EVENT_CANCELLED", meeting.meetingId, {
+          provider: event.provider,
+          externalEventId: event.externalEventId,
+        }));
+      }
+      return { associationAction, statusChanged };
+    });
+
+    const persistedAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
+    if (createdMeeting) {
+      return { action: "CREATED", meetingId: meeting.meetingId, association: persistedAssociation };
+    }
+    if (
+      transactionResult.associationAction === "CREATED" ||
+      transactionResult.associationAction === "UPDATED" ||
+      transactionResult.statusChanged
+    ) {
+      return { action: "UPDATED", meetingId: meeting.meetingId, association: persistedAssociation };
+    }
+    return { action: "UNCHANGED", meetingId: meeting.meetingId, association: persistedAssociation };
   }
 
   public async createMeeting(input: NewMeetingInput): Promise<Meeting> {
@@ -799,6 +908,46 @@ export class DenyAllApprovalEngine implements ApprovalEngine {
   public approve(_request: ApprovalRequest): boolean {
     return false;
   }
+}
+
+function calendarAssociationFromEvent(
+  event: NormalizedCalendarEvent & { meetingPlatform: MeetingPlatform; normalizedFingerprint: string },
+  meetingId: string,
+  createdAt: string,
+  updatedAt: string,
+): CalendarEventAssociation {
+  const association: CalendarEventAssociation = {
+    provider: event.provider,
+    externalEventId: event.externalEventId,
+    meetingId,
+    subject: event.subject,
+    startTime: event.startTime,
+    endTime: event.endTime,
+    attendees: event.attendees,
+    isCancelled: event.isCancelled,
+    meetingPlatform: event.meetingPlatform,
+    normalizedFingerprint: event.normalizedFingerprint,
+    createdAt,
+    updatedAt,
+  };
+  addOptional(association, "organizer", event.organizer);
+  addOptional(association, "location", event.location);
+  addOptional(association, "onlineMeeting", event.onlineMeeting);
+  addOptional(association, "webUrl", event.webUrl);
+  addOptional(association, "lastModifiedAt", event.lastModifiedAt);
+  return association;
+}
+
+function meetingDateFromCalendarStart(startTime: string): string {
+  const isoDateMatch = startTime.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDateMatch?.[1] !== undefined) {
+    return isoDateMatch[1];
+  }
+  const parsed = new Date(startTime);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+  throw new DataRootValidationError(`Invalid calendar event start time: ${startTime}`);
 }
 
 function validateTranscript(document: TranscriptDocument): void {
