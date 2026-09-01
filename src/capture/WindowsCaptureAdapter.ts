@@ -11,6 +11,7 @@ import {
   type NativeCaptureStartRequest,
   unavailableCapability,
 } from "./NativeCaptureAdapter";
+import { WindowsNativeAudioProvider } from "./WindowsNativeAudioProvider";
 
 export interface WindowsNativeCaptureProvider {
   discoverCapabilities(): Promise<NativeCaptureCapabilities>;
@@ -25,7 +26,7 @@ export interface WindowsCaptureAdapterOptions {
 
 /**
  * Windows-native capture boundary. This class deliberately does not generate
- * media itself and does not fall back to fake capture. A real native provider
+ * media itself and does not fall back to generated capture. A real native provider
  * must be registered by the desktop/native layer before any capability can be
  * reported as available or started.
  */
@@ -108,7 +109,11 @@ export type CreateNativeCaptureAdapterOptions = WindowsCaptureAdapterOptions;
 export function createNativeCaptureAdapter(options: CreateNativeCaptureAdapterOptions = {}): NativeCaptureAdapter {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
-    return new WindowsCaptureAdapter({ ...options, platform });
+    return new WindowsCaptureAdapter({
+      ...options,
+      platform,
+      provider: options.provider ?? new WindowsNativeAudioProvider({ platform, clock: options.clock }),
+    });
   }
   return new UnsupportedNativeCaptureAdapter({ platform, clock: options.clock });
 }

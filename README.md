@@ -1,6 +1,6 @@
 # AI WorkMate
 
-AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5 local recording/capture boundary, and Phase 6A native Windows capture source boundary required before real platform capture and transcription are added. Existing meeting data is owned by the desktop process:
+AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5 local recording/capture boundary, Phase 6A native Windows capture source boundary, and Phase 6B Windows native audio provider code required before broader platform capture and transcription are added. Existing meeting data is owned by the desktop process:
 
 ```text
 Windows desktop
@@ -10,6 +10,7 @@ Windows desktop
    ├── Microsoft Graph calendar adapter boundary (auth/provider injected)
    ├── LocalRecordingCaptureEngine (local chunk/stream boundary only)
    ├── NativeCaptureAdapter / WindowsCaptureAdapter boundary (capability discovery, fail-closed without provider)
+   ├── WindowsNativeAudioProvider + Windows helper source (WASAPI microphone/loopback)
    └── Optional provider adapters (local or cloud, policy-gated)
 ```
 
@@ -95,6 +96,14 @@ Phase 6A adds the production native-source boundary above the Phase 5 local capt
 
 **Verification limit:** Linux/headless tests use injected adapter doubles at the boundary to verify orchestration and failure behavior. Actual Windows microphone/system-audio/screen/window capture provider execution is **WINDOWS-UNVERIFIED** and remains a future native integration.
 
+## Windows native audio provider (Phase 6B)
+
+Phase 6B adds production code for the first real native provider path: `WindowsNativeAudioProvider` plus a Windows-only `.NET 8` helper project in `native/windows-audio/`; `createNativeCaptureAdapter()` wires this audio provider by default on Windows and still fails closed if the helper is missing. The helper uses NAudio/CoreAudio/WASAPI APIs: capture endpoints for microphones and render endpoints via WASAPI loopback for system audio. It enumerates active devices, marks defaults, and emits explicit typed errors for unavailable devices, permission failures, initialization failures, stream failures, and stop failures.
+
+The provider does not write files and does not choose output paths. It starts the helper, validates the helper's real PCM records, and feeds them into `NativeCaptureCoordinator` / `LocalRecordingCaptureEngine`. The intermediate persisted format is `aiwpcm` with MIME `application/x-ai-workmate-pcm-jsonl`: JSON Lines containing a format record and captured PCM chunk records. Each audio chunk carries source, sequence, capture timestamp, sample rate, channels, bits per sample, byte length, SHA-256 of the PCM payload, and base64 PCM bytes. The sample format is whatever WASAPI reports for the selected endpoint; the helper records that format per capture.
+
+Packaging includes a Windows helper build step: `npm run build:native:win`, and `npm run package:win` runs it before Electron packaging. This Linux/headless environment did not build or execute the Windows helper, did not access real microphones, and did not run WASAPI loopback. Therefore the provider code is **IMPLEMENTED / CODE-VERIFIED**, the Linux orchestration/error handling is **TESTED**, and actual native audio capture remains **WINDOWS-UNVERIFIED**. Microphone/system-audio synchronization/mixing is not solved in this phase; each stream remains independently owned and sequenced.
+
 ## Location migration
 
 Changing the location is an explicit migration:
@@ -134,8 +143,8 @@ The desktop renderer receives an allow-listed preload API, not `fs`, `path`, `ip
 
 Credentials are represented by an OS-encrypted vault adapter using Electron `safeStorage`/Windows DPAPI semantics and are never placed in meeting folders or DATA_ROOT backups. The AI abstraction supports local and injected cloud adapters. `LOCAL_ONLY`, `CLOUD_ALLOWED`, and `ASK_EACH_TIME` are checked before content is handed to a provider.
 
-Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen/microphone/system-audio capture, a transcription engine, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
+Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. Phase 6B adds Windows microphone and system-audio/loopback provider code, but actual Windows execution is unverified in this environment. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen capture, a transcription engine, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
 
 ## Scope of this change
 
-This change deliberately implements only local recording boundary/storage control plus the native Windows capture source abstraction/policy boundary. It does **not** implement actual meeting platform recording, a verified Windows microphone/system-audio/screen/window capture provider, transcription, advanced AI, live OAuth sign-in UX, background calendar scheduling, Zoom/Google Meet-specific integrations, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity are Windows/environment-unverified because this checkout is validated in a Linux/headless sandbox. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.
+This change deliberately implements local recording boundary/storage control, the native Windows capture source abstraction/policy boundary, and Windows native audio provider code. It does **not** implement actual meeting platform recording, a Windows-verified microphone/system-audio provider or any screen/window capture provider, transcription, advanced AI, live OAuth sign-in UX, background calendar scheduling, Zoom/Google Meet-specific integrations, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity are Windows/environment-unverified because this checkout is validated in a Linux/headless sandbox. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.

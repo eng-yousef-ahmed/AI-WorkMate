@@ -15,7 +15,8 @@
     "test": "npm run build && node --test \"dist/tests/*.test.js\"",
     "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
     "desktop": "npm run build && electron dist/src/desktop/main.js",
-    "package:win": "npm run build && electron-builder --win"
+    "package:win": "npm run build && npm run build:native:win && electron-builder --win",
+    "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true"
   },
   "repository": {
     "type": "git",
@@ -58,6 +59,12 @@
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "native/windows-audio/bin/Release/net8.0-windows/win-x64/publish/AIWorkMate.WindowsAudioCapture.exe",
+        "to": "native/windows-audio/AIWorkMate.WindowsAudioCapture.exe"
+      }
+    ]
   }
 }

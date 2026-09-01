@@ -27,6 +27,8 @@ Electron main process
    │     └── LocalStorageService staged writes + LocalFirstStore journal commit
    ├── NativeCaptureCoordinator / WindowsCaptureAdapter
    │     └── capability discovery + policy + real native-provider handoff
+   ├── WindowsNativeAudioProvider
+   │     └── .NET/NAudio helper using CoreAudio/WASAPI microphone + loopback APIs
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```
@@ -69,9 +71,22 @@ Capture writes use the same storage guarantees as other artifacts: same-director
 
 Native capture policy is default-deny for microphone audio, system audio, screen, and window. The coordinator rejects denied or unavailable capabilities before creating a local recording, keys active ownership by the internal meeting UUID, rejects wrong-meeting stop/abort calls, and rejects caller-supplied output paths. No native capture IPC exists in Phase 6A, so renderer filesystem/capture isolation remains unchanged. Linux/headless tests use injected adapter doubles to verify orchestration; actual Windows device/API capture is **WINDOWS-UNVERIFIED**.
 
+## Windows native audio provider (Phase 6B)
+
+`WindowsNativeAudioProvider` is the first concrete native provider path; the default Windows native adapter factory wires it and reports `NATIVE_PROVIDER_NOT_CONFIGURED` instead of falling back if the helper is absent. It delegates to `native/windows-audio/AIWorkMate.WindowsAudioCapture`, a Windows-only .NET 8 helper that uses NAudio/CoreAudio/WASAPI. Microphone capture enumerates and opens Windows capture endpoints. System audio capture enumerates render endpoints and uses WASAPI loopback. The helper emits safe JSON capability data: active device IDs, human-readable labels, default flags, and typed errors; it does not expose filesystem paths and does not accept output paths.
+
+The capture stream format is `aiwpcm` with MIME `application/x-ai-workmate-pcm-jsonl`. It is a lossless intermediate JSON Lines format:
+
+1. a `format` record with source, source ID, source label, capture start timestamp, and the WASAPI-reported PCM format;
+2. one `chunk` record per captured audio frame with source, source ID, sequence number, capture timestamp, PCM format, byte length, SHA-256 of the PCM payload, and base64 PCM bytes.
+
+The TypeScript provider validates helper records before the coordinator writes them: chunk sequence must be contiguous, timestamps must parse, source/source ID/format must remain stable, byte length must match the decoded PCM payload, and per-chunk SHA-256 must match. The coordinator then writes through `LocalRecordingCaptureEngine`, preserving the existing local journal, atomic file writes, whole-file SHA-256, recording metadata, disk-space checks, and lifecycle transitions.
+
+The helper build is separate from the Linux TypeScript build: `npm run build:native:win` publishes the Windows executable and `npm run package:win` includes it as an Electron extra resource. In this Linux/headless environment the helper source and provider wiring are code-verified and boundary-tested with injected helper doubles, but real Windows microphone/loopback execution is **WINDOWS-UNVERIFIED**. Microphone and loopback streams are independently sequenced; cross-source synchronization, mixing, and echo cancellation are explicitly not solved yet.
+
 ## Disk and path safety
 
-Recording/capture preflight, including native-source capture once a real provider is available, requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During active capture, each chunk is checked through the same disk-space boundary before append. The monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
+Recording/capture preflight, including Windows native audio capture, requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During active capture, each chunk is checked through the same disk-space boundary before append. The monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
 
 The data-root policy rejects the application installation directory and boundary-aware Windows protected roots including `Program Files`, `Program Files (x86)`, `Windows`, `WindowsApps`, `ProgramData`, common program-file roots, and environment-derived system roots. Windows-style policy cases run on Linux; actual Windows ACL, path, and disk behavior still requires a Windows host.
 
@@ -123,7 +138,7 @@ Provider responses are written through the local store when the application choo
 
 ## Meeting lifecycle contract (Phase 3)
 
-The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 local capture adapter and Phase 6A native coordinator start from scheduled/detected meetings through the recording path and commit completed local captures to `PROCESSING` for future transcription/AI work. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
+The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 local capture adapter, Phase 6A native coordinator, and Phase 6B Windows audio provider path start from scheduled/detected meetings through the recording path and commit completed local captures to `PROCESSING` for future transcription/AI work. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
 
 `ingestRecording()` accepts a real, already-materialized source file plus source type, MIME, original filename, timestamps, and optional size. It does not create bytes. `ingestTranscript()` accepts real plain text or structured JSON (and records requested VTT/SRT derivatives) and does not transcribe. `processTranscriptWithProvider()` invokes the existing `AIProvider`, validates meeting identity and analysis JSON, then calls `saveAnalysis()`; provider errors leave a non-success state.
 

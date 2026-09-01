@@ -11,3 +11,7 @@ Thumbs.db
 AI WorkMate Data/
 ai-workmate-data/
 credential-vault.json
+
+# Native helper build output
+native/windows-audio/bin/
+native/windows-audio/obj/

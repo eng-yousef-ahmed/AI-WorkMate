@@ -10,6 +10,9 @@ import {
   NativeCaptureCoordinator,
   NativeCaptureError,
   NATIVE_CAPTURE_KINDS,
+  WindowsCaptureAdapter,
+  WINDOWS_AUDIO_CAPTURE_FORMAT,
+  WINDOWS_AUDIO_CAPTURE_MIME_TYPE,
   type NativeCaptureAdapter,
   type NativeCaptureCapabilities,
   type NativeCaptureCapability,
@@ -65,8 +68,24 @@ test("production factory fails closed on unsupported Linux/headless platform", a
   );
 });
 
-test("Windows adapter without a native provider reports unavailable instead of fake capture", async () => {
+test("Windows factory wires the real audio provider and fails closed when the helper is missing", async () => {
   const adapter = createNativeCaptureAdapter({ platform: "win32", clock: fixedClock() });
+  const discovered = await adapter.discoverCapabilities();
+
+  assert.equal(discovered.supported, true);
+  for (const kind of NATIVE_CAPTURE_KINDS) {
+    assert.equal(discovered.capabilities[kind].available, false);
+    assert.equal(discovered.capabilities[kind].status, "UNAVAILABLE");
+    assert.equal(discovered.capabilities[kind].error?.code, "NATIVE_PROVIDER_NOT_CONFIGURED");
+  }
+  await assert.rejects(
+    adapter.startCapture({ capability: "MICROPHONE_AUDIO", format: WINDOWS_AUDIO_CAPTURE_FORMAT, mimeType: WINDOWS_AUDIO_CAPTURE_MIME_TYPE }),
+    (error: unknown) => error instanceof NativeCaptureError && error.code === "NATIVE_PROVIDER_NOT_CONFIGURED",
+  );
+});
+
+test("Windows adapter without a native provider still reports unavailable instead of fallback capture", async () => {
+  const adapter = new WindowsCaptureAdapter({ platform: "win32", clock: fixedClock() });
   const discovered = await adapter.discoverCapabilities();
 
   assert.equal(discovered.supported, true);
@@ -315,7 +334,7 @@ test("native capture start aborts the native session when local disk preflight f
   }, { spaceSafetyMarginBytes: 0, availableBytesProvider: async () => 0 });
 });
 
-test("native stream failures fail the local capture without fake fallback bytes", async () => {
+test("native stream failures mark partial local capture incomplete without fallback bytes", async () => {
   await withTempStore(async (store) => {
     const meeting = await store.createMeeting({ title: "Native stream failure", meetingDate: "2026-09-01" });
     const adapter = new TestNativeCaptureAdapter(capabilities({ MICROPHONE_AUDIO: availableCapability("MICROPHONE_AUDIO") }),
@@ -335,8 +354,8 @@ test("native stream failures fail the local capture without fake fallback bytes"
       coordinator.stopCapture({ captureId: started.captureId, meetingId: meeting.meetingId }),
       (error: unknown) => error instanceof NativeCaptureError && error.code === "NATIVE_CAPTURE_STREAM_FAILED",
     );
-    assert.equal(store.getMeeting(meeting.meetingId)?.status, "FAILED");
-    assert.equal(store.database.listArtifactOperations().at(-1)?.state, "FAILED");
+    assert.equal(store.getMeeting(meeting.meetingId)?.status, "INCOMPLETE");
+    assert.equal(store.database.listArtifactOperations().at(-1)?.state, "INCOMPLETE");
     assert.equal(store.database.listRecordings(meeting.meetingId).length, 0);
   });
 });

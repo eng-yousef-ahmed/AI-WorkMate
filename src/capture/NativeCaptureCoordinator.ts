@@ -132,7 +132,31 @@ export class NativeCaptureCoordinator {
   public async stopCapture(request: NativeMeetingCaptureStopRequest): Promise<NativeCaptureStateSnapshot> {
     const active = this.requireActiveCapture(request.captureId);
     this.assertMeetingOwner(active, request.meetingId);
-    await active.nativeSession.stop();
+    try {
+      await active.nativeSession.stop();
+    } catch (error: unknown) {
+      const stopError = error instanceof NativeCaptureError
+        ? error
+        : new NativeCaptureError({
+            code: "NATIVE_CAPTURE_STOP_FAILED",
+            message: error instanceof Error ? error.message : String(error),
+            capability: active.capability,
+            retryable: true,
+          }, { cause: error });
+      active.failed = stopError;
+      await active.nativeSession.abort(stopError.message).catch(() => undefined);
+      await active.pump.catch(() => undefined);
+      try {
+        await this.localCapture.abortCapture({
+          captureId: active.localCaptureId,
+          meetingId: active.meetingId,
+          reason: stopError.message,
+        });
+      } finally {
+        this.clearActive(active);
+      }
+      throw stopError;
+    }
     await active.pump;
     if (active.failed !== undefined) {
       this.clearActive(active);
@@ -187,7 +211,7 @@ export class NativeCaptureCoordinator {
             retryable: true,
           }, { cause: error });
       active.failed = nativeError;
-      await this.localCapture.failCapture({
+      await this.localCapture.abortCapture({
         captureId: active.localCaptureId,
         meetingId: active.meetingId,
         reason: nativeError.message,
