@@ -6,6 +6,7 @@ release/
 Thumbs.db
 
 # Never commit local user data or credentials
+.ai-workmate-phase6c-verify-*/
 .ai-workmate-migration-*/
 .ai-workmate-restore-*/
 AI WorkMate Data/

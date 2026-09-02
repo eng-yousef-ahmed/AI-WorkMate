@@ -26,3 +26,4 @@ export * from "./capture/NativeCaptureAdapter";
 export * from "./capture/NativeCaptureCoordinator";
 export * from "./capture/WindowsCaptureAdapter";
 export * from "./capture/WindowsNativeAudioProvider";
+export * from "./capture/WindowsRuntimeCaptureVerification";

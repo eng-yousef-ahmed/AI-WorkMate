@@ -16,7 +16,8 @@
     "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
     "desktop": "npm run build && electron dist/src/desktop/main.js",
     "package:win": "npm run build && npm run build:native:win && electron-builder --win",
-    "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true"
+    "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true",
+    "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js"
   },
   "repository": {
     "type": "git",

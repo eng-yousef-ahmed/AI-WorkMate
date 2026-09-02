@@ -105,6 +105,21 @@ The provider does not write files and does not choose output paths. It starts th
 
 Packaging includes a Windows helper build step: `npm run build:native:win`, and `npm run package:win` runs it before Electron packaging. Real Windows verification confirmed: `npm run build:native:win` succeeded; `capabilities` enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio); microphone capture produced `mic-test.jsonl` (977 lines: format + 976 audio chunks, no errors); WASAPI loopback produced `loopback-test.jsonl` (2229 lines: format + audio chunks, no errors). That helper used the real NAudio implementation with no mock production capture. Status: **IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED** for microphone and loopback helper capture. Screen/window capture remains a **REMAINING GAP**. Microphone/system-audio synchronization/mixing is not solved; each stream remains independently owned and sequenced.
 
+## Windows runtime verification (Phase 6C)
+
+Do this on the Windows machine that already has Node, npm, and .NET:
+
+```bat
+cd /d C:\AI-WorkMate
+git checkout arena/01a0609d-ai-workmate
+git pull
+npm install
+npm run build:native:win
+npm run verify:windows-native-capture
+```
+
+The command uses the real helper (no mocks) for a 3-second default-microphone capture and a 3-second WASAPI loopback capture through `StorageRuntime.startNativeCapture()`, then prints JSON with platform, helper path, source label, format, chunk counts, sequences, bytes, SHA-256, recording/meeting UUIDs, journal state, SQLite recording status, and artifact size. It fail-closes if the helper or device is unavailable. Isolated temp storage is used so existing user data is not modified. **Do not treat Linux output as WINDOWS-VERIFIED.**
+
 ## Application integration of Windows native capture (Phase 6C)
 
 `StorageRuntime` now owns the production capture stack: `createNativeCaptureAdapter()` → `WindowsNativeAudioProvider` on Windows → `NativeCaptureCoordinator` → `LocalRecordingCaptureEngine` → `LocalFirstStore`. On Windows, microphone and system-audio policy is allow-listed in the main process only; screen/window remain denied. Capture remains fail-closed when the helper is missing, the platform is unsupported, a device is unavailable, permission is denied, records are malformed, or the native process fails. Native capture is **not** exposed as renderer IPC: no DATA_ROOT, absolute paths, device paths, or native process controls leave the main process. Tests cover the runtime integration boundary with helper doubles confined to test code.

@@ -85,6 +85,30 @@ The TypeScript provider validates helper records before the coordinator writes t
 
 The helper build is separate from the Linux TypeScript build: `npm run build:native:win` publishes the Windows executable and `npm run package:win` includes it as an Electron extra resource. Real Windows verification built the helper, enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio), captured 977-line microphone JSONL and 2229-line loopback JSONL with no error records, and used the real NAudio implementation. Status for helper capture: **WINDOWS-VERIFIED**. Microphone and loopback streams are independently sequenced; cross-source synchronization, mixing, and echo cancellation are explicitly not solved yet.
 
+## Windows runtime verification command (Phase 6C)
+
+The production path is verified on a real Windows host with:
+
+```bat
+cd /d C:\AI-WorkMate
+git checkout arena/01a0609d-ai-workmate
+git pull
+npm install
+npm run build:native:win
+npm run verify:windows-native-capture
+```
+
+That command builds TypeScript, publishes the real `.NET` helper, then runs `StorageRuntime.startNativeCapture()` against the real WASAPI helper for a short isolated capture (3 seconds each) of the default microphone and default loopback endpoint. It also aborts one capture to confirm incomplete journal behavior. It uses a temporary DATA_ROOT and config outside any existing user workspace, then deletes that workspace unless `--keep-workspace` is passed.
+
+Optional:
+
+```bat
+npm run verify:windows-native-capture -- --duration-ms=5000
+node dist/scripts/verify-windows-native-capture.js --keep-workspace
+```
+
+Success criteria: JSON `success: true`, `windowsVerified: true`, abort `INCOMPLETE` with zero SQLite recordings, and each capture `COMMITTED` with `chunkCount > 0`, `firstSequence: 0`, matching SHA-256, meeting UUID ownership, and a non-empty final artifact. Linux/headless runs fail closed with `NATIVE_PLATFORM_UNSUPPORTED` and must not be labeled WINDOWS-VERIFIED.
+
 ## Application integration (Phase 6C)
 
 `StorageRuntime` constructs the capture stack whenever a store is attached: native adapter, `LocalRecordingCaptureEngine`, and `NativeCaptureCoordinator`. Callers in the main process start/stop/abort by meeting UUID. Closing the runtime aborts active native sessions. DATA_ROOT, absolute paths, helper process handles, and device paths are not returned to the renderer; no capture IPC channels exist. Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed only via the existing artifact journal.

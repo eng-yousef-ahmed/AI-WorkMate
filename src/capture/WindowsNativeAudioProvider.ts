@@ -120,7 +120,7 @@ export class WindowsNativeAudioProvider implements WindowsNativeCaptureProvider,
 
   public constructor(options: WindowsNativeAudioProviderOptions = {}) {
     this.platform = options.platform ?? process.platform;
-    this.helperPaths = options.helperPath === undefined ? defaultHelperCandidates() : [normalizeHelperPath(options.helperPath)];
+    this.helperPaths = options.helperPath === undefined ? windowsAudioHelperCandidates() : [normalizeHelperPath(options.helperPath)];
     this.helperRunner = options.helperRunner;
     this.clock = options.clock ?? (() => new Date());
     this.helperTimeoutMs = options.helperTimeoutMs ?? HELPER_TIMEOUT_MS;
@@ -582,13 +582,26 @@ function createSpawnRunner(helperPath: string): WindowsAudioHelperRunner {
   };
 }
 
-function defaultHelperCandidates(): string[] {
+export function windowsAudioHelperCandidates(): string[] {
   const resourcesPath = stringRecord(process).resourcesPath;
   return [
     ...(typeof resourcesPath === "string" ? [join(resourcesPath, "native", "windows-audio", "AIWorkMate.WindowsAudioCapture.exe")] : []),
     resolve(__dirname, "..", "..", "native", "windows-audio", "AIWorkMate.WindowsAudioCapture.exe"),
     resolve(__dirname, "..", "..", "..", "native", "windows-audio", "bin", "Release", "net8.0-windows", "win-x64", "publish", "AIWorkMate.WindowsAudioCapture.exe"),
   ];
+}
+
+export async function resolveWindowsAudioHelperPath(helperPath?: string): Promise<string | undefined> {
+  const candidates = helperPath === undefined ? windowsAudioHelperCandidates() : [normalizeHelperPath(helperPath)];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Continue scanning packaged and development helper locations.
+    }
+  }
+  return undefined;
 }
 
 function normalizeHelperPath(helperPath: string): string {
