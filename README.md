@@ -1,6 +1,6 @@
 # AI WorkMate
 
-AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5 local recording/capture boundary, Phase 6A–6C native Windows capture, and Phase 7 local transcription of committed AIWPCM recordings. Existing meeting data is owned by the desktop process:
+AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5–6C native Windows capture, Phase 7A local transcription pipeline, and Phase 7B real local whisper.cpp speech-to-text (when installed). Existing meeting data is owned by the desktop process:
 
 ```text
 Windows desktop
@@ -139,7 +139,18 @@ Phase 7 transcribes a committed meeting recording already stored under `DATA_ROO
 
 Lifecycle: `PROCESSING` while work is in progress; `COMPLETED` only after the transcript artifact and SQLite row exist; `FAILED` for non-retryable validation/engine-not-configured errors; `INCOMPLETE` for retryable interruption. Restart recovery marks an in-flight transcription `INCOMPLETE`.
 
-**No production speech-to-text runtime is bundled.** `UnconfiguredTranscriptionEngine` is the default and fail-closes with `TRANSCRIPTION_ENGINE_NOT_CONFIGURED` without inventing words. Tests inject a local double only. A real engine (for example a future Windows-local Whisper/ONNX helper) is the `StorageRuntimeIntegrations.transcriptionEngine` injection point. This phase does **not** claim speech recognition.
+Phase 7A does **not** invent transcript text. Tests may inject engine doubles.
+
+## Local whisper.cpp speech-to-text (Phase 7B)
+
+Production `StorageRuntime` now defaults to `WindowsLocalWhisperEngine`. It converts AIWPCM (including 48 kHz / 2 ch / 32-bit WASAPI PCM) to 16 kHz mono 16-bit WAV and runs **whisper.cpp** (`whisper-cli.exe`) on the Windows machine. Audio is not uploaded.
+
+The CLI and ggml/gguf model are **not** in Git. Install:
+
+- `%LOCALAPPDATA%\AI-WorkMate\native\whisper-cli.exe`
+- `%LOCALAPPDATA%\AI-WorkMate\models\whisper\ggml-tiny.bin`
+
+Missing runtime/model fails with `TRANSCRIPTION_ENGINE_UNAVAILABLE`. Speaker diarization is not implemented. Tests inject helper doubles only. `npm run verify:windows-local-transcription` fail-closes off Windows and is **not WINDOWS-VERIFIED** until it succeeds on a real Windows host with a real model.
 
 ## Location migration
 

@@ -30,3 +30,6 @@ export * from "./capture/WindowsRuntimeCaptureVerification";
 export * from "./transcription/TranscriptionEngine";
 export * from "./transcription/AiwpcmRecordingDecoder";
 export * from "./transcription/LocalTranscriptionService";
+export * from "./transcription/PrepareWhisperAudio";
+export * from "./transcription/WindowsLocalWhisperEngine";
+export * from "./transcription/WindowsLocalTranscriptionVerification";

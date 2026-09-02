@@ -4,7 +4,12 @@ export type TranscriptionEngineKind = "LOCAL";
 
 export type TranscriptionErrorCode =
   | "TRANSCRIPTION_ENGINE_NOT_CONFIGURED"
+  | "TRANSCRIPTION_ENGINE_UNAVAILABLE"
   | "TRANSCRIPTION_ENGINE_FAILED"
+  | "TRANSCRIPTION_ENGINE_TIMEOUT"
+  | "TRANSCRIPTION_ENGINE_CRASHED"
+  | "TRANSCRIPTION_ENGINE_INVALID_OUTPUT"
+  | "TRANSCRIPTION_CANCELLED"
   | "TRANSCRIPTION_RECORDING_INVALID"
   | "TRANSCRIPTION_RECORDING_EMPTY"
   | "TRANSCRIPTION_RECORDING_CORRUPTED"
@@ -37,6 +42,8 @@ export interface TranscriptionRequest {
   recordingId: string;
   language?: string;
   audio: PreparedPcmAudio;
+  sourceRecordingSha256?: string;
+  signal?: AbortSignal;
 }
 
 export interface TranscriptionEngineResult {
@@ -48,6 +55,7 @@ export interface TranscriptionEngineResult {
   timestamps: boolean;
   confidence?: number;
   engine: TranscriptionEngineDescriptor;
+  sourceRecordingSha256?: string;
 }
 
 export interface TranscriptionEngine {
@@ -105,6 +113,9 @@ export function transcriptDocumentFromEngineResult(result: TranscriptionEngineRe
   };
   if (result.confidence !== undefined) {
     document.confidence = result.confidence;
+  }
+  if (result.sourceRecordingSha256 !== undefined) {
+    document.sourceRecordingSha256 = result.sourceRecordingSha256;
   }
   return document;
 }

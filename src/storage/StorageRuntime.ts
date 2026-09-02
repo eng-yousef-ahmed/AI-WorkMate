@@ -27,6 +27,7 @@ import type { CredentialStore } from "../security/CredentialStore";
 import { LocalDatabase } from "./LocalDatabase";
 import { LocalFirstStore } from "./LocalFirstStore";
 import { LocalTranscriptionService, type TranscriptionPersistResult } from "../transcription/LocalTranscriptionService";
+import { WindowsLocalWhisperEngine } from "../transcription/WindowsLocalWhisperEngine";
 import type { TranscriptionEngine } from "../transcription/TranscriptionEngine";
 import type { StorageConfigService } from "./StorageConfigService";
 import { DataRootValidationError, StorageError } from "./errors";
@@ -380,13 +381,14 @@ export class StorageRuntime {
     );
     this.transcription = new LocalTranscriptionService({
       store,
-      ...(this.integrations.transcriptionEngine === undefined ? {} : { engine: this.integrations.transcriptionEngine }),
+      engine: this.integrations.transcriptionEngine ?? new WindowsLocalWhisperEngine(),
     });
   }
 
   private async detachStore(reason: string): Promise<void> {
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
+    this.transcription = undefined;
     this.store?.close();
     this.store = undefined;
   }

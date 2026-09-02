@@ -202,6 +202,7 @@ export interface TranscriptDocument {
   language: string;
   createdAt: string;
   engine?: TranscriptEngineMetadata;
+  sourceRecordingSha256?: string;
 }
 
 export interface TranscriptArtifacts {

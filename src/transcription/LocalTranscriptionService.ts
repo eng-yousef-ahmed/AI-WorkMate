@@ -59,6 +59,7 @@ export class LocalTranscriptionService {
         meetingId,
         recordingId,
         audio,
+        ...(recording.sha256 === undefined ? {} : { sourceRecordingSha256: recording.sha256 }),
       });
       if (result.meetingId !== meetingId || result.recordingId !== recordingId) {
         throw new TranscriptionError("TRANSCRIPTION_ENGINE_FAILED", "Transcription engine returned a mismatched meeting or recording.", false);
