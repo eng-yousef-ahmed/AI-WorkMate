@@ -99,7 +99,7 @@ app.whenReady().then(() => bootstrap()).catch((error: unknown) => {
 });
 
 app.on("window-all-closed", () => {
-  runtime?.store?.close();
+  void runtime?.close();
   mainWindow = undefined;
   if (process.platform !== "darwin") {
     app.quit();

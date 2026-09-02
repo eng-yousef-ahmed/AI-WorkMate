@@ -11,6 +11,18 @@ import type {
   StorageSnapshot,
 } from "../domain/models";
 import type { CalendarEventProvider, CalendarSyncRange, CalendarSyncResult } from "../calendar/CalendarModels";
+import {
+  type NativeCaptureAdapter,
+  type NativeCaptureCapabilities,
+  type NativeCapturePolicy,
+  type NativeCaptureStateSnapshot,
+  type NativeMeetingCaptureAbortRequest,
+  type NativeMeetingCaptureStartRequest,
+  type NativeMeetingCaptureStopRequest,
+} from "../capture/NativeCaptureAdapter";
+import { LocalRecordingCaptureEngine } from "../capture/LocalRecordingCaptureEngine";
+import { NativeCaptureCoordinator } from "../capture/NativeCaptureCoordinator";
+import { createNativeCaptureAdapter } from "../capture/WindowsCaptureAdapter";
 import type { CredentialStore } from "../security/CredentialStore";
 import { LocalDatabase } from "./LocalDatabase";
 import { LocalFirstStore } from "./LocalFirstStore";
@@ -30,14 +42,18 @@ export interface ChangeDataRootResult {
 
 export interface StorageRuntimeIntegrations {
   microsoftCalendarProvider?: CalendarEventProvider;
+  nativeCaptureAdapter?: NativeCaptureAdapter;
+  nativeCapturePolicy?: Partial<NativeCapturePolicy>;
 }
 
 /** Application lifecycle boundary for first-run setup and location changes. */
 export class StorageRuntime {
   public store: LocalFirstStore | undefined;
+  public nativeCapture: NativeCaptureCoordinator | undefined;
   public readonly credentialStore: CredentialStore | undefined;
   private readonly config: StorageConfigService;
   private readonly storageOptions: LocalStorageServiceOptions;
+  private readonly nativeAdapter: NativeCaptureAdapter;
 
   public constructor(
     config: StorageConfigService,
@@ -49,6 +65,7 @@ export class StorageRuntime {
     this.config = config;
     this.credentialStore = credentialStore;
     this.storageOptions = storageOptions;
+    this.nativeAdapter = integrations.nativeCaptureAdapter ?? createNativeCaptureAdapter({ clock: this.clock });
   }
 
   public async initialize(): Promise<boolean> {
@@ -60,7 +77,7 @@ export class StorageRuntime {
     }
     const store = new LocalFirstStore(dataRoot, { ...this.storageOptions, clock: this.clock });
     await store.initialize();
-    this.store = store;
+    this.attachStore(store);
     return true;
   }
 
@@ -77,7 +94,7 @@ export class StorageRuntime {
     const store = new LocalFirstStore(normalized, { ...this.storageOptions, clock: this.clock });
     await store.initialize();
     await this.config.setDataRoot(normalized);
-    this.store = store;
+    this.attachStore(store);
   }
 
   public async prepareDataRootChange(destination: string): Promise<MigrationPlan> {
@@ -139,10 +156,10 @@ export class StorageRuntime {
         // itself cannot be updated.
       }
       if (this.store !== undefined && !samePath(this.store.storage.dataRoot, plan.source)) {
-        this.store.close();
+        await this.detachStore("DATA_ROOT migration failed; aborting native capture.");
         const sourceStore = new LocalFirstStore(plan.source, { ...this.storageOptions, clock: this.clock });
         await sourceStore.initialize();
-        this.store = sourceStore;
+        this.attachStore(sourceStore);
       }
       throw error;
     }
@@ -195,6 +212,30 @@ export class StorageRuntime {
 
   public getDataRoot(): string {
     return this.requireStore().storage.dataRoot;
+  }
+
+  public discoverNativeCaptureCapabilities(): Promise<NativeCaptureCapabilities> {
+    return this.requireNativeCapture().discoverCapabilities();
+  }
+
+  public startNativeCapture(request: NativeMeetingCaptureStartRequest): Promise<NativeCaptureStateSnapshot> {
+    return this.requireNativeCapture().startCapture(request);
+  }
+
+  public stopNativeCapture(request: NativeMeetingCaptureStopRequest): Promise<NativeCaptureStateSnapshot> {
+    return this.requireNativeCapture().stopCapture(request);
+  }
+
+  public abortNativeCapture(request: NativeMeetingCaptureAbortRequest): Promise<NativeCaptureStateSnapshot> {
+    return this.requireNativeCapture().abortCapture(request);
+  }
+
+  public getNativeCaptureState(captureId: string): NativeCaptureStateSnapshot {
+    return this.requireNativeCapture().getCaptureState(captureId);
+  }
+
+  public async close(): Promise<void> {
+    await this.detachStore("Storage runtime closed.");
   }
 
   private async recoverPendingMigration(journal: MigrationJournal | undefined): Promise<void> {
@@ -311,6 +352,39 @@ export class StorageRuntime {
     }
     return this.store;
   }
+
+  private requireNativeCapture(): NativeCaptureCoordinator {
+    if (this.nativeCapture === undefined) {
+      throw new StorageError("Choose a local data location before using native capture.");
+    }
+    return this.nativeCapture;
+  }
+
+  private attachStore(store: LocalFirstStore): void {
+    this.store = store;
+    this.nativeCapture = new NativeCaptureCoordinator(
+      this.nativeAdapter,
+      new LocalRecordingCaptureEngine(store, this.clock),
+      { policy: productionNativeCapturePolicy(this.integrations.nativeCapturePolicy) },
+    );
+  }
+
+  private async detachStore(reason: string): Promise<void> {
+    await this.nativeCapture?.abortAllActive(reason);
+    this.nativeCapture = undefined;
+    this.store?.close();
+    this.store = undefined;
+  }
+}
+
+function productionNativeCapturePolicy(overrides: Partial<NativeCapturePolicy> | undefined): Partial<NativeCapturePolicy> {
+  return {
+    MICROPHONE_AUDIO: "ALLOW",
+    SYSTEM_AUDIO: "ALLOW",
+    SCREEN: "DENY",
+    WINDOW: "DENY",
+    ...overrides,
+  };
 }
 
 function samePath(left: string, right: string): boolean {

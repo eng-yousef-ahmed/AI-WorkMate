@@ -190,6 +190,17 @@ export class NativeCaptureCoordinator {
     return nativeSnapshot(aborted, active);
   }
 
+  public async abortAllActive(reason: string): Promise<void> {
+    const actives = [...this.activeByCaptureId.values()];
+    for (const active of actives) {
+      await this.abortCapture({
+        captureId: active.localCaptureId,
+        meetingId: active.meetingId,
+        reason,
+      }).catch(() => undefined);
+    }
+  }
+
   private async pumpNativeChunks(active: ActiveNativeCapture): Promise<void> {
     try {
       for await (const chunk of active.nativeSession.chunks) {

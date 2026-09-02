@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   NATIVE_CAPTURE_KINDS,
   NativeCaptureError,
+  type NativeCaptureAdapter,
   type NativeCaptureCapabilities,
   type NativeCaptureCapability,
   type NativeCaptureErrorCode,
@@ -109,7 +110,7 @@ interface HelperErrorPayload {
  * audio helper, which uses WASAPI through NAudio/CoreAudio. The provider never
  * creates media bytes itself and requires actual helper output for media records.
  */
-export class WindowsNativeAudioProvider implements WindowsNativeCaptureProvider {
+export class WindowsNativeAudioProvider implements WindowsNativeCaptureProvider, NativeCaptureAdapter {
   public readonly adapterId = PROVIDER_ID;
   private readonly platform: NodeJS.Platform | string;
   private readonly helperPaths: readonly string[];

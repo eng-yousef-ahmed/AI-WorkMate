@@ -1,9 +1,9 @@
 # AI WorkMate implementation status
 
-Updated: 2026-09-01
+Updated: 2026-09-02
 
-This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, and implements Phase 6B Windows native audio provider code. It does not
-implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, verified Windows execution, transcription, or the full AI pipeline. The persistent meeting store
+This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, implements Phase 6B Windows native audio provider code with real Windows helper verification, and integrates that path into `StorageRuntime` (Phase 6C). It does not
+implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, transcription, or the full AI pipeline. The persistent meeting store
 remains local SQLite plus filesystem artifacts; that does **not** mean that an
 explicitly approved cloud AI request is local.
 
@@ -14,19 +14,28 @@ explicitly approved cloud AI request is local.
 - **CODE-VERIFIED** — the production wiring, static types, and configuration were reviewed and built, but the behavior was not exercised in a Windows GUI/installer environment.
 - **NOT TESTED** — no automated or manual execution was available for the item.
 - **WINDOWS-UNVERIFIED** — Windows-specific execution is required before this can be called tested; Linux tests only cover portable logic or Windows-style policy cases.
+- **WINDOWS-VERIFIED** — the behavior was executed on a real Windows host with the real native implementation.
 - **REMAINING GAP** — intentionally deferred work or a limitation of this phase.
 
 ## IMPLEMENTED
 
+### PHASE 6C application integration of Windows native capture
+
+- **IMPLEMENTED / TESTED / CODE-VERIFIED:** `StorageRuntime` attaches `NativeCaptureCoordinator` + `LocalRecordingCaptureEngine` to the live `LocalFirstStore`. On Windows the factory uses `WindowsNativeAudioProvider`; non-Windows remains fail-closed. Main-process APIs are `discoverNativeCaptureCapabilities`, `startNativeCapture`, `stopNativeCapture`, `abortNativeCapture`, and `getNativeCaptureState`.
+- **IMPLEMENTED / TESTED:** Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed through the existing artifact journal, SHA-256, atomic write, recording metadata, and meeting UUID lifecycle path.
+- **IMPLEMENTED / TESTED:** Stop, abort, malformed native records, permission denial, and runtime close abort remaining sessions without fabricating media. Screen/window stay policy-denied.
+- **IMPLEMENTED / TESTED:** No capture IPC, DATA_ROOT, absolute paths, device paths, or native process controls are exposed to the renderer.
+- **WINDOWS-UNVERIFIED:** End-to-end Electron GUI capture from the Storage Settings window was not run; integration is main-process only.
+- **REMAINING GAP:** Capture UI, mixed microphone+loopback sessions, screen/window providers, and Teams/Zoom automation.
+
 ### PHASE 6B real Windows native audio provider code
 
-- **IMPLEMENTED / CODE-VERIFIED / WINDOWS-UNVERIFIED:** `WindowsNativeAudioProvider` is a production provider that shells out to the packaged Windows audio helper instead of generating media. The helper source lives in `native/windows-audio/` and uses .NET 8 plus NAudio/CoreAudio/WASAPI APIs for microphone capture endpoints and WASAPI loopback over render endpoints for system audio. The helper was not built or executed in this Linux/headless sandbox.
+- **IMPLEMENTED / CODE-VERIFIED / WINDOWS-VERIFIED:** `WindowsNativeAudioProvider` is a production provider that shells out to the packaged Windows audio helper instead of generating media. The helper source lives in `native/windows-audio/` and uses .NET 8 plus NAudio/CoreAudio/WASAPI APIs for microphone capture endpoints and WASAPI loopback over render endpoints for system audio. Real Windows verification: `npm run build:native:win` succeeded; capabilities listed Microphone `Jack Mic (Realtek Audio)` (default) and system audio `Speakers / Headphones (Realtek Audio)` (default); `mic-test.jsonl` = 977 lines (format + 976 audio chunks, no error records); `loopback-test.jsonl` = 2229 lines (format + audio chunks, no error records). The helper used the real Windows NAudio implementation; no mock/fake production capture was used.
 - **IMPLEMENTED / TESTED:** Capability discovery maps helper-reported microphone devices, default microphone, render/loopback devices, default render endpoint, safe device IDs, and human-readable labels into the existing `NativeCaptureCapabilities` model. Non-Windows, missing helper, unavailable device, permission denied, and initialization failure states are explicit typed failures.
 - **IMPLEMENTED / TESTED:** The provider rejects screen/window capture and unsupported output formats. It supports only the documented lossless intermediate `aiwpcm` / `application/x-ai-workmate-pcm-jsonl` stream for audio. The format stores JSON Lines containing a capture format record and PCM chunk records with source, sequence, capture timestamp, WASAPI-reported sample rate/channels/bits-per-sample/block alignment/average bytes per second, byte length, per-chunk SHA-256, and base64 PCM payload.
 - **IMPLEMENTED / TESTED:** Provider-side stream validation rejects invalid timestamps, out-of-order helper chunk sequence, changed source IDs, changed format, empty/invalid byte lengths, and SHA-256 mismatch before the data can be committed. The coordinator still adds its own ordered write into `LocalRecordingCaptureEngine`.
 - **IMPLEMENTED / TESTED:** Windows microphone and system-audio/loopback sessions integrate with `NativeCaptureCoordinator` and the existing Phase 5 local capture/storage path. Tests cover lifecycle to `PROCESSING`, artifact journal commit, recording metadata, duplicate ownership, wrong meeting UUIDs, unavailable selected devices, native stream failure, disk-space preflight failure, and incomplete abort behavior using injected helper-process doubles.
 - **IMPLEMENTED / CODE-VERIFIED:** `package.json` now includes `build:native:win` for `dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true`, and `package:win` runs the native publish before Electron packaging. The packaged helper is configured as an Electron `extraResources` payload.
-- **WINDOWS-UNVERIFIED / NOT TESTED:** No real microphone frames, WASAPI loopback frames, Windows permission prompt, endpoint disconnect, or helper executable run was verified here. These require a Windows host with audio devices.
 - **REMAINING GAP:** Microphone/system-audio synchronization, mixing, echo cancellation, device-change UI, signed helper distribution validation, and screen/window capture providers remain future work.
 
 ### PHASE 6A native Windows capture source boundary
@@ -37,7 +46,7 @@ explicitly approved cloud AI request is local.
 - **IMPLEMENTED / TESTED:** When an injected native adapter produces actual chunks, the coordinator passes them through the existing local capture/storage pipeline in sequence. Existing chunk validation, SHA-256 verification, atomic staged writes, artifact journal transitions, recording metadata, lifecycle to `PROCESSING`, and disk-space fail-closed behavior remain the authority.
 - **IMPLEMENTED / TESTED:** Native startup failure does not create a local recording or mark a meeting completed. Native safe-stop/abort marks the local capture `INCOMPLETE`; native stream failures mark the partial local recording `INCOMPLETE`, while finalization/storage failure marks `FAILED`; unsupported or unavailable capabilities never create fake recordings.
 - **IMPLEMENTED / TESTED / CODE-VERIFIED:** No capture IPC was added. Existing Electron guarantees remain intact: context isolation, disabled node integration, sandboxed renderer, trusted sender/frame checks, preload-only allow-listed channels, and no renderer filesystem path exposure.
-- **CODE-VERIFIED / WINDOWS-UNVERIFIED / REMAINING GAP:** Phase 6B now supplies Windows microphone and loopback provider code, but it was not executed against real Windows audio APIs in this Linux/headless sandbox. Screen/window native providers remain unimplemented, and Windows native capture is not claimed Windows-tested.
+- **WINDOWS-VERIFIED / REMAINING GAP:** Phase 6B microphone and loopback helper capture was executed on a real Windows host. Screen/window native providers remain unimplemented.
 
 ### PHASE 5 local recording/capture boundary
 
@@ -49,7 +58,7 @@ explicitly approved cloud AI request is local.
 - **IMPLEMENTED / TESTED:** SQLite schema version 5 expands `recordings` metadata with safe committed-recording fields: recording/file UUIDs, meeting UUID, variant, container/format, capture start/end/duration, byte size, SHA-256, relative path, capture source/adapter, and final status. Recording binaries remain filesystem files and are not stored as SQLite BLOBs. Incomplete captures without a verified final file remain journal/recovery records rather than indexed recording rows.
 - **IMPLEMENTED / TESTED:** Existing disk-space protection is reused. Unknown free space fails closed at preflight; insufficient preflight space marks the meeting `FAILED`; insufficient/critical/unknown space during active capture stops safely as `INCOMPLETE` through the storage boundary.
 - **IMPLEMENTED / TESTED / CODE-VERIFIED:** No new capture IPC was exposed. Existing Electron security remains intact: context isolation, disabled node integration, sandboxed renderer, trusted sender/frame checks, preload-only allow-listed channels, and renderer-safe path-free responses. A regression test asserts there are no renderer capture/output-path IPC channels.
-- **CODE-VERIFIED / WINDOWS-UNVERIFIED / REMAINING GAP:** The local adapter is a file-backed chunk/stream boundary suitable for bytes from a future real Windows capture implementation, but it does not capture Teams, Zoom, Google Meet, browser tabs, screen video, microphone audio, system audio, or meeting media. No Windows capture-device execution occurred in this Linux/headless sandbox.
+- **CODE-VERIFIED / WINDOWS-VERIFIED (audio via Phase 6B/6C) / REMAINING GAP:** The local adapter is a file-backed chunk/stream boundary. Real microphone and WASAPI loopback bytes now enter it through the native coordinator. It still does not capture Teams, Zoom, Google Meet, browser tabs, or screen/window video.
 
 ## PHASE 4 Microsoft 365 / Outlook Calendar discovery
 
@@ -119,11 +128,11 @@ explicitly approved cloud AI request is local.
 
 ## TESTED
 
-The following commands completed successfully in the Linux sandbox after the Phase 6B Windows native audio provider changes:
+The following commands completed successfully in the Linux sandbox after the Phase 6C runtime integration:
 
 - `npm run lint` — **PASSED**, ESLint with zero warnings.
 - `npm run typecheck` — **PASSED**.
-- `npm test` — **PASSED: 98/98 tests**; its nested build also passed.
+- `npm test` — **PASSED: 103/103 tests**; its nested build also passed.
 - `npm run test:storage` — **PASSED: 26/26 storage tests** for the complete `storage*.test.js` suite; its nested build also passed.
 - `npm run build` — **PASSED** (TypeScript output and renderer asset copy).
 
@@ -143,18 +152,18 @@ Automated coverage includes Windows native audio provider platform detection, mi
 - No end-to-end Electron GUI test was run in the headless Linux test command. The pure window-policy tests do not prove Chromium/Electron event delivery.
 - No signed installer artifact, update cycle, uninstall wizard, or real Windows drive/ACL exercise was run.
 - No physical power-loss or forced-process termination test was run; crash handling is covered by durable-state, restart-recovery, and fault-injection tests rather than an actual crash harness.
-- No real Windows microphone, system-audio/loopback, screen, or window capture API was executed. Native capture and Windows audio provider tests use injected boundary/helper doubles and do not certify Windows GUI/device behavior. The .NET helper was not built in this Linux sandbox.
+- No screen or window capture API was executed. Linux native capture tests still use injected boundary/helper doubles. Real Windows microphone and WASAPI loopback helper capture was verified on a separate Windows host (Phase 6B) and is not re-executed in this Linux sandbox.
 - No live Microsoft OAuth/MSAL sign-in, tenant consent, token acquisition, or live Microsoft Graph calendar request was executed.
 
 ## WINDOWS-UNVERIFIED
 
-- Actual Windows `Program Files`/ACL behavior, junction/symlink semantics, Windows path parsing under the running Electron app, Windows-specific `statfs`/disk-full behavior, .NET helper execution, NAudio/CoreAudio/WASAPI microphone capture, WASAPI loopback capture, and screen/window capture APIs require a Windows host.
+- Actual Windows `Program Files`/ACL behavior, junction/symlink semantics, Windows path parsing under the running Electron app, Windows-specific `statfs`/disk-full behavior, and screen/window capture APIs require a Windows host. Microphone and WASAPI loopback helper capture is separately **WINDOWS-VERIFIED**.
 - Electron GUI navigation/webview behavior, `safeStorage`/DPAPI, Windows credential protection, Microsoft MSAL desktop redirect/broker behavior, NSIS update/uninstall behavior, and preservation of user-selected DATA_ROOT across installer operations were not executable in this Linux sandbox.
 - The Linux tests do include Windows-style path policy cases and verify the code's boundary/case rules, but those results are not a Windows execution claim.
 
 ## REMAINING GAP
 
-- **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, the local capture/storage boundary, native source abstraction/policy/coordinator, and Windows native audio provider code are implemented, but actual Teams/Zoom/Google Meet/browser automation, screen/window capture providers, and Windows-verified microphone/system-audio execution remain intentionally out of scope.
+- **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, the local capture/storage boundary, native source abstraction/policy/coordinator, Windows native audio provider, and runtime integration are implemented. Real Windows microphone/loopback helper capture is verified. Teams/Zoom/Google Meet/browser automation and screen/window capture providers remain out of scope.
 - **AI is not end-to-end:** **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end.** The provider/policy abstraction and manual local `saveAnalysis()` facade exist, but automatic transcription, provider invocation, and analysis persistence are not connected.
 - Migration recovery can safely activate a fully copied destination or mark an interrupted copy incomplete; resumable copying/progress/cancellation UI is not implemented.
 - A signed production installer, a user-facing Keep/Delete uninstall choice, full Microsoft OAuth/MSAL sign-in UX, ordinary meeting-file encryption-at-rest, and automated backup retention are not implemented.

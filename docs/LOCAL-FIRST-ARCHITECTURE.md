@@ -29,6 +29,7 @@ Electron main process
    │     └── capability discovery + policy + real native-provider handoff
    ├── WindowsNativeAudioProvider
    │     └── .NET/NAudio helper using CoreAudio/WASAPI microphone + loopback APIs
+   ├── StorageRuntime native capture API (main process only; no renderer capture IPC)
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```
@@ -67,9 +68,9 @@ Capture writes use the same storage guarantees as other artifacts: same-director
 
 `NativeCaptureAdapter` is the production-facing source boundary above the local capture engine. It reports structured capabilities for microphone audio, system audio, screen capture, and window capture with explicit `AVAILABLE`, `UNAVAILABLE`, `UNSUPPORTED`, or `PERMISSION_DENIED` status and typed errors. Capability source descriptors contain safe source IDs/labels only and no filesystem paths.
 
-`WindowsCaptureAdapter` does not capture by itself and does not fabricate media. On non-Windows platforms, `createNativeCaptureAdapter()` returns an unsupported adapter. On Windows, the adapter reports `NATIVE_PROVIDER_NOT_CONFIGURED` until a real native provider is registered by the desktop/native layer. If a real provider later supplies chunks, `NativeCaptureCoordinator` feeds those chunks into `LocalRecordingCaptureEngine` in sequence so the same SHA-256, atomic write, journal, metadata, lifecycle, recovery, and disk-space rules apply.
+`WindowsCaptureAdapter` does not capture by itself and does not fabricate media. On non-Windows platforms, `createNativeCaptureAdapter()` returns an unsupported adapter. On Windows, the factory wires `WindowsNativeAudioProvider`; a missing helper reports `NATIVE_PROVIDER_NOT_CONFIGURED`. `NativeCaptureCoordinator` feeds real native chunks into `LocalRecordingCaptureEngine` in sequence so the same SHA-256, atomic write, journal, metadata, lifecycle, recovery, and disk-space rules apply.
 
-Native capture policy is default-deny for microphone audio, system audio, screen, and window. The coordinator rejects denied or unavailable capabilities before creating a local recording, keys active ownership by the internal meeting UUID, rejects wrong-meeting stop/abort calls, and rejects caller-supplied output paths. No native capture IPC exists in Phase 6A, so renderer filesystem/capture isolation remains unchanged. Linux/headless tests use injected adapter doubles to verify orchestration; actual Windows device/API capture is **WINDOWS-UNVERIFIED**.
+Native capture policy is default-deny at the coordinator. `StorageRuntime` allow-lists microphone and system audio on Windows only; screen and window remain denied. The coordinator rejects denied or unavailable capabilities before creating a local recording, keys active ownership by the internal meeting UUID, rejects wrong-meeting stop/abort calls, and rejects caller-supplied output paths. No native capture IPC exists, so renderer filesystem/capture isolation remains unchanged. Linux/headless tests use injected adapter/helper doubles to verify orchestration. Real Windows microphone and WASAPI loopback helper capture is **WINDOWS-VERIFIED**. Screen/window capture remains a **REMAINING GAP**.
 
 ## Windows native audio provider (Phase 6B)
 
@@ -82,7 +83,11 @@ The capture stream format is `aiwpcm` with MIME `application/x-ai-workmate-pcm-j
 
 The TypeScript provider validates helper records before the coordinator writes them: chunk sequence must be contiguous, timestamps must parse, source/source ID/format must remain stable, byte length must match the decoded PCM payload, and per-chunk SHA-256 must match. The coordinator then writes through `LocalRecordingCaptureEngine`, preserving the existing local journal, atomic file writes, whole-file SHA-256, recording metadata, disk-space checks, and lifecycle transitions.
 
-The helper build is separate from the Linux TypeScript build: `npm run build:native:win` publishes the Windows executable and `npm run package:win` includes it as an Electron extra resource. In this Linux/headless environment the helper source and provider wiring are code-verified and boundary-tested with injected helper doubles, but real Windows microphone/loopback execution is **WINDOWS-UNVERIFIED**. Microphone and loopback streams are independently sequenced; cross-source synchronization, mixing, and echo cancellation are explicitly not solved yet.
+The helper build is separate from the Linux TypeScript build: `npm run build:native:win` publishes the Windows executable and `npm run package:win` includes it as an Electron extra resource. Real Windows verification built the helper, enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio), captured 977-line microphone JSONL and 2229-line loopback JSONL with no error records, and used the real NAudio implementation. Status for helper capture: **WINDOWS-VERIFIED**. Microphone and loopback streams are independently sequenced; cross-source synchronization, mixing, and echo cancellation are explicitly not solved yet.
+
+## Application integration (Phase 6C)
+
+`StorageRuntime` constructs the capture stack whenever a store is attached: native adapter, `LocalRecordingCaptureEngine`, and `NativeCaptureCoordinator`. Callers in the main process start/stop/abort by meeting UUID. Closing the runtime aborts active native sessions. DATA_ROOT, absolute paths, helper process handles, and device paths are not returned to the renderer; no capture IPC channels exist. Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed only via the existing artifact journal.
 
 ## Disk and path safety
 
