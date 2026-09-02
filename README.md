@@ -174,7 +174,9 @@ Then on a **real Windows** machine:
 npm run verify:windows-local-transcription
 ```
 
-`windowsVerified` is true only if whisper.cpp actually transcribes the spoken fixture (`tests/fixtures/whisper-speech.wav`, rebuilt as 48 kHz / 2 ch / 32-bit AIWPCM). Linux fail-closes. **This Linux sandbox is not WINDOWS-VERIFIED.**
+`windowsVerified` is true only if whisper.cpp actually transcribes the spoken fixture (`tests/fixtures/whisper-speech.wav`, rebuilt as 48 kHz / 2 ch / 32-bit AIWPCM). Linux fail-closes and is not a Windows claim.
+
+**WINDOWS-VERIFIED:** After `b43172f0`, a real Windows run produced `success: true`, `windowsVerified: true`, `platform: "win32"`, `helperFound: true` (`whisper-cli.exe`), `modelFound: true` (`ggml-tiny.bin`), `engineVersion: "whisper.cpp version: 1.9.3"`, `transcriptionCompleted: true`, `recognizedText: "AI Workmate records meetings locally. This spoken fixture is for Windows Whisper Verification only."`, `sqliteStatus`/`journalStatus` `COMMITTED`, `meetingStatus` `COMPLETED`, `cloudServiceUsed: false`, `isolatedWorkspace: true`, `userDataUntouched: true`.
 
 ## Location migration
 
@@ -219,4 +221,4 @@ Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempo
 
 ## Scope of this change
 
-This change deliberately implements local recording boundary/storage control, the native Windows capture source abstraction/policy boundary, Windows native audio provider code, and Phase 6C StorageRuntime integration. Real Windows microphone and WASAPI loopback capture through that path is **WINDOWS-VERIFIED**. It does **not** implement Teams/Zoom/Google Meet/browser/screen/window recording, transcription, advanced AI, live OAuth sign-in UX, background calendar scheduling, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity remain **WINDOWS-UNVERIFIED**. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.
+This change deliberately implements local recording boundary/storage control, the native Windows capture source abstraction/policy boundary, Windows native audio provider code, Phase 6C StorageRuntime integration, and Phase 7 local whisper.cpp transcription. Real Windows microphone and WASAPI loopback capture, and real Windows spoken-fixture local transcription, are **WINDOWS-VERIFIED**. It does **not** implement Teams/Zoom/Google Meet/browser/screen/window recording, a Git-bundled Whisper CLI/model, advanced AI, live OAuth sign-in UX, background calendar scheduling, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity remain **WINDOWS-UNVERIFIED**. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.

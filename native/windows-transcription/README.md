@@ -29,3 +29,5 @@ npm run verify:windows-local-transcription
 ```
 
 `windowsVerified` is true only when a real Windows host finds the CLI + model, transcribes the spoken fixture (`tests/fixtures/whisper-speech.wav` rebuilt as 48 kHz / 2 ch / 32-bit AIWPCM), and commits a transcript with recognizable text. Linux fail-closes and is never WINDOWS-VERIFIED.
+
+**WINDOWS-VERIFIED** after `b43172f0`: whisper.cpp 1.9.3, `whisper-cli.exe` + `ggml-tiny.bin`, `recognizedText` `AI Workmate records meetings locally. This spoken fixture is for Windows Whisper Verification only.`, SQLite/journal `COMMITTED`, `meetingStatus` `COMPLETED`, `cloudServiceUsed` false.
