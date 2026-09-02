@@ -156,7 +156,7 @@ export async function runWindowsLocalAnalysisVerification(
     return base;
   } catch (error: unknown) {
     addOptional(base, "failureCode", error instanceof LocalLlmError ? error.code : "ANALYSIS_ENGINE_FAILED");
-    addOptional(base, "failureMessage", error instanceof Error ? error.message : String(error));
+    addOptional(base, "failureMessage", sanitizeVerificationMessage(error instanceof Error ? error.message : String(error)));
     return base;
   } finally {
     await runtime.close();
@@ -188,6 +188,13 @@ function placeholderRecordingBytes(): Buffer {
     sha256: createHash("sha256").update(pcm).digest("hex"),
     dataBase64: pcm.toString("base64"),
   })}\n`, "utf8");
+}
+
+function sanitizeVerificationMessage(message: string): string {
+  return message
+    .replace(/[A-Za-z]:\\[^\s]+/g, "<path>")
+    .replace(/\/(?:home|Users|tmp|var)[^\s]*/g, "<path>")
+    .slice(0, 500);
 }
 
 function addOptional<T extends object, K extends keyof T>(object: T, key: K, value: T[K] | undefined): void {

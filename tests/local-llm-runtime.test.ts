@@ -172,8 +172,9 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
     "prompt-text",
   ]);
   const completionArgs = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-completion.exe");
-  assert.equal(completionArgs.includes("--single-turn"), false);
+  assert.equal(completionArgs.includes("--single-turn"), true);
   assert.equal(completionArgs.includes("-no-cnv"), false);
+  assert.equal(completionArgs.includes("-p"), true);
 });
 
 test("local LLM timeout is configurable with a hard upper bound", () => {
@@ -225,6 +226,32 @@ test("malformed helper JSON, crash, timeout, and cancellation fail closed", asyn
   }).process(sampleRequest());
   controller.abort();
   await assert.rejects(pending, (error: unknown) => error instanceof LocalLlmError && error.code === "ANALYSIS_CANCELLED");
+});
+
+test("one-shot completion closes stdin after spawn so llama-completion does not wait for a second chat turn", async () => {
+  let stdinClosed = false;
+  let killCount = 0;
+  const meetingId = "11111111-1111-4111-8111-111111111111";
+  const provider = new LocalLlmProvider({
+    platform: "linux",
+    helperRunner: (args) => {
+      assert.equal(args.includes("--single-turn"), true);
+      assert.equal(args.includes("-p"), true);
+      const helper = completed(JSON.stringify(validAnalysis(meetingId)), 0);
+      return {
+        ...helper,
+        closeStdin: () => {
+          stdinClosed = true;
+        },
+        kill: () => {
+          killCount += 1;
+        },
+      };
+    },
+  });
+  await provider.process(sampleRequest(meetingId));
+  assert.equal(stdinClosed, true);
+  assert.equal(killCount, 0);
 });
 
 test("conversation-mode Ctrl+C exit 130 fails closed and a successful helper is never SIGINT-killed", async () => {

@@ -31,6 +31,7 @@ export interface LocalLlmHelperProcess {
   stderr?: AsyncIterable<Uint8Array>;
   exited: Promise<LocalLlmHelperExit>;
   kill(signal?: NodeJS.Signals | string): void;
+  closeStdin?(): void;
 }
 
 export type LocalLlmHelperRunner = (args: readonly string[]) => LocalLlmHelperProcess;
@@ -95,9 +96,11 @@ export class LocalLlmProvider implements AIProvider {
     const cliPath = await this.resolveCliPath();
     const modelPath = await this.resolveModelPath();
     const prompt = buildAnalysisPrompt(transcript, this.clock().toISOString());
-    const args = buildLlamaCliArgs(modelPath, prompt, basename(cliPath));
+    const helperName = basename(cliPath);
+    const args = buildLlamaCliArgs(modelPath, prompt, helperName);
     const runner = this.helperRunner ?? createSpawnRunner(cliPath);
     const child = runner(args);
+    child.closeStdin?.();
     let timeout: NodeJS.Timeout | undefined;
     const onAbort = (): void => {
       child.kill("SIGTERM");
@@ -112,7 +115,13 @@ export class LocalLlmProvider implements AIProvider {
       const timeoutPromise = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           child.kill("SIGTERM");
-          reject(new LocalLlmError("ANALYSIS_ENGINE_TIMEOUT", `Local llama.cpp timed out after ${this.timeoutMs}ms.`, true));
+          reject(
+            new LocalLlmError(
+              "ANALYSIS_ENGINE_TIMEOUT",
+              `Local llama.cpp (${helperName}) timed out after ${this.timeoutMs}ms without exiting one-shot generation.`,
+              true,
+            ),
+          );
         }, this.timeoutMs);
       });
       const exit = await Promise.race([child.exited, timeoutPromise]);
@@ -273,14 +282,12 @@ export async function assertUsableLocalLlmModelFile(modelPath: string): Promise<
 }
 
 /**
- * llama.cpp b10621 `llama-cli` is conversation-mode by default. Closed stdin
- * (`stdio: ignore`) then looks like Ctrl+C and the helper exits 130.
- * `--single-turn` completes one `-p` turn and exits. Prefer `llama-completion`
- * when present (one-shot; no conversation wait).
+ * b10621 one-shot: `llama-completion -m MODEL --single-turn -p PROMPT`.
+ * Chat is the default without `--single-turn`. Leaving stdin open then waits
+ * for the next turn until our timeout. Prompt is `-p` (not stdin). Do not use
+ * `-no-cnv` (removed from llama-cli; avoid it on both binaries).
  */
-export function buildLlamaCliArgs(modelPath: string, prompt: string, helperName = "llama-cli.exe"): readonly string[] {
-  const name = helperName.toLowerCase();
-  const singleTurn = name.includes("completion") ? [] : ["--single-turn"];
+export function buildLlamaCliArgs(modelPath: string, prompt: string, _helperName = "llama-cli.exe"): readonly string[] {
   return [
     "-m",
     modelPath,
@@ -293,7 +300,7 @@ export function buildLlamaCliArgs(modelPath: string, prompt: string, helperName 
     "-ngl",
     "0",
     "--no-display-prompt",
-    ...singleTurn,
+    "--single-turn",
     "-p",
     prompt,
   ];
@@ -404,6 +411,9 @@ function createSpawnRunner(helperPath: string): LocalLlmHelperRunner {
       }),
       kill: (signal?: NodeJS.Signals | string) => {
         child.kill(signal === "SIGINT" ? "SIGTERM" : (signal as NodeJS.Signals | undefined));
+      },
+      closeStdin: () => {
+        child.stdin?.end();
       },
     };
   };
