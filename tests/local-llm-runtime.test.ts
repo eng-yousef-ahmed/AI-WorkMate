@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { LocalAIProvider, OpenAIProvider } from "../src/ai/AIProvider";
+import { evaluateAnalysisQuality, isPlaceholderAnalysis } from "../src/ai/AnalysisQuality";
 import { loadAnalysisTranscriptFixture } from "../src/ai/AnalysisTranscriptFixture";
 import { LocalAnalysisService } from "../src/ai/LocalAnalysisService";
 import { LocalLlmError } from "../src/ai/LocalLlmErrors";
@@ -15,6 +16,7 @@ import { parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/Analy
 import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
+  buildAnalysisPrompt,
   buildLlamaCliArgs,
   resolveLocalLlmTimeoutMs,
   type LocalLlmHelperProcess,
@@ -424,12 +426,68 @@ test("analysis transcript fixture contains recognizable meeting-style speech", a
   assert.match(text, /AI WorkMate/);
   assert.match(text, /llama\.cpp/);
   assert.match(text, /DATA_ROOT/);
+  assert.deepEqual(fixture.speakers.map((speaker) => speaker.displayName), [
+    "Layla Hassan",
+    "Omar Farouk",
+    "Nadia Rahman",
+    "Samir Haddad",
+  ]);
+  assert.match(text, /Omar,/);
+  assert.match(text, /LOCAL_ONLY/);
+  assert.match(text, /12 September 2026/);
+});
+
+test("extraction quality accepts transcript facts and rejects placeholders and invented people", async () => {
+  const fixture = await loadAnalysisTranscriptFixture();
+  const prompt = buildAnalysisPrompt(fixture, "2026-09-02T12:00:00.000Z");
+  assert.equal(prompt.includes("Review the local analysis artifacts"), false);
+  assert.match(prompt, /Extract facts/);
+  const good: AnalysisDocument = {
+    meetingId: fixture.meetingId,
+    createdAt: "2026-09-02T12:00:00.000Z",
+    summary: "AI WorkMate planning kept llama.cpp analysis LOCAL_ONLY and DATA_ROOT on the machine.",
+    decisions: [
+      { decisionId: "d1", text: "Keep analysis LOCAL_ONLY with llama.cpp and do not send transcript content to a cloud provider." },
+      { decisionId: "d2", text: "DATA_ROOT remains on the user's machine." },
+      { decisionId: "d3", text: "Ship Windows real-AI verification before adding a larger instruct model." },
+    ],
+    tasks: [
+      { taskId: "t1", text: "Document the llama.cpp install under LocalAppData", assignee: "Omar Farouk", dueDate: "2026-09-12", status: "OPEN" },
+      { taskId: "t2", text: "Review encryption of transcripts under DATA_ROOT", assignee: "Nadia Rahman", dueDate: "2026-09-12", status: "OPEN" },
+      { taskId: "t3", text: "Add fail-closed tests that reject invented tasks", assignee: "Samir Haddad", dueDate: "2026-09-10", status: "OPEN" },
+    ],
+    risks: ["The 0.5B model may invent people."],
+    questions: ["Budget approval for a 7B local model is still needed."],
+    followups: [],
+  };
+  validateAnalysisDocument(good);
+  const quality = evaluateAnalysisQuality(good, fixture);
+  assert.equal(quality.acceptable, true);
+  assert.equal(quality.matchedDecisions >= 2, true);
+  assert.equal(quality.matchedTasks >= 2, true);
+  assert.equal(quality.matchedAssignees >= 2, true);
+  const placeholder: AnalysisDocument = {
+    ...good,
+    summary: "Local analysis artifacts",
+    decisions: [{ decisionId: "d1", text: "Review the local analysis artifacts" }],
+    tasks: [{ taskId: "t1", text: "Review the local analysis artifacts", status: "OPEN" }],
+  };
+  assert.equal(isPlaceholderAnalysis(placeholder), true);
+  assert.equal(evaluateAnalysisQuality(placeholder, fixture).acceptable, false);
+  const invented: AnalysisDocument = {
+    ...good,
+    tasks: [{ taskId: "t9", text: "Call the CEO in Dubai", assignee: "Alex Example", status: "OPEN" }],
+  };
+  const inventedQuality = evaluateAnalysisQuality(invented, fixture);
+  assert.equal(inventedQuality.acceptable, false);
+  assert.equal(inventedQuality.hallucinatedNames.includes("Alex Example"), true);
 });
 
 test("Windows analysis verification fail-closes off Windows without fake analysis text", async () => {
   const result = await runWindowsLocalAnalysisVerification({ platform: "linux" });
   assert.equal(result.windowsVerified, false);
   assert.equal(result.realAiVerified, false);
+  assert.equal(result.realAiQualityVerified, undefined);
   assert.equal(result.success, false);
   assert.equal(result.cloudServiceUsed, false);
   assert.equal(result.analysisCompleted, false);

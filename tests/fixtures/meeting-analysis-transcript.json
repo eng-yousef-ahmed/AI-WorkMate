@@ -1,28 +1,99 @@
 {
   "meetingId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "recordingId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-  "speakers": [],
+  "speakers": [
+    { "speakerId": "layla", "displayName": "Layla Hassan" },
+    { "speakerId": "omar", "displayName": "Omar Farouk" },
+    { "speakerId": "nadia", "displayName": "Nadia Rahman" },
+    { "speakerId": "samir", "displayName": "Samir Haddad" }
+  ],
   "timestamps": true,
   "language": "en",
   "createdAt": "2026-09-02T11:00:00.000Z",
   "segments": [
     {
       "segmentId": "seg-1",
+      "speakerId": "layla",
       "startMs": 0,
-      "endMs": 4000,
-      "text": "AI WorkMate records meetings locally and keeps transcripts under DATA_ROOT."
+      "endMs": 8000,
+      "text": "Welcome. This AI WorkMate planning call is about local meeting analysis. Transcripts stay under DATA_ROOT."
     },
     {
       "segmentId": "seg-2",
-      "startMs": 4000,
-      "endMs": 9000,
-      "text": "We decided to ship the local llama.cpp analysis path without sending content to a cloud provider."
+      "speakerId": "omar",
+      "startMs": 8000,
+      "endMs": 16000,
+      "text": "I finished wiring llama.cpp on Windows. The Qwen 0.5B model runs offline, but it sometimes copies placeholder sentences."
     },
     {
       "segmentId": "seg-3",
-      "startMs": 9000,
-      "endMs": 14000,
-      "text": "Please review the analysis artifacts and schedule the next local-first review."
+      "speakerId": "nadia",
+      "startMs": 16000,
+      "endMs": 24000,
+      "text": "Security cannot send meeting content to a cloud provider. If we cannot keep analysis local, we delay the feature."
+    },
+    {
+      "segmentId": "seg-4",
+      "speakerId": "layla",
+      "startMs": 24000,
+      "endMs": 34000,
+      "text": "Decision one: we keep analysis LOCAL_ONLY with llama.cpp and we do not send transcript content to a cloud provider."
+    },
+    {
+      "segmentId": "seg-5",
+      "speakerId": "omar",
+      "startMs": 34000,
+      "endMs": 42000,
+      "text": "Decision two: DATA_ROOT remains on the user's machine. We will not move meeting files to a remote store."
+    },
+    {
+      "segmentId": "seg-6",
+      "speakerId": "samir",
+      "startMs": 42000,
+      "endMs": 52000,
+      "text": "Decision three: we ship Windows real-AI verification before we add a larger instruct model."
+    },
+    {
+      "segmentId": "seg-7",
+      "speakerId": "layla",
+      "startMs": 52000,
+      "endMs": 62000,
+      "text": "Omar, please document the llama.cpp install under LocalAppData by Friday 12 September 2026."
+    },
+    {
+      "segmentId": "seg-8",
+      "speakerId": "omar",
+      "startMs": 62000,
+      "endMs": 68000,
+      "text": "Agreed. I will write that install guide and keep it local."
+    },
+    {
+      "segmentId": "seg-9",
+      "speakerId": "nadia",
+      "startMs": 68000,
+      "endMs": 78000,
+      "text": "I will review encryption of transcripts under DATA_ROOT before Friday 12 September 2026."
+    },
+    {
+      "segmentId": "seg-10",
+      "speakerId": "samir",
+      "startMs": 78000,
+      "endMs": 88000,
+      "text": "I will add fail-closed tests that reject invented tasks by 10 September 2026."
+    },
+    {
+      "segmentId": "seg-11",
+      "speakerId": "layla",
+      "startMs": 88000,
+      "endMs": 98000,
+      "text": "Open item: I still need budget approval for a 7B local model. That is not decided today."
+    },
+    {
+      "segmentId": "seg-12",
+      "speakerId": "nadia",
+      "startMs": 98000,
+      "endMs": 106000,
+      "text": "Risk: the 0.5B model may invent people or copy the prompt example instead of extracting this conversation."
     }
   ]
 }

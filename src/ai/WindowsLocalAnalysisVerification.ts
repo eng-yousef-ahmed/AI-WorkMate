@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { TranscriptDocument } from "../domain/models";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
+import { evaluateAnalysisQuality } from "./AnalysisQuality";
 import { ANALYSIS_TRANSCRIPT_FIXTURE_RELATIVE, loadAnalysisTranscriptFixture } from "./AnalysisTranscriptFixture";
 import { LocalLlmError } from "./LocalLlmErrors";
 import { LocalLlmProvider } from "./LocalLlmProvider";
@@ -26,6 +27,9 @@ export interface WindowsLocalAnalysisVerificationResult {
   transcriptFixture: string;
   analysisStarted: boolean;
   analysisCompleted: boolean;
+  realAiQualityVerified?: boolean;
+  qualityAcceptable?: boolean;
+  qualityReasons?: string[];
   summaryText?: string;
   decisionText?: string;
   taskText?: string;
@@ -128,17 +132,21 @@ export async function runWindowsLocalAnalysisVerification(
     const journal = runtime.store.database.listArtifactOperations().filter((operation) => operation.artifactType.startsWith("ANALYSIS_")).at(-1);
     const analyses = runtime.store.database.listAnalysis(meeting.meetingId);
     const insideDataRoot = saved.relativePath.startsWith("Meetings/") && !saved.relativePath.includes("..");
+    const quality = evaluateAnalysisQuality(saved.analysis, document);
     const summaryHasSpeech = /[A-Za-z]{3,}/.test(saved.analysis.summary);
-    const success = meetingStatus === "COMPLETED" &&
+    const committed = meetingStatus === "COMPLETED" &&
       journal?.state === "COMMITTED" &&
       analyses.length === 7 &&
       saved.sha256.length === 64 &&
       insideDataRoot &&
       summaryHasSpeech &&
       saved.analysis.meetingId === meeting.meetingId;
-    base.success = success;
-    base.windowsVerified = success;
-    base.realAiVerified = success;
+    base.realAiVerified = committed;
+    base.windowsVerified = committed;
+    base.qualityAcceptable = quality.acceptable;
+    base.realAiQualityVerified = committed && quality.acceptable;
+    base.qualityReasons = quality.reasons;
+    base.success = committed && quality.acceptable;
     addOptional(base, "summaryText", saved.analysis.summary);
     addOptional(base, "decisionText", saved.analysis.decisions[0]?.text);
     addOptional(base, "taskText", saved.analysis.tasks[0]?.text);
@@ -147,11 +155,14 @@ export async function runWindowsLocalAnalysisVerification(
     addOptional(base, "sqliteStatus", analyses.length === 0 ? undefined : "COMMITTED");
     addOptional(base, "journalStatus", journal?.state);
     addOptional(base, "meetingStatus", meetingStatus);
-    if (!success) {
+    if (!committed) {
       addOptional(base, "failureCode", "ANALYSIS_ENGINE_FAILED");
       addOptional(base, "failureMessage", summaryHasSpeech
         ? "Analysis was not committed with COMPLETED lifecycle."
         : "llama.cpp did not return recognizable analysis text.");
+    } else if (!quality.acceptable) {
+      addOptional(base, "failureCode", "ANALYSIS_QUALITY_INSUFFICIENT");
+      addOptional(base, "failureMessage", quality.reasons[0] ?? "Local model output did not extract the meeting facts.");
     }
     return base;
   } catch (error: unknown) {
