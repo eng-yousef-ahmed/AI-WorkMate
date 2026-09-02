@@ -2,8 +2,8 @@
 
 Updated: 2026-09-02
 
-This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, implements Phase 6B Windows native audio provider code with real Windows helper verification, and integrates that path into `StorageRuntime` (Phase 6C). It does not
-implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, transcription, or the full AI pipeline. The persistent meeting store
+This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, implements Phase 6B Windows native audio provider code with real Windows helper verification, integrates that path into `StorageRuntime` (Phase 6C), and adds Phase 7 local transcription of committed AIWPCM recordings. It does not
+implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, a bundled speech-to-text runtime, or the full AI pipeline. The persistent meeting store
 remains local SQLite plus filesystem artifacts; that does **not** mean that an
 explicitly approved cloud AI request is local.
 
@@ -18,6 +18,13 @@ explicitly approved cloud AI request is local.
 - **REMAINING GAP** — intentionally deferred work or a limitation of this phase.
 
 ## IMPLEMENTED
+
+### PHASE 7 local transcription of committed recordings
+
+- **IMPLEMENTED / TESTED:** `LocalTranscriptionService` loads a committed recording by meeting UUID + recording UUID, validates AIWPCM JSONL (types, format metadata, sequence, per-chunk SHA-256, emptiness), reconstructs PCM/WAV in memory, calls an injected local `TranscriptionEngine`, and persists transcript artifacts under `DATA_ROOT/Meetings/.../Transcript/` through journaled `saveTranscript()`.
+- **IMPLEMENTED / TESTED:** SQLite schema version 6 indexes transcript metadata only (`recording_id`, `engine_id`, artifact IDs, language). Transcript bytes are files, not BLOBs. `COMPLETED` is set only after verified artifacts + metadata. Non-retryable failures mark `FAILED`; retryable/interrupted work marks `INCOMPLETE`. Restart recovery of an in-flight transcription marks `INCOMPLETE`.
+- **IMPLEMENTED / TESTED:** Production default is `UnconfiguredTranscriptionEngine`, which fail-closes with `TRANSCRIPTION_ENGINE_NOT_CONFIGURED` and never invents transcript text. Test doubles exist only in tests. `StorageRuntime.transcribeRecording()` wires the same path; inject a real engine via `transcriptionEngine`.
+- **REMAINING GAP:** No Whisper/ONNX/Windows Speech runtime is packaged. This phase does **not** claim speech recognition.
 
 ### PHASE 6C application integration of Windows native capture
 
@@ -89,7 +96,7 @@ explicitly approved cloud AI request is local.
 - `DATA_ROOT` contains `Meetings`, `Database`, `Backups`, `Exports`, and `storage.json`. SQLite is `Database/ai-workmate.sqlite`; large audio/video bytes are never stored in SQLite.
 - Meeting folders and deterministic artifact names contain the authoritative UUID meeting ID. Original recordings remain separate from normalized recordings. Artifact metadata retains file ID, meeting ID, relative path, type, MIME type, size, timestamps, SHA-256, and status.
 - Transcript JSON preserves timestamps and speaker data; timestamp-preserving TXT, VTT, and SRT artifacts are supported. Analysis artifacts and decision/task relationships are stored locally.
-- The current SQLite schema version is 5. It retains the durable `artifact_operations` table, adds `calendar_event_associations` for Microsoft Graph event-to-meeting UUID mapping, and records safe recording metadata without replacing the existing architecture or storing media BLOBs.
+- The current SQLite schema version is 6. It retains the durable `artifact_operations` table, calendar associations, recording metadata, and transcript-to-recording/engine indexes without storing media or transcript BLOBs.
 
 ### Electron security and IPC
 
@@ -131,11 +138,11 @@ explicitly approved cloud AI request is local.
 
 ## TESTED
 
-The following commands completed successfully in the Linux sandbox after the Phase 6C runtime integration:
+The following commands completed successfully in the Linux sandbox after the Phase 7 transcription work:
 
 - `npm run lint` — **PASSED**, ESLint with zero warnings.
 - `npm run typecheck` — **PASSED**.
-- `npm test` — **PASSED: 105/105 tests**; its nested build also passed.
+- `npm test` — **PASSED: 112/112 tests**; its nested build also passed.
 - `npm run test:storage` — **PASSED: 26/26 storage tests** for the complete `storage*.test.js` suite; its nested build also passed.
 - `npm run build` — **PASSED** (TypeScript output and renderer asset copy).
 
@@ -167,7 +174,8 @@ Automated coverage includes Windows native audio provider platform detection, mi
 ## REMAINING GAP
 
 - **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, the local capture/storage boundary, native source abstraction/policy/coordinator, Windows native audio provider, and runtime integration are implemented. Real Windows microphone/loopback helper capture and Phase 6C StorageRuntime persistence are **WINDOWS-VERIFIED**. Teams/Zoom/Google Meet/browser automation and screen/window capture providers remain out of scope.
-- **AI is not end-to-end:** **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end.** The provider/policy abstraction and manual local `saveAnalysis()` facade exist, but automatic transcription, provider invocation, and analysis persistence are not connected.
+- **AI is not end-to-end:** **`Transcript → AI Provider → saveAnalysis()` is not wired end-to-end.** Phase 7 persists engine-supplied transcripts locally when an engine is injected; the default engine is unconfigured. Provider invocation and analysis persistence are not connected.
+- **No bundled STT:** A real local speech-to-text engine is not packaged. Integration point: `StorageRuntimeIntegrations.transcriptionEngine`.
 - Migration recovery can safely activate a fully copied destination or mark an interrupted copy incomplete; resumable copying/progress/cancellation UI is not implemented.
 - A signed production installer, a user-facing Keep/Delete uninstall choice, full Microsoft OAuth/MSAL sign-in UX, ordinary meeting-file encryption-at-rest, and automated backup retention are not implemented.
 - The polished screen is currently Storage Settings; the complete meetings/projects/tasks dashboard remains future work. Optional cloud sync and cloud database persistence remain deliberately excluded.
@@ -201,7 +209,9 @@ Automated coverage includes Windows native audio provider platform detection, mi
 | Windows system-audio loopback helper (Phase 6B) | IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED | Prior real-Windows helper run: `loopback-test.jsonl` 2229 lines, Speakers / Headphones (Realtek Audio), no error records. Not re-executed on this Linux host. |
 | Phase 6C runtime path with real Windows devices | IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED | Real Windows verify JSON: `success` true, abort INCOMPLETE with 0 recordings; mic 154 chunks / 5313806 bytes / SHA-256 `1cd89fa503322140872b2e685f822a4ebc60cdfb037a75451473644c17c3a02d` COMMITTED; loopback 156 chunks / 5998897 bytes / SHA-256 `2309c82d9c7f7ffb5c570d5244735c5a15f2808fc849c002bd7c496418789273` COMMITTED. |
 | No fake production capture fallback | IMPLEMENTED / TESTED | Production factory/provider reports unsupported/provider-not-configured instead of creating mock bytes; helper doubles are confined to tests. |
-| Full AI/meeting pipeline | NOT TESTED / REMAINING GAP | Intentionally not implemented in this phase; the transcript-to-provider-to-saveAnalysis path is not wired. |
+| Local transcription of AIWPCM recordings | IMPLEMENTED / TESTED | Validate/reconstruct/journal/lifecycle covered; production engine is unconfigured fail-closed. Test doubles only in tests. |
+| Bundled local speech-to-text runtime | REMAINING GAP | No Whisper/Windows Speech dependency; do not claim speech recognition. |
+| Full AI/meeting pipeline | NOT TESTED / REMAINING GAP | Transcript-to-provider-to-saveAnalysis path is not wired. |
 
 ## Final verification boundary
 

@@ -27,3 +27,6 @@ export * from "./capture/NativeCaptureCoordinator";
 export * from "./capture/WindowsCaptureAdapter";
 export * from "./capture/WindowsNativeAudioProvider";
 export * from "./capture/WindowsRuntimeCaptureVerification";
+export * from "./transcription/TranscriptionEngine";
+export * from "./transcription/AiwpcmRecordingDecoder";
+export * from "./transcription/LocalTranscriptionService";

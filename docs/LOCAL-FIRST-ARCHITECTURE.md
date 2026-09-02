@@ -30,6 +30,7 @@ Electron main process
    ├── WindowsNativeAudioProvider
    │     └── .NET/NAudio helper using CoreAudio/WASAPI microphone + loopback APIs
    ├── StorageRuntime native capture API (main process only; no renderer capture IPC)
+   ├── LocalTranscriptionService / TranscriptionEngine (AIWPCM → local engine → transcript artifacts)
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```
@@ -52,7 +53,7 @@ SQLite indexes relationships, calendar associations, recording metadata, and art
 4. the journal reaches `FINALIZING`; and
 5. the artifact and relationship rows plus the journal reach `COMMITTED` in one SQLite transaction.
 
-The journal also records `FAILED` and `INCOMPLETE`. SQLite schema version 5 records safe committed-recording metadata — recording/file UUIDs, meeting UUID, container/format, capture start/end/duration, byte size, SHA-256, relative path, capture source/adapter, and final status — without storing recording bytes. On restart, pending operations are verified. A valid indexed file can be completed as `COMMITTED`; an ambiguous final or temporary file is retained, marked/reportable as incomplete or orphaned, and is not silently imported. If a user deletes or modifies a file, the next verification marks the row `MISSING` or `CORRUPTED`. Calendar discovery metadata is held in `calendar_event_associations` and keyed by `(provider, external_event_id)`, so a Microsoft Graph event maps to an internal meeting UUID without replacing that UUID.
+The journal also records `FAILED` and `INCOMPLETE`. SQLite schema version 6 records safe committed-recording metadata and transcript-to-recording/engine indexes without storing recording or transcript bytes. On restart, pending operations are verified. A valid indexed file can be completed as `COMMITTED`; an ambiguous final or temporary file is retained, marked/reportable as incomplete or orphaned, and is not silently imported. If a user deletes or modifies a file, the next verification marks the row `MISSING` or `CORRUPTED`. Calendar discovery metadata is held in `calendar_event_associations` and keyed by `(provider, external_event_id)`, so a Microsoft Graph event maps to an internal meeting UUID without replacing that UUID.
 
 A meeting still marked `RECORDING` when the application opens is safely changed to `INCOMPLETE`. Recovery reports known orphans, temporary recordings, unknown meeting-shaped folders, invalid manifests, missing databases, and missing/corrupt artifacts. Unknown data is preserved. Re-indexing is limited to orphaned files inside a folder whose meeting ID is already known in SQLite; no meeting record is invented from an unknown folder.
 
@@ -113,6 +114,10 @@ Success criteria: JSON `success: true`, `windowsVerified: true`, abort `INCOMPLE
 
 `StorageRuntime` constructs the capture stack whenever a store is attached: native adapter, `LocalRecordingCaptureEngine`, and `NativeCaptureCoordinator`. Callers in the main process start/stop/abort by meeting UUID. Closing the runtime aborts active native sessions. DATA_ROOT, absolute paths, helper process handles, and device paths are not returned to the renderer; no capture IPC channels exist. Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed only via the existing artifact journal. Real Windows microphone and loopback persistence through this path is **WINDOWS-VERIFIED**.
 
+## Local transcription (Phase 7)
+
+Committed AIWPCM recordings are transcribed locally. `LocalTranscriptionService` validates JSONL types, PCM format metadata, monotonic chunk sequence, and per-chunk SHA-256, reconstructs PCM (plus a WAV wrapper) in memory, and calls `TranscriptionEngine`. The default production engine is `UnconfiguredTranscriptionEngine` and fail-closes without inventing text. A real local STT runtime must be injected at `StorageRuntimeIntegrations.transcriptionEngine`. Transcript JSON/text are written under the meeting `Transcript/` folder through the existing atomic SHA-256 journal. SQLite stores metadata only. Lifecycle is `PROCESSING` → `COMPLETED` after verified artifacts and index rows, or `FAILED`/`INCOMPLETE`. Restart recovery of an in-flight transcription is `INCOMPLETE`. Tests may inject engine doubles; production does not. This is not a claim of speech recognition.
+
 ## Disk and path safety
 
 Recording/capture preflight, including Windows native audio capture, requires the estimated write plus a configurable safety margin. A failed or unknown free-space query is treated as unsafe and blocks recording. During active capture, each chunk is checked through the same disk-space boundary before append. The monitor treats unknown/critical space as a critical callback, marks the meeting incomplete through the store, and stops its timer even if the callback fails.
@@ -167,7 +172,7 @@ Provider responses are written through the local store when the application choo
 
 ## Meeting lifecycle contract (Phase 3)
 
-The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 local capture adapter, Phase 6A native coordinator, and Phase 6B Windows audio provider path start from scheduled/detected meetings through the recording path and commit completed local captures to `PROCESSING` for future transcription/AI work. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
+The local aggregate owns a strict state machine: `SCHEDULED → DETECTED → PREPARING → RECORDING → FINALIZING → PROCESSING → COMPLETED`, with explicit recoverable exits to `INCOMPLETE` or `FAILED` and cancellation where valid. SQLite enforces the allowed status vocabulary and the service rejects invalid transitions. The Phase 5 local capture adapter, Phase 6A native coordinator, and Phase 6B Windows audio provider path start from scheduled/detected meetings through the recording path and commit completed local captures to `PROCESSING`. Phase 7 may then transcribe that recording and move the meeting to `COMPLETED` only after a verified transcript artifact exists. The older compatibility `ingestRecording()` path still accepts a real already-materialized file and does not create bytes.
 
 `ingestRecording()` accepts a real, already-materialized source file plus source type, MIME, original filename, timestamps, and optional size. It does not create bytes. `ingestTranscript()` accepts real plain text or structured JSON (and records requested VTT/SRT derivatives) and does not transcribe. `processTranscriptWithProvider()` invokes the existing `AIProvider`, validates meeting identity and analysis JSON, then calls `saveAnalysis()`; provider errors leave a non-success state.
 

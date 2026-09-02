@@ -37,6 +37,8 @@ export interface TranscriptRecord {
   srtArtifactId?: string;
   language: string;
   createdAt: string;
+  recordingId?: string;
+  engineId?: string;
 }
 
 export interface AnalysisRecord {
@@ -235,9 +237,12 @@ CREATE TABLE IF NOT EXISTS transcripts (
   vtt_artifact_id TEXT REFERENCES artifacts(file_id) ON DELETE RESTRICT,
   srt_artifact_id TEXT REFERENCES artifacts(file_id) ON DELETE RESTRICT,
   language TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  recording_id TEXT REFERENCES recordings(recording_id) ON DELETE SET NULL,
+  engine_id TEXT
 );
 CREATE INDEX IF NOT EXISTS transcripts_meeting_index ON transcripts(meeting_id);
+CREATE INDEX IF NOT EXISTS transcripts_recording_index ON transcripts(recording_id);
 
 CREATE TABLE IF NOT EXISTS analysis_records (
   analysis_id TEXT PRIMARY KEY,
@@ -767,6 +772,13 @@ export class LocalDatabase {
       });
   }
 
+  public getRecording(recordingId: string): RecordingRecord | undefined {
+    const row = this.database
+      .prepare("SELECT * FROM recordings WHERE recording_id = $recordingId")
+      .get({ $recordingId: recordingId });
+    return row === undefined ? undefined : mapRecording(row as SqlRow);
+  }
+
   public listRecordings(meetingId?: string): RecordingRecord[] {
     const rows = meetingId === undefined
       ? this.database.prepare("SELECT * FROM recordings ORDER BY created_at").all()
@@ -781,10 +793,10 @@ export class LocalDatabase {
       .prepare(
         `INSERT INTO transcripts (
           transcript_id, meeting_id, json_artifact_id, text_artifact_id,
-          vtt_artifact_id, srt_artifact_id, language, created_at
+          vtt_artifact_id, srt_artifact_id, language, created_at, recording_id, engine_id
         ) VALUES (
           $transcriptId, $meetingId, $jsonArtifactId, $textArtifactId,
-          $vttArtifactId, $srtArtifactId, $language, $createdAt
+          $vttArtifactId, $srtArtifactId, $language, $createdAt, $recordingId, $engineId
         )`,
       )
       .run({
@@ -796,6 +808,8 @@ export class LocalDatabase {
         $srtArtifactId: record.srtArtifactId ?? null,
         $language: record.language,
         $createdAt: record.createdAt,
+        $recordingId: record.recordingId ?? null,
+        $engineId: record.engineId ?? null,
       });
   }
 
@@ -815,6 +829,8 @@ export class LocalDatabase {
       };
       addOptional(record, "vttArtifactId", optionalString(value.vtt_artifact_id));
       addOptional(record, "srtArtifactId", optionalString(value.srt_artifact_id));
+      addOptional(record, "recordingId", optionalString(value.recording_id));
+      addOptional(record, "engineId", optionalString(value.engine_id));
       return record;
     });
   }
@@ -1080,6 +1096,19 @@ export class LocalDatabase {
     addColumn("relative_path", "relative_path TEXT");
     addColumn("capture_source", "capture_source TEXT");
     addColumn("final_status", "final_status TEXT CHECK (final_status IS NULL OR final_status IN ('COMMITTED', 'INCOMPLETE', 'FAILED'))");
+  }
+
+  private applyTranscriptRecordingMigration(): void {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(transcripts)").all() as SqlRow[])
+        .map((row) => stringValue(row.name)),
+    );
+    if (!columns.has("recording_id")) {
+      this.database.exec("ALTER TABLE transcripts ADD COLUMN recording_id TEXT;");
+    }
+    if (!columns.has("engine_id")) {
+      this.database.exec("ALTER TABLE transcripts ADD COLUMN engine_id TEXT;");
+    }
   }
 
   private ensureOpen(): void {

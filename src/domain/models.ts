@@ -1,5 +1,5 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 5;
+export const DATABASE_SCHEMA_VERSION = 6;
 
 export type CalendarProvider = "MICROSOFT_GRAPH";
 
@@ -64,7 +64,7 @@ export const MEETING_STATUS_TRANSITIONS: Readonly<Record<MeetingStatus, readonly
   PROCESSING: ["COMPLETED", "INCOMPLETE", "FAILED"],
   COMPLETED: ["PROCESSING", "INCOMPLETE"],
   INCOMPLETE: ["PREPARING", "FINALIZING", "PROCESSING", "FAILED", "CANCELLED"],
-  FAILED: ["PREPARING", "INCOMPLETE", "CANCELLED"],
+  FAILED: ["PREPARING", "PROCESSING", "INCOMPLETE", "CANCELLED"],
   CANCELLED: [],
 };
 
@@ -186,14 +186,22 @@ export interface TranscriptSegment {
   confidence?: number;
 }
 
+export interface TranscriptEngineMetadata {
+  id: string;
+  displayName: string;
+  model?: string;
+}
+
 export interface TranscriptDocument {
   meetingId: string;
+  recordingId?: string;
   speakers: TranscriptSpeaker[];
   timestamps: boolean;
   segments: TranscriptSegment[];
   confidence?: number;
   language: string;
   createdAt: string;
+  engine?: TranscriptEngineMetadata;
 }
 
 export interface TranscriptArtifacts {

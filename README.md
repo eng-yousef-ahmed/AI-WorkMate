@@ -1,6 +1,6 @@
 # AI WorkMate
 
-AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5 local recording/capture boundary, Phase 6A native Windows capture source boundary, Phase 6B Windows native audio provider code, and Phase 6C application integration of that verified Windows capture path. Existing meeting data is owned by the desktop process:
+AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5 local recording/capture boundary, Phase 6A–6C native Windows capture, and Phase 7 local transcription of committed AIWPCM recordings. Existing meeting data is owned by the desktop process:
 
 ```text
 Windows desktop
@@ -12,6 +12,7 @@ Windows desktop
    ├── NativeCaptureAdapter / WindowsCaptureAdapter boundary (capability discovery, fail-closed without provider)
    ├── WindowsNativeAudioProvider + Windows helper (WASAPI microphone/loopback; Windows-verified)
    ├── StorageRuntime native capture coordinator (main-process only)
+   ├── Local transcription boundary (AIWPCM validate/reconstruct → injected local engine)
    └── Optional provider adapters (local or cloud, policy-gated)
 ```
 
@@ -69,7 +70,7 @@ DATA_ROOT/
   storage.json
 ```
 
-Every meeting has a UUID-backed folder. Artifact names also include the authoritative meeting ID, for example `meeting_<MEETING_ID>.mp4`, `audio_<MEETING_ID>.m4a`, and `transcript_<MEETING_ID>.json`. A title and date are never used as a unique key. Video and audio bytes remain files; SQLite schema version 5 stores metadata and relationships only, including safe recording metadata such as file UUID, container, timestamps, duration, byte size, SHA-256, relative path, capture source/adapter, and final status.
+Every meeting has a UUID-backed folder. Artifact names also include the authoritative meeting ID, for example `meeting_<MEETING_ID>.mp4`, `audio_<MEETING_ID>.m4a`, and `transcript_<MEETING_ID>.json`. A title and date are never used as a unique key. Video and audio bytes remain files; SQLite schema version 6 stores metadata and relationships only, including recording metadata and transcript-to-recording/engine indexes. Transcript text is never stored as a SQLite BLOB.
 
 DATA_ROOT is actively rejected when it is inside the configured application installation directory or protected Windows locations such as `Program Files`, `Program Files (x86)`, `Windows`, `WindowsApps`, and `ProgramData`. The check is boundary-aware and case-insensitive on Windows.
 
@@ -124,6 +125,22 @@ The command uses the real helper (no mocks) through `StorageRuntime.startNativeC
 
 `StorageRuntime` now owns the production capture stack: `createNativeCaptureAdapter()` → `WindowsNativeAudioProvider` on Windows → `NativeCaptureCoordinator` → `LocalRecordingCaptureEngine` → `LocalFirstStore`. On Windows, microphone and system-audio policy is allow-listed in the main process only; screen/window remain denied. Capture remains fail-closed when the helper is missing, the platform is unsupported, a device is unavailable, permission is denied, records are malformed, or the native process fails. Native capture is **not** exposed as renderer IPC: no DATA_ROOT, absolute paths, device paths, or native process controls leave the main process. Tests cover the runtime integration boundary with helper doubles confined to test code.
 
+## Local transcription (Phase 7)
+
+Phase 7 transcribes a committed meeting recording already stored under `DATA_ROOT`. The pipeline:
+
+1. load the recording by meeting UUID + recording UUID;
+2. reject paths that leave `DATA_ROOT`/`Meetings`;
+3. validate AIWPCM JSONL (record types, format metadata, monotonic sequence, per-chunk SHA-256, non-empty PCM);
+4. reconstruct PCM and a WAV wrapper in memory for an engine;
+5. call a **local** `TranscriptionEngine`;
+6. persist transcript JSON/text under the meeting `Transcript/` folder through the existing atomic, SHA-256, journaled `saveTranscript()` path;
+7. index SQLite metadata only (`recording_id`, `engine_id`, artifact IDs, language).
+
+Lifecycle: `PROCESSING` while work is in progress; `COMPLETED` only after the transcript artifact and SQLite row exist; `FAILED` for non-retryable validation/engine-not-configured errors; `INCOMPLETE` for retryable interruption. Restart recovery marks an in-flight transcription `INCOMPLETE`.
+
+**No production speech-to-text runtime is bundled.** `UnconfiguredTranscriptionEngine` is the default and fail-closes with `TRANSCRIPTION_ENGINE_NOT_CONFIGURED` without inventing words. Tests inject a local double only. A real engine (for example a future Windows-local Whisper/ONNX helper) is the `StorageRuntimeIntegrations.transcriptionEngine` injection point. This phase does **not** claim speech recognition.
+
 ## Location migration
 
 Changing the location is an explicit migration:
@@ -163,7 +180,7 @@ The desktop renderer receives an allow-listed preload API, not `fs`, `path`, `ip
 
 Credentials are represented by an OS-encrypted vault adapter using Electron `safeStorage`/Windows DPAPI semantics and are never placed in meeting folders or DATA_ROOT backups. The AI abstraction supports local and injected cloud adapters. `LOCAL_ONLY`, `CLOUD_ALLOWED`, and `ASK_EACH_TIME` are checked before content is handed to a provider.
 
-Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. Phase 6B adds Windows microphone and system-audio/loopback provider code and is **WINDOWS-VERIFIED** for real helper capture. Phase 6C wires that provider through `StorageRuntime` into the existing local-first journal path without capture IPC and is **WINDOWS-VERIFIED** for real microphone and WASAPI loopback persistence. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen capture, a transcription engine, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic transcription, provider invocation, and analysis persistence are future meeting-engine work.
+Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. Phase 6B adds Windows microphone and system-audio/loopback provider code and is **WINDOWS-VERIFIED** for real helper capture. Phase 6C wires that provider through `StorageRuntime` into the existing local-first journal path without capture IPC and is **WINDOWS-VERIFIED** for real microphone and WASAPI loopback persistence. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen capture, a bundled speech-to-text runtime, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Automatic provider invocation and analysis persistence remain future work.
 
 ## Scope of this change
 

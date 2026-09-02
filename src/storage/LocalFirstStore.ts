@@ -74,6 +74,8 @@ export interface TranscriptIngestionRequest {
 export interface TranscriptSaveOptions {
   includeVtt?: boolean;
   includeSrt?: boolean;
+  recordingId?: string;
+  engineId?: string;
 }
 
 export interface DeleteMeetingOptions {
@@ -176,6 +178,7 @@ export class LocalFirstStore {
     this.database.setMetadata("storageVersion", String(STORAGE_VERSION));
     this.recoverInterruptedRecordings();
     await this.recoverArtifactOperations();
+    this.recoverInterruptedTranscriptions();
     this.refreshServices();
     this.initialized = true;
   }
@@ -189,6 +192,46 @@ export class LocalFirstStore {
 
   public getMeeting(meetingId: string): Meeting | undefined {
     return this.requireDatabase().getMeeting(meetingId);
+  }
+
+  public getRecording(recordingId: string) {
+    return this.requireDatabase().getRecording(recordingId);
+  }
+
+  public getDataRoot(): string {
+    return this.storage.dataRoot;
+  }
+
+  public async readArtifactBytes(relativePath: string): Promise<Uint8Array> {
+    return this.storage.readFile(relativePath);
+  }
+
+  public resolveArtifactAbsolutePath(relativePath: string): string {
+    return this.storage.absolutePathFor(relativePath);
+  }
+
+  public beginTranscription(meetingId: string, recordingId: string): void {
+    this.requireMeeting(meetingId);
+    this.transitionMeeting(meetingId, "PROCESSING");
+    this.database.appendAudit(this.audit("TRANSCRIPTION_STARTED", meetingId, { recordingId }));
+  }
+
+  public completeTranscription(meetingId: string): void {
+    this.transitionMeeting(meetingId, "COMPLETED");
+    this.database.appendAudit(this.audit("TRANSCRIPTION_COMPLETED", meetingId));
+  }
+
+  public failTranscription(meetingId: string, status: "FAILED" | "INCOMPLETE"): void {
+    try {
+      this.transitionMeeting(meetingId, status);
+    } catch {
+      // Recovery may already have moved the meeting; preserve the original transcription error.
+    }
+    this.database.appendAudit(this.audit(status === "FAILED" ? "TRANSCRIPTION_FAILED" : "TRANSCRIPTION_INCOMPLETE", meetingId));
+  }
+
+  public transitionMeeting(meetingId: string, status: MeetingStatus): void {
+    this.database.updateMeetingStatus(meetingId, status);
   }
 
   public listMeetings(): Meeting[] {
@@ -758,6 +801,8 @@ export class LocalFirstStore {
     };
     addOptional(record, "vttArtifactId", saved.vtt?.fileId);
     addOptional(record, "srtArtifactId", saved.srt?.fileId);
+    addOptional(record, "recordingId", options.recordingId ?? document.recordingId);
+    addOptional(record, "engineId", options.engineId ?? document.engine?.id);
     this.database.registerTranscript(record);
     this.database.appendAudit(this.audit("TRANSCRIPT_CREATED", meeting.meetingId, { transcriptId: record.transcriptId }));
     return saved as TranscriptArtifacts;
@@ -994,6 +1039,36 @@ export class LocalFirstStore {
     }
   }
 
+  private recoverInterruptedTranscriptions(): void {
+    for (const operation of this.database.listIncompleteArtifactOperations()) {
+      if (!operation.artifactType.startsWith("TRANSCRIPT_")) {
+        continue;
+      }
+      const meeting = this.database.getMeeting(operation.meetingId);
+      if (meeting?.status === "PROCESSING") {
+        this.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+        this.database.appendAudit(this.audit("TRANSCRIPTION_RECOVERED_INCOMPLETE", meeting.meetingId, {
+          operationId: operation.operationId,
+          reason: "APPLICATION_RESTARTED_DURING_TRANSCRIPTION",
+        }));
+      }
+    }
+    for (const meeting of this.database.listMeetings()) {
+      if (meeting.status !== "PROCESSING") {
+        continue;
+      }
+      const audits = this.database.listAuditRecords(500).filter((record) => record.meetingId === meeting.meetingId);
+      const started = audits.some((record) => record.action === "TRANSCRIPTION_STARTED");
+      const finished = audits.some((record) => record.action === "TRANSCRIPT_CREATED" || record.action === "TRANSCRIPTION_COMPLETED");
+      if (started && !finished) {
+        this.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+        this.database.appendAudit(this.audit("TRANSCRIPTION_RECOVERED_INCOMPLETE", meeting.meetingId, {
+          reason: "APPLICATION_RESTARTED_DURING_TRANSCRIPTION",
+        }));
+      }
+    }
+  }
+
   private recoverInterruptedRecordings(): void {
     for (const meeting of this.database.listMeetings()) {
       if (meeting.status !== "RECORDING") {
@@ -1058,10 +1133,6 @@ export class LocalFirstStore {
         createdAt: this.clock().toISOString(),
       });
     }
-  }
-
-  private transitionMeeting(meetingId: string, status: MeetingStatus): void {
-    this.database.updateMeetingStatus(meetingId, status);
   }
 
   private transitionMeetingForCaptureStart(meetingId: string): void {

@@ -26,6 +26,8 @@ import { createNativeCaptureAdapter } from "../capture/WindowsCaptureAdapter";
 import type { CredentialStore } from "../security/CredentialStore";
 import { LocalDatabase } from "./LocalDatabase";
 import { LocalFirstStore } from "./LocalFirstStore";
+import { LocalTranscriptionService, type TranscriptionPersistResult } from "../transcription/LocalTranscriptionService";
+import type { TranscriptionEngine } from "../transcription/TranscriptionEngine";
 import type { StorageConfigService } from "./StorageConfigService";
 import { DataRootValidationError, StorageError } from "./errors";
 import {
@@ -44,12 +46,14 @@ export interface StorageRuntimeIntegrations {
   microsoftCalendarProvider?: CalendarEventProvider;
   nativeCaptureAdapter?: NativeCaptureAdapter;
   nativeCapturePolicy?: Partial<NativeCapturePolicy>;
+  transcriptionEngine?: TranscriptionEngine;
 }
 
 /** Application lifecycle boundary for first-run setup and location changes. */
 export class StorageRuntime {
   public store: LocalFirstStore | undefined;
   public nativeCapture: NativeCaptureCoordinator | undefined;
+  public transcription: LocalTranscriptionService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
   private readonly config: StorageConfigService;
   private readonly storageOptions: LocalStorageServiceOptions;
@@ -234,6 +238,13 @@ export class StorageRuntime {
     return this.requireNativeCapture().getCaptureState(captureId);
   }
 
+  public transcribeRecording(meetingId: string, recordingId: string): Promise<TranscriptionPersistResult> {
+    if (this.transcription === undefined) {
+      throw new StorageError("Choose a local data location before using transcription.");
+    }
+    return this.transcription.transcribeRecording(meetingId, recordingId);
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -367,6 +378,10 @@ export class StorageRuntime {
       new LocalRecordingCaptureEngine(store, this.clock),
       { policy: productionNativeCapturePolicy(this.integrations.nativeCapturePolicy) },
     );
+    this.transcription = new LocalTranscriptionService({
+      store,
+      ...(this.integrations.transcriptionEngine === undefined ? {} : { engine: this.integrations.transcriptionEngine }),
+    });
   }
 
   private async detachStore(reason: string): Promise<void> {
