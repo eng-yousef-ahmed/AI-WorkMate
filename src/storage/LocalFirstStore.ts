@@ -17,7 +17,7 @@ import type {
 import { STORAGE_VERSION, type TranscriptSegment } from "../domain/models";
 import type { CalendarMeetingUpsertResult, NormalizedCalendarEvent } from "../calendar/CalendarModels";
 import type { AIProvider } from "../ai/AIProvider";
-import { parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
+import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
 import { BackupService } from "./BackupService";
 import { ExportService } from "./ExportService";
 import { LocalDatabase, type AuditRecord, type DuplicateMeetingKeys, type ParticipantRecord, type TranscriptRecord } from "./LocalDatabase";
@@ -833,36 +833,37 @@ export class LocalFirstStore {
   public async saveAnalysis(document: AnalysisDocument): Promise<AnalysisArtifacts> {
     const meeting = this.requireMeeting(document.meetingId);
     validateAnalysis(document);
+    const persistable = assignPersistentAnalysisIdentities(document);
     const savedSummaryJson = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_SUMMARY_JSON", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(document, null, 2)}\n` },
+      { meeting, artifactType: "ANALYSIS_SUMMARY_JSON", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(persistable, null, 2)}\n` },
       true,
     );
     const savedSummaryMarkdown = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_SUMMARY_MARKDOWN", mimeType: "text/markdown", extension: "md", contents: analysisToMarkdown(document) },
+      { meeting, artifactType: "ANALYSIS_SUMMARY_MARKDOWN", mimeType: "text/markdown", extension: "md", contents: analysisToMarkdown(persistable) },
       true,
     );
     const savedDecisions = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_DECISIONS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(document.decisions, null, 2)}\n` },
+      { meeting, artifactType: "ANALYSIS_DECISIONS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(persistable.decisions, null, 2)}\n` },
       true,
     );
     const savedTasks = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_TASKS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(document.tasks, null, 2)}\n` },
+      { meeting, artifactType: "ANALYSIS_TASKS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(persistable.tasks, null, 2)}\n` },
       true,
     );
     const savedRisks = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_RISKS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(document.risks, null, 2)}\n` },
+      { meeting, artifactType: "ANALYSIS_RISKS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(persistable.risks, null, 2)}\n` },
       true,
     );
     const savedQuestions = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_QUESTIONS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(document.questions, null, 2)}\n` },
+      { meeting, artifactType: "ANALYSIS_QUESTIONS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(persistable.questions, null, 2)}\n` },
       true,
     );
     const savedFollowups = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "ANALYSIS_FOLLOWUPS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(document.followups, null, 2)}\n` },
+      { meeting, artifactType: "ANALYSIS_FOLLOWUPS", mimeType: "application/json", extension: "json", contents: `${JSON.stringify(persistable.followups, null, 2)}\n` },
       true,
     );
 
-    const createdAt = document.createdAt;
+    const createdAt = persistable.createdAt;
     this.database.transaction(() => {
       const records = [
         ["SUMMARY", savedSummaryJson],
@@ -876,10 +877,10 @@ export class LocalFirstStore {
       for (const [kind, artifact] of records) {
         this.database.registerAnalysis({ analysisId: randomUUID(), meetingId: meeting.meetingId, kind, artifactId: artifact.fileId, createdAt });
       }
-      for (const decision of document.decisions) {
+      for (const decision of persistable.decisions) {
         this.database.registerDecision({ ...decision, meetingId: meeting.meetingId, createdAt });
       }
-      for (const task of document.tasks) {
+      for (const task of persistable.tasks) {
         this.database.registerTask({ ...task, meetingId: meeting.meetingId, createdAt, updatedAt: createdAt });
         this.database.appendAudit(this.audit("TASK_CREATED", meeting.meetingId, { taskId: task.taskId }));
         if (task.assignee !== undefined) {

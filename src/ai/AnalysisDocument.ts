@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { ActionItem, AnalysisDocument, Decision } from "../domain/models";
 import { DataRootValidationError, StorageError } from "../storage/errors";
 
@@ -86,6 +88,18 @@ export function validateAnalysisDocument(value: unknown): AnalysisDocument {
     followups: parseStringList(record.followups, "followups"),
   };
   return document;
+}
+
+/**
+ * Persistent SQLite primary keys are application-owned. The model may emit
+ * duplicate or colliding decisionId/taskId values; semantic fields are kept.
+ */
+export function assignPersistentAnalysisIdentities(document: AnalysisDocument): AnalysisDocument {
+  return {
+    ...document,
+    decisions: document.decisions.map((decision) => ({ ...decision, decisionId: randomUUID() })),
+    tasks: document.tasks.map((task) => ({ ...task, taskId: randomUUID() })),
+  };
 }
 
 export function unwrapJsonObjectText(stdout: string): string {

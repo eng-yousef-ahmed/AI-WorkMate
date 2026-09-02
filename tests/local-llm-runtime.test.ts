@@ -12,7 +12,7 @@ import { LocalAnalysisService } from "../src/ai/LocalAnalysisService";
 import { LocalLlmError } from "../src/ai/LocalLlmErrors";
 import { writeGgufFileMagic } from "../src/ai/LocalLlmModelFormat";
 import { installLocalLlmModel } from "../src/ai/LocalLlmModelInstaller";
-import { parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/AnalysisDocument";
+import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/AnalysisDocument";
 import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
@@ -375,6 +375,50 @@ test("injected local provider persists validated analysis through saveAnalysis",
     assert.equal(store.getMeeting(prepared.meetingId)?.status, "COMPLETED");
     assert.equal(result.analysis.summary, "Validated local summary");
     assert.equal(store.database.listAnalysis(prepared.meetingId).length, 7);
+  });
+});
+
+test("duplicate model decision_id values persist with application-owned unique keys", async () => {
+  await withTempStore(async (store) => {
+    const first = await commitFixtureTranscript(store, "Duplicate ids A");
+    const second = await commitFixtureTranscript(store, "Duplicate ids B");
+    const duplicateDecisions: AnalysisDocument = {
+      meetingId: first.meetingId,
+      createdAt: "2026-09-02T12:00:00.000Z",
+      summary: "Keep analysis LOCAL_ONLY with llama.cpp.",
+      decisions: [
+        { decisionId: "d1", text: "Keep analysis LOCAL_ONLY with llama.cpp." },
+        { decisionId: "d1", text: "DATA_ROOT remains on the user's machine." },
+        { decisionId: "d1", text: "Ship Windows real-AI verification first." },
+      ],
+      tasks: [
+        { taskId: "t1", text: "Document the llama.cpp install", status: "OPEN" },
+        { taskId: "t1", text: "Add fail-closed tests", status: "OPEN" },
+      ],
+      risks: [],
+      questions: [],
+      followups: [],
+    };
+    validateAnalysisDocument(duplicateDecisions);
+    await store.saveAnalysis(duplicateDecisions);
+    const decisions = store.database.listDecisions(first.meetingId);
+    const tasks = store.database.listTasks(first.meetingId);
+    assert.equal(decisions.length, 3);
+    assert.equal(new Set(decisions.map((row) => row.decisionId)).size, 3);
+    assert.equal(decisions.some((row) => row.decisionId === "d1"), false);
+    assert.deepEqual(decisions.map((row) => row.text), duplicateDecisions.decisions.map((row) => row.text));
+    assert.equal(tasks.length, 2);
+    assert.equal(new Set(tasks.map((row) => row.taskId)).size, 2);
+
+    await store.saveAnalysis({
+      ...duplicateDecisions,
+      meetingId: second.meetingId,
+    });
+    assert.equal(store.database.listDecisions(second.meetingId).length, 3);
+    const remapped = assignPersistentAnalysisIdentities(duplicateDecisions);
+    assert.equal(new Set(remapped.decisions.map((row) => row.decisionId)).size, 3);
+    assert.notEqual(remapped.decisions[0]?.decisionId, "d1");
+    assert.equal(remapped.decisions[0]?.text, duplicateDecisions.decisions[0]?.text);
   });
 });
 
