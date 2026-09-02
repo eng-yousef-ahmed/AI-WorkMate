@@ -111,7 +111,7 @@ Success criteria: JSON `success: true`, `windowsVerified: true`, abort `INCOMPLE
 
 ## Application integration (Phase 6C)
 
-`StorageRuntime` constructs the capture stack whenever a store is attached: native adapter, `LocalRecordingCaptureEngine`, and `NativeCaptureCoordinator`. Callers in the main process start/stop/abort by meeting UUID. Closing the runtime aborts active native sessions. DATA_ROOT, absolute paths, helper process handles, and device paths are not returned to the renderer; no capture IPC channels exist. Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed only via the existing artifact journal.
+`StorageRuntime` constructs the capture stack whenever a store is attached: native adapter, `LocalRecordingCaptureEngine`, and `NativeCaptureCoordinator`. Callers in the main process start/stop/abort by meeting UUID. Closing the runtime aborts active native sessions. DATA_ROOT, absolute paths, helper process handles, and device paths are not returned to the renderer; no capture IPC channels exist. Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed only via the existing artifact journal. Real Windows microphone and loopback persistence through this path is **WINDOWS-VERIFIED**.
 
 ## Disk and path safety
 
