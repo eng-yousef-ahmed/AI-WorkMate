@@ -40,6 +40,7 @@ export interface WindowsLocalTranscriptionVerificationResult {
 export interface WindowsLocalTranscriptionVerificationOptions {
   keepWorkspace?: boolean;
   repoRoot?: string;
+  platform?: NodeJS.Platform | string;
 }
 
 /**
@@ -49,7 +50,9 @@ export interface WindowsLocalTranscriptionVerificationOptions {
 export async function runWindowsLocalTranscriptionVerification(
   options: WindowsLocalTranscriptionVerificationOptions = {},
 ): Promise<WindowsLocalTranscriptionVerificationResult> {
-  const discovery = await discoverWhisperRuntime();
+  const discovery = await discoverWhisperRuntime({
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
+  });
   const base: WindowsLocalTranscriptionVerificationResult = {
     success: false,
     windowsVerified: false,

@@ -324,6 +324,11 @@ export class LocalDatabase {
 
   public close(): void {
     if (!this.closed) {
+      try {
+        this.database.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+      } catch {
+        // Best-effort: Windows cannot unlink sqlite/WAL while a connection holds them.
+      }
       this.database.close();
       this.closed = true;
     }

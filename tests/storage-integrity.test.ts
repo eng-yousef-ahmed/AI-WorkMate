@@ -135,6 +135,7 @@ test("migrates DATA_ROOT only after verification and preserves the source", asyn
       const manifest = JSON.parse(await readFile(join(store.storage.dataRoot, "storage.json"), "utf8")) as { dataRootLabel: string };
       assert.equal(manifest.dataRootLabel, store.storage.dataRoot);
     } finally {
+      store.close();
       await rm(external, { recursive: true, force: true });
     }
   });

@@ -22,6 +22,7 @@ export interface WindowsCaptureAdapterOptions {
   platform?: NodeJS.Platform | string;
   provider?: WindowsNativeCaptureProvider;
   clock?: () => Date;
+  helperPath?: string;
 }
 
 /**
@@ -112,7 +113,11 @@ export function createNativeCaptureAdapter(options: CreateNativeCaptureAdapterOp
     return new WindowsCaptureAdapter({
       ...options,
       platform,
-      provider: options.provider ?? new WindowsNativeAudioProvider({ platform, clock: options.clock }),
+      provider: options.provider ?? new WindowsNativeAudioProvider({
+        platform,
+        clock: options.clock,
+        ...(options.helperPath === undefined ? {} : { helperPath: options.helperPath }),
+      }),
     });
   }
   return new UnsupportedNativeCaptureAdapter({ platform, clock: options.clock });

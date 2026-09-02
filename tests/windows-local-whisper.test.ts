@@ -185,7 +185,7 @@ test("whisper engine plus store isolates meetings and completes lifecycle", asyn
 });
 
 test("Windows transcription verification fail-closes off Windows without fake media", async () => {
-  const result = await runWindowsLocalTranscriptionVerification();
+  const result = await runWindowsLocalTranscriptionVerification({ platform: "linux" });
   assert.equal(result.success, false);
   assert.equal(result.windowsVerified, false);
   assert.equal(result.cloudServiceUsed, false);

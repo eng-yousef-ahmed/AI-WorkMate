@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
@@ -69,7 +70,8 @@ test("production factory fails closed on unsupported Linux/headless platform", a
 });
 
 test("Windows factory wires the real audio provider and fails closed when the helper is missing", async () => {
-  const adapter = createNativeCaptureAdapter({ platform: "win32", clock: fixedClock() });
+  const missingHelper = join(tmpdir(), `ai-workmate-missing-audio-helper-${Date.now()}`, "AIWorkMate.WindowsAudioCapture.exe");
+  const adapter = createNativeCaptureAdapter({ platform: "win32", clock: fixedClock(), helperPath: missingHelper });
   const discovered = await adapter.discoverCapabilities();
 
   assert.equal(discovered.supported, true);

@@ -169,7 +169,7 @@ test("discovery and engine validation accept little-endian ggml magic files", as
 });
 
 test("Windows verification fail-closes on Linux without fake recognized text", async () => {
-  const result = await runWindowsLocalTranscriptionVerification();
+  const result = await runWindowsLocalTranscriptionVerification({ platform: "linux" });
   assert.equal(result.windowsVerified, false);
   assert.equal(result.success, false);
   assert.equal(result.cloudServiceUsed, false);
