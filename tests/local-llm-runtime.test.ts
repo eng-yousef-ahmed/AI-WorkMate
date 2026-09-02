@@ -11,6 +11,7 @@ import { LocalAnalysisService } from "../src/ai/LocalAnalysisService";
 import { LocalLlmError } from "../src/ai/LocalLlmErrors";
 import { writeGgufFileMagic } from "../src/ai/LocalLlmModelFormat";
 import { installLocalLlmModel } from "../src/ai/LocalLlmModelInstaller";
+import { parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/AnalysisDocument";
 import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
@@ -19,6 +20,7 @@ import {
   type LocalLlmHelperProcess,
   type LocalLlmHelperRunner,
 } from "../src/ai/LocalLlmProvider";
+import { DataRootValidationError, StorageError } from "../src/storage/errors";
 import { LOCAL_LLM_MODEL_CATALOG } from "../src/ai/LocalLlmRuntimeCatalog";
 import { discoverLocalLlmRuntime } from "../src/ai/LocalLlmRuntimeDiscovery";
 import { runWindowsLocalAnalysisVerification } from "../src/ai/WindowsLocalAnalysisVerification";
@@ -155,7 +157,9 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
   assert.equal(args.includes("-no-cnv"), false);
   assert.equal(args.includes("--no-conversation"), false);
   assert.equal(args.includes("--single-turn"), true);
-  assert.deepEqual(args, [
+  assert.equal(args.includes("--json-schema"), true);
+  assert.equal(args[args.indexOf("--json-schema") + 1]?.includes("\"taskId\""), true);
+  assert.deepEqual(args.slice(0, 12), [
     "-m",
     "injected-llama-model.gguf",
     "-n",
@@ -168,11 +172,10 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
     "0",
     "--no-display-prompt",
     "--single-turn",
-    "-p",
-    "prompt-text",
   ]);
   const completionArgs = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-completion.exe");
   assert.equal(completionArgs.includes("--single-turn"), true);
+  assert.equal(completionArgs.includes("--json-schema"), true);
   assert.equal(completionArgs.includes("-no-cnv"), false);
   assert.equal(completionArgs.includes("-p"), true);
 });
@@ -226,6 +229,53 @@ test("malformed helper JSON, crash, timeout, and cancellation fail closed", asyn
   }).process(sampleRequest());
   controller.abort();
   await assert.rejects(pending, (error: unknown) => error instanceof LocalLlmError && error.code === "ANALYSIS_CANCELLED");
+});
+
+test("Qwen-style malformed tasks fail closed with field-level diagnostics and do not invent taskId or text", () => {
+  const meetingId = "11111111-1111-4111-8111-111111111111";
+  const base = {
+    meetingId,
+    createdAt: "2026-09-02T12:00:00.000Z",
+    summary: "Local summary",
+    decisions: [],
+    risks: [],
+    questions: [],
+    followups: [],
+  };
+  assert.throws(
+    () => validateAnalysisDocument({ ...base, tasks: ["Review the pipeline"] }),
+    (error: unknown) =>
+      error instanceof DataRootValidationError &&
+      error.message.includes("Invalid task at index 0") &&
+      error.message.includes("string"),
+  );
+  assert.throws(
+    () => validateAnalysisDocument({ ...base, tasks: [{ id: "t1", title: "Review the pipeline", status: "OPEN" }] }),
+    (error: unknown) =>
+      error instanceof DataRootValidationError &&
+      error.message.includes("taskId must be a non-empty string") &&
+      error.message.includes("id:string"),
+  );
+  assert.throws(
+    () => validateAnalysisDocument({ ...base, tasks: [{ taskId: 1, text: "Review the pipeline" }] }),
+    (error: unknown) =>
+      error instanceof DataRootValidationError &&
+      error.message.includes("taskId must be a non-empty string") &&
+      error.message.includes("number"),
+  );
+  assert.throws(
+    () => validateAnalysisDocument({ ...base, tasks: [{ taskId: "t1" }] }),
+    (error: unknown) =>
+      error instanceof DataRootValidationError &&
+      error.message.includes("text must be a non-empty string"),
+  );
+  assert.throws(
+    () => parseAnalysisDocument("not-json", meetingId),
+    (error: unknown) => error instanceof StorageError && error.message.includes("invalid analysis JSON"),
+  );
+  const fenced = "```json\n" + JSON.stringify({ ...base, tasks: [] }) + "\n```";
+  const parsed = parseAnalysisDocument(fenced, meetingId);
+  assert.equal(parsed.tasks.length, 0);
 });
 
 test("one-shot completion closes stdin after spawn so llama-completion does not wait for a second chat turn", async () => {

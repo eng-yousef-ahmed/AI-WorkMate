@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { TranscriptDocument } from "../domain/models";
 import type { AIProcessRequest, AIProcessResult, AIProvider, AIProviderDescriptor } from "./AIProvider";
+import { ANALYSIS_DOCUMENT_JSON_SCHEMA } from "./AnalysisDocument";
 import { LocalLlmError } from "./LocalLlmErrors";
 import { isGgufModelMagic } from "./LocalLlmModelFormat";
 import { getLocalLlmModelCatalogEntry } from "./LocalLlmRuntimeCatalog";
@@ -301,6 +302,8 @@ export function buildLlamaCliArgs(modelPath: string, prompt: string, _helperName
     "0",
     "--no-display-prompt",
     "--single-turn",
+    "--json-schema",
+    JSON.stringify(ANALYSIS_DOCUMENT_JSON_SCHEMA),
     "-p",
     prompt,
   ];
@@ -324,13 +327,15 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
   return [
     "You analyze a committed meeting transcript locally.",
     "Use only this transcript. Do not invent attendees, decisions, or tasks that are not stated.",
-    "If a field is unknown, use an empty array.",
-    "Reply with a single JSON object and no other text.",
-    "Required keys: meetingId, createdAt, summary, decisions, tasks, risks, questions, followups.",
+    "Reply with a single JSON object and no markdown fences.",
     `meetingId must be exactly ${transcript.meetingId}.`,
-    `createdAt must be ${createdAt}.`,
-    "summary is a string. decisions is [{decisionId, text}]. tasks is [{taskId, text, status}].",
-    "risks, questions, and followups are string arrays.",
+    `createdAt must be exactly ${createdAt}.`,
+    "Required keys: meetingId (string), createdAt (string), summary (string), decisions (array), tasks (array), risks (string array), questions (string array), followups (string array).",
+    "Each decision object requires decisionId (non-empty string) and text (non-empty string). Optional decision fields: owner (string), decidedAt (string). Omit optional fields when unknown. Do not use null.",
+    "Each task object requires taskId (non-empty string) and text (non-empty string). Do not use id, title, description, or a bare string for a task.",
+    "Optional task fields: assignee (string), dueDate (string), status (exactly one of OPEN, IN_PROGRESS, DONE, CANCELLED). Omit optional fields when unknown. Do not use null.",
+    "If there are no tasks or decisions, use an empty array [].",
+    "Example task: {\"taskId\":\"t1\",\"text\":\"Review the local analysis artifacts\",\"status\":\"OPEN\"}.",
     "Transcript JSON:",
     transcriptJson,
   ].join(" ");
