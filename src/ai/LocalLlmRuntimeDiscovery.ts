@@ -1,11 +1,10 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { basename } from "node:path";
 
 import { isGgufModelMagic } from "./LocalLlmModelFormat";
+import { assertUsableLocalLlmModelFile, hashLocalLlmFile, resolveWindowsLlamaCliPath, resolveWindowsLlamaModelPath } from "./LocalLlmProvider";
 import { getLocalLlmModelCatalogEntry } from "./LocalLlmRuntimeCatalog";
-import { resolveWindowsLlamaCliPath, resolveWindowsLlamaModelPath } from "./LocalLlmProvider";
 
 export interface LocalLlmRuntimeDiscovery {
   platform: NodeJS.Platform | string;
@@ -19,6 +18,8 @@ export interface LocalLlmRuntimeDiscovery {
   engineVersion?: string;
   relativeHelperLocation?: string;
   relativeModelLocation?: string;
+  selectedModelId?: string;
+  splitGguf?: boolean;
   failureCode?: string;
   failureMessage?: string;
 }
@@ -43,21 +44,39 @@ export async function discoverLocalLlmRuntime(options: {
     }
   }
   if (modelPath !== undefined) {
-    const contents = await readFile(modelPath);
-    const sha256 = createHash("sha256").update(contents).digest("hex");
     const catalog = getLocalLlmModelCatalogEntry(basename(modelPath));
+    const header = Buffer.alloc(4);
+    const handle = await open(modelPath, "r");
+    try {
+      await handle.read(header, 0, 4, 0);
+    } finally {
+      await handle.close();
+    }
     discovery.modelFound = true;
     discovery.modelName = basename(modelPath);
-    discovery.modelSha256 = sha256;
-    discovery.modelBytes = contents.byteLength;
     discovery.relativeModelLocation = `%LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\${basename(modelPath)}`;
-    if (catalog !== undefined) {
-      discovery.modelChecksumOk = catalog.sha256 === sha256 && catalog.bytes === contents.byteLength;
-    }
-    if (!isGgufModelMagic(contents)) {
+    discovery.splitGguf = catalog?.splitGguf === true;
+    discovery.selectedModelId = catalog?.id;
+    if (!isGgufModelMagic(header)) {
       discovery.modelFound = false;
       discovery.failureCode = "ANALYSIS_ENGINE_UNAVAILABLE";
       discovery.failureMessage = "Located model is not a GGUF file.";
+    } else if (catalog !== undefined) {
+      try {
+        const verified = await assertUsableLocalLlmModelFile(modelPath);
+        discovery.modelSha256 = verified.sha256;
+        discovery.modelBytes = verified.bytes;
+        discovery.modelChecksumOk = true;
+      } catch {
+        const hashed = await hashLocalLlmFile(modelPath);
+        discovery.modelSha256 = hashed.sha256;
+        discovery.modelBytes = hashed.bytes;
+        discovery.modelChecksumOk = false;
+      }
+    } else {
+      const hashed = await hashLocalLlmFile(modelPath);
+      discovery.modelSha256 = hashed.sha256;
+      discovery.modelBytes = hashed.bytes;
     }
   }
   if (platform !== "win32") {

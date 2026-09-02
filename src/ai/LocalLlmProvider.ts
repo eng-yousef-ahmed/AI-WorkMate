@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, readFile, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { access, open, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { TranscriptDocument } from "../domain/models";
@@ -8,7 +9,11 @@ import type { AIProcessRequest, AIProcessResult, AIProvider, AIProviderDescripto
 import { ANALYSIS_DOCUMENT_JSON_SCHEMA } from "./AnalysisDocument";
 import { LocalLlmError } from "./LocalLlmErrors";
 import { isGgufModelMagic } from "./LocalLlmModelFormat";
-import { getLocalLlmModelCatalogEntry } from "./LocalLlmRuntimeCatalog";
+import {
+  catalogLocalLlmPrimaryFilenames,
+  getLocalLlmModelCatalogEntry,
+  getSelectedLocalLlmModelCatalogEntry,
+} from "./LocalLlmRuntimeCatalog";
 
 const PROVIDER_ID = "local-llama-cpp";
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -20,7 +25,7 @@ const ALLOWED_CLI_NAMES = new Set([
   "llama-cli",
   "main.exe",
 ]);
-const MODEL_NAMES = ["qwen2.5-0.5b-instruct-q4_k_m.gguf"];
+
 
 export interface LocalLlmHelperExit {
   code: number | null;
@@ -204,7 +209,7 @@ export class LocalLlmProvider implements AIProvider {
     }
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_UNAVAILABLE",
-      "No local GGUF instruct model was found. Place qwen2.5-0.5b-instruct-q4_k_m.gguf in %LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\.",
+      "No local GGUF instruct model was found. Install the catalogued Qwen2.5-7B-Instruct Q4_K_M shards under %LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\.",
       false,
     );
   }
@@ -223,11 +228,13 @@ export function llamaCliCandidates(localAppData = process.env.LOCALAPPDATA): str
 
 export function llamaModelCandidates(localAppData = process.env.LOCALAPPDATA): string[] {
   const resourcesPath = stringRecord(process).resourcesPath;
+  const selected = getSelectedLocalLlmModelCatalogEntry();
+  const names = [selected.filename, ...catalogLocalLlmPrimaryFilenames().filter((name) => name !== selected.filename)];
   const roots = [
     ...(typeof localAppData === "string" && localAppData.length > 0 ? [join(localAppData, "AI-WorkMate", "models", "llm")] : []),
     ...(typeof resourcesPath === "string" ? [join(resourcesPath, "native", "windows-llm", "models")] : []),
   ];
-  return roots.flatMap((root) => MODEL_NAMES.map((name) => join(root, name)));
+  return roots.flatMap((root) => names.map((name) => join(root, name)));
 }
 
 export async function resolveWindowsLlamaCliPath(helperPath?: string, localAppData = process.env.LOCALAPPDATA): Promise<string | undefined> {
@@ -248,9 +255,30 @@ export async function resolveWindowsLlamaModelPath(modelPath?: string, localAppD
   for (const candidate of candidates) {
     try {
       const fileStat = await stat(candidate);
-      if (fileStat.isFile() && fileStat.size >= 64) {
-        return candidate;
+      if (!fileStat.isFile() || fileStat.size < 64) {
+        continue;
       }
+      const catalog = getLocalLlmModelCatalogEntry(basename(candidate));
+      if (catalog !== undefined) {
+        const directory = dirname(candidate);
+        let complete = true;
+        for (const file of catalog.files) {
+          try {
+            const shard = await stat(join(directory, file.filename));
+            if (!shard.isFile() || shard.size < 64) {
+              complete = false;
+              break;
+            }
+          } catch {
+            complete = false;
+            break;
+          }
+        }
+        if (!complete) {
+          continue;
+        }
+      }
+      return candidate;
     } catch {
       // Continue.
     }
@@ -264,7 +292,7 @@ export async function assertUsableLocalLlmModelFile(modelPath: string): Promise<
     throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model file is missing or truncated.", false);
   }
   const header = Buffer.alloc(4);
-  const handle = await import("node:fs/promises").then((fs) => fs.open(modelPath, "r"));
+  const handle = await open(modelPath, "r");
   try {
     await handle.read(header, 0, 4, 0);
   } finally {
@@ -273,13 +301,45 @@ export async function assertUsableLocalLlmModelFile(modelPath: string): Promise<
   if (!isGgufModelMagic(header)) {
     throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model is not a GGUF file.", false);
   }
-  const contents = await readFile(modelPath);
-  const sha256 = createHash("sha256").update(contents).digest("hex");
   const catalog = getLocalLlmModelCatalogEntry(basename(modelPath));
-  if (catalog !== undefined && (catalog.sha256 !== sha256 || catalog.bytes !== contents.byteLength)) {
-    throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model SHA-256 does not match the allowlisted catalog.", false);
+  const directory = dirname(modelPath);
+  if (catalog !== undefined) {
+    let primarySha256 = "";
+    let primaryBytes = 0;
+    for (const file of catalog.files) {
+      const hashed = await hashLocalLlmFile(join(directory, file.filename));
+      if (hashed.sha256 !== file.sha256 || hashed.bytes !== file.bytes) {
+        throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model SHA-256 does not match the allowlisted catalog.", false);
+      }
+      if (file.filename === catalog.filename) {
+        primarySha256 = hashed.sha256;
+        primaryBytes = hashed.bytes;
+      }
+    }
+    return { sha256: primarySha256, bytes: primaryBytes };
   }
-  return { sha256, bytes: contents.byteLength };
+  const hashed = await hashLocalLlmFile(modelPath);
+  return { sha256: hashed.sha256, bytes: hashed.bytes };
+}
+
+export async function hashLocalLlmFile(filePath: string): Promise<{ sha256: string; bytes: number }> {
+  const fileStat = await stat(filePath);
+  if (!fileStat.isFile()) {
+    throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model file is missing or truncated.", false);
+  }
+  const hash = createHash("sha256");
+  let bytes = 0;
+  await new Promise<void>((resolveHash, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk: string | Buffer) => {
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      hash.update(buffer);
+      bytes += buffer.byteLength;
+    });
+    stream.on("error", reject);
+    stream.on("end", () => resolveHash());
+  });
+  return { sha256: hash.digest("hex"), bytes };
 }
 
 /**

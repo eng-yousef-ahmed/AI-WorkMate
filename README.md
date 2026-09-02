@@ -186,13 +186,16 @@ Production `StorageRuntime` defaults to `LocalLlmProvider`. It loads a committed
 The CLI and GGUF model are **not** in Git:
 
 ```bat
-mkdir %LOCALAPPDATA%\\AI-WorkMate\\native
-copy llama-cli.exe %LOCALAPPDATA%\\AI-WorkMate\\native\\llama-cli.exe
-npm run install:local-llm-model -- qwen2.5-0.5b-instruct-q4_k_m.gguf
+mkdir %LOCALAPPDATA%\AI-WorkMate\native
+copy llama-cli.exe %LOCALAPPDATA%\AI-WorkMate\native\llama-cli.exe
+npm run install:local-llm-model -- qwen2.5-7b-instruct-q4_k_m
+set AI_WORKMATE_LOCAL_LLM_MODEL_ID=qwen2.5-7b-instruct-q4_k_m
 npm run verify:windows-local-analysis
 ```
 
-`windowsVerified` / `realAiVerified` are true only if llama.cpp actually generates validated analysis JSON that is journaled locally. Linux fail-closes. This sandbox is **CODE-VERIFIED / TEST-VERIFIED**, **not REAL-AI-VERIFIED**.
+- **Qwen2.5-0.5B-Instruct Q4_K_M** is a **smoke-test / runtime** model (`npm run install:local-llm-model -- qwen2.5-0.5b-instruct-q4_k_m.gguf`). It can prove llama.cpp runs. It is **not** production-quality meeting analysis.
+- **Qwen2.5-7B-Instruct Q4_K_M** (official split GGUF, two shards) is the **intended production** local analysis model. Default `AI_WORKMATE_LOCAL_LLM_MODEL_ID` is `qwen2.5-7b-instruct-q4_k_m`.
+- `windowsVerified` / `realAiVerified` mean the CLI produced schema-valid JSON that was journaled. **REAL-AI-QUALITY-VERIFIED** is true only after a real Windows run with the **7B** model yields an informative summary and multiple real decisions/tasks from the fixture. Linux fail-closes. This sandbox is **not REAL-AI-QUALITY-VERIFIED**.
 
 ## Location migration
 

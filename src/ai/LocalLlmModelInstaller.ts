@@ -5,7 +5,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
-import { getLocalLlmModelCatalogEntry, LOCAL_LLM_MODEL_URL_ALLOWLIST_PREFIX, type LocalLlmModelCatalogEntry } from "./LocalLlmRuntimeCatalog";
+import { getLocalLlmModelCatalogEntry, isAllowlistedLocalLlmModelUrl, type LocalLlmModelCatalogEntry, type LocalLlmModelFile } from "./LocalLlmRuntimeCatalog";
 import { LocalLlmError } from "./LocalLlmErrors";
 
 export interface LocalLlmDownloadTransport {
@@ -19,12 +19,20 @@ export interface LocalLlmModelInstallOptions {
   destinationRoot?: string;
 }
 
+export interface InstalledLocalLlmModelFile {
+  filename: string;
+  sha256: string;
+  bytes: number;
+}
+
 export interface LocalLlmModelInstallResult {
   installed: true;
   filename: string;
   sha256: string;
   bytes: number;
+  files: InstalledLocalLlmModelFile[];
   relativeLocation: string;
+  splitGguf: boolean;
 }
 
 const RELATIVE_MODEL_DIR = join("AI-WorkMate", "models", "llm");
@@ -41,7 +49,7 @@ export async function installLocalLlmModel(options: LocalLlmModelInstallOptions)
   if (entry === undefined) {
     throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", `Local LLM model ${options.modelId} is not on the HTTPS allowlist.`, false);
   }
-  if (!entry.url.startsWith(LOCAL_LLM_MODEL_URL_ALLOWLIST_PREFIX) || !entry.url.startsWith("https://")) {
+  if (!isAllowlistedLocalLlmModelUrl(entry.url) || entry.files.some((file) => !isAllowlistedLocalLlmModelUrl(file.url))) {
     throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model URL is not allowlisted.", false);
   }
   const localAppData = options.localAppData ?? process.env.LOCALAPPDATA;
@@ -52,14 +60,54 @@ export async function installLocalLlmModel(options: LocalLlmModelInstallOptions)
     ? localLlmManagedModelDirectory(localAppData)
     : assertManagedLocalLlmDestination(options.destinationRoot, localAppData);
   await mkdir(directory, { recursive: true });
-  const destination = join(directory, entry.filename);
-  if (basename(destination) !== entry.filename) {
+  const transport = options.transport ?? httpsTransport();
+  const installed: InstalledLocalLlmModelFile[] = [];
+  for (const file of entry.files) {
+    installed.push(await installCatalogFile(directory, file, transport));
+  }
+  const primary = installed[0];
+  if (primary === undefined) {
+    throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM catalog entry has no files.", false);
+  }
+  return {
+    installed: true,
+    filename: primary.filename,
+    sha256: primary.sha256,
+    bytes: primary.bytes,
+    files: installed,
+    relativeLocation: `%LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\${primary.filename}`,
+    splitGguf: entry.splitGguf,
+  };
+}
+
+export function assertManagedLocalLlmDestination(destinationRoot: string, localAppData: string): string {
+  if (destinationRoot.includes("\0") || destinationRoot.includes("..")) {
+    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM model destination is invalid.", false);
+  }
+  const expected = localLlmManagedModelDirectory(localAppData);
+  const resolved = resolve(destinationRoot);
+  if (resolved !== expected) {
+    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM models must be installed under the managed LocalAppData directory.", false);
+  }
+  return resolved;
+}
+
+export function catalogLocalLlmChecksumMatches(entry: LocalLlmModelCatalogEntry, sha256: string, bytes: number): boolean {
+  return entry.sha256 === sha256.toLowerCase() && entry.bytes === bytes;
+}
+
+async function installCatalogFile(
+  directory: string,
+  file: LocalLlmModelFile,
+  transport: LocalLlmDownloadTransport,
+): Promise<InstalledLocalLlmModelFile> {
+  const destination = join(directory, file.filename);
+  if (basename(destination) !== file.filename) {
     throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM model filename escaped the managed directory.", false);
   }
   const temporary = `${destination}.tmp-download`;
   await rm(temporary, { force: true }).catch(() => undefined);
-  const transport = options.transport ?? httpsTransport();
-  const response = await transport.get(entry.url);
+  const response = await transport.get(file.url);
   if (response.status !== 200) {
     throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", `Local LLM model download failed with HTTP ${response.status}.`, true);
   }
@@ -77,22 +125,16 @@ export async function installLocalLlmModel(options: LocalLlmModelInstallOptions)
       await handle.close();
     }
     const sha256 = hash.digest("hex");
-    if (bytes !== entry.bytes || sha256 !== entry.sha256) {
+    if (bytes !== file.bytes || sha256 !== file.sha256) {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw new LocalLlmError(
         "ANALYSIS_ENGINE_UNAVAILABLE",
-        `Local LLM model SHA-256 or size mismatch for ${entry.filename}.`,
+        `Local LLM model SHA-256 or size mismatch for ${file.filename}.`,
         false,
       );
     }
     await rename(temporary, destination);
-    return {
-      installed: true,
-      filename: entry.filename,
-      sha256,
-      bytes,
-      relativeLocation: `%LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\${entry.filename}`,
-    };
+    return { filename: file.filename, sha256, bytes };
   } catch (error: unknown) {
     await rm(temporary, { force: true }).catch(() => undefined);
     if (error instanceof LocalLlmError) {
@@ -105,22 +147,6 @@ export async function installLocalLlmModel(options: LocalLlmModelInstallOptions)
       { cause: error },
     );
   }
-}
-
-export function assertManagedLocalLlmDestination(destinationRoot: string, localAppData: string): string {
-  if (destinationRoot.includes("\0") || destinationRoot.includes("..")) {
-    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM model destination is invalid.", false);
-  }
-  const expected = localLlmManagedModelDirectory(localAppData);
-  const resolved = resolve(destinationRoot);
-  if (resolved !== expected) {
-    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM models must be installed under the managed LocalAppData directory.", false);
-  }
-  return resolved;
-}
-
-export function catalogLocalLlmChecksumMatches(entry: LocalLlmModelCatalogEntry, sha256: string, bytes: number): boolean {
-  return entry.sha256 === sha256.toLowerCase() && entry.bytes === bytes;
 }
 
 async function* hashingBody(

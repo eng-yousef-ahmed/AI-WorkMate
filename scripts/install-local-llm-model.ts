@@ -1,10 +1,12 @@
 import { installLocalLlmModel } from "../src/ai/LocalLlmModelInstaller";
-import { LOCAL_LLM_MODEL_CATALOG } from "../src/ai/LocalLlmRuntimeCatalog";
+import { LOCAL_LLM_MODEL_CATALOG, PRODUCTION_LOCAL_LLM_MODEL_ID } from "../src/ai/LocalLlmRuntimeCatalog";
 
 async function main(): Promise<void> {
-  const requested = process.argv[2] ?? "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+  const requested = process.argv[2] ?? PRODUCTION_LOCAL_LLM_MODEL_ID;
   if (requested === "--help" || requested === "-h") {
-    process.stdout.write(`Allowlisted models:\n${LOCAL_LLM_MODEL_CATALOG.map((entry) => `  ${entry.id}  ${entry.sha256}`).join("\n")}\n`);
+    process.stdout.write(
+      `Allowlisted models:\n${LOCAL_LLM_MODEL_CATALOG.map((entry) => `  ${entry.id}  (${entry.role}${entry.splitGguf ? ", split GGUF" : ""})\n    ${entry.files.map((file) => `${file.filename}  ${file.sha256}  ${file.bytes}`).join("\n    ")}`).join("\n")}\n`,
+    );
     return;
   }
   const result = await installLocalLlmModel({ modelId: requested });

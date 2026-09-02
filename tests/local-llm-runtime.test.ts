@@ -23,7 +23,13 @@ import {
   type LocalLlmHelperRunner,
 } from "../src/ai/LocalLlmProvider";
 import { DataRootValidationError, StorageError } from "../src/storage/errors";
-import { LOCAL_LLM_MODEL_CATALOG } from "../src/ai/LocalLlmRuntimeCatalog";
+import {
+  LOCAL_LLM_MODEL_CATALOG,
+  PRODUCTION_LOCAL_LLM_MODEL_ID,
+  SMOKE_TEST_LOCAL_LLM_MODEL_ID,
+  getLocalLlmModelCatalogEntry,
+  resolveSelectedLocalLlmModelId,
+} from "../src/ai/LocalLlmRuntimeCatalog";
 import { discoverLocalLlmRuntime } from "../src/ai/LocalLlmRuntimeDiscovery";
 import { runWindowsLocalAnalysisVerification } from "../src/ai/WindowsLocalAnalysisVerification";
 import { STORAGE_IPC_CHANNELS } from "../src/desktop/storage-api";
@@ -98,13 +104,84 @@ test("interrupted download is cleaned up without installing a truncated model", 
 });
 
 test("allowlisted Qwen GGUF catalog metadata matches the published file pointer", () => {
-  const model = LOCAL_LLM_MODEL_CATALOG.find((entry) => entry.id === "qwen2.5-0.5b-instruct-q4_k_m.gguf");
+  const model = LOCAL_LLM_MODEL_CATALOG.find((entry) => entry.id === SMOKE_TEST_LOCAL_LLM_MODEL_ID);
   assert.ok(model);
   assert.equal(model.bytes, 491_400_032);
   assert.equal(model.sha256, "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db");
   assert.equal(model.format, "GGUF");
   assert.equal(model.instructionTuned, true);
+  assert.equal(model.role, "smoke-test");
+  assert.equal(model.splitGguf, false);
+  assert.equal(model.files.length, 1);
   assert.ok(model.url.startsWith("https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/"));
+});
+
+test("allowlisted Qwen 7B Q4_K_M catalog uses official split GGUF shards", () => {
+  const model = getLocalLlmModelCatalogEntry(PRODUCTION_LOCAL_LLM_MODEL_ID);
+  assert.ok(model);
+  assert.equal(model.role, "production-analysis");
+  assert.equal(model.splitGguf, true);
+  assert.equal(model.family, "Qwen2.5-7B-Instruct");
+  assert.equal(model.filename, "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf");
+  assert.equal(model.files.length, 2);
+  assert.equal(model.files[0]?.filename, "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf");
+  assert.equal(model.files[0]?.sha256, "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db");
+  assert.equal(model.files[0]?.bytes, 3_993_201_344);
+  assert.equal(model.files[0]?.url, "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf");
+  assert.equal(model.files[1]?.filename, "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf");
+  assert.equal(model.files[1]?.sha256, "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a");
+  assert.equal(model.files[1]?.bytes, 689_872_288);
+  assert.equal(model.files[1]?.url, "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf");
+  assert.equal(getLocalLlmModelCatalogEntry("qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf")?.id, PRODUCTION_LOCAL_LLM_MODEL_ID);
+});
+
+test("production local LLM selection defaults to 7B and can select the 0.5B smoke-test model", () => {
+  assert.equal(resolveSelectedLocalLlmModelId(undefined), PRODUCTION_LOCAL_LLM_MODEL_ID);
+  assert.equal(resolveSelectedLocalLlmModelId(""), PRODUCTION_LOCAL_LLM_MODEL_ID);
+  assert.equal(resolveSelectedLocalLlmModelId("not-a-model.gguf"), PRODUCTION_LOCAL_LLM_MODEL_ID);
+  assert.equal(resolveSelectedLocalLlmModelId(SMOKE_TEST_LOCAL_LLM_MODEL_ID), SMOKE_TEST_LOCAL_LLM_MODEL_ID);
+  assert.equal(resolveSelectedLocalLlmModelId("qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"), PRODUCTION_LOCAL_LLM_MODEL_ID);
+});
+
+test("split 7B install requests both official shards and rejects a checksum mismatch without leaving a partial file", async () => {
+  const localAppData = await mkdirTemp();
+  const requested: string[] = [];
+  await assert.rejects(
+    installLocalLlmModel({
+      modelId: PRODUCTION_LOCAL_LLM_MODEL_ID,
+      localAppData,
+      transport: {
+        async get(url) {
+          requested.push(url);
+          return { status: 200, body: bytesOf(writeGgufFileMagic(Buffer.alloc(64, 9))) };
+        },
+      },
+    }),
+    (error: unknown) => error instanceof LocalLlmError && error.message.includes("SHA-256"),
+  );
+  assert.deepEqual(requested, [
+    "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+  ]);
+});
+
+test("incomplete split GGUF is not discovered as usable and 0.5B smoke-test remains selectable", async () => {
+  const localAppData = await mkdirTemp();
+  await mkdir(join(localAppData, "AI-WorkMate", "native"), { recursive: true });
+  await mkdir(join(localAppData, "AI-WorkMate", "models", "llm"), { recursive: true });
+  await writeFile(join(localAppData, "AI-WorkMate", "native", "llama-cli.exe"), "placeholder");
+  await writeFile(
+    join(localAppData, "AI-WorkMate", "models", "llm", "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"),
+    writeGgufFileMagic(Buffer.alloc(128, 3)),
+  );
+  await writeFile(
+    join(localAppData, "AI-WorkMate", "models", "llm", "qwen2.5-0.5b-instruct-q4_k_m.gguf"),
+    writeGgufFileMagic(Buffer.alloc(128, 4)),
+  );
+  const discovery = await discoverLocalLlmRuntime({ platform: "win32", localAppData });
+  assert.equal(discovery.helperFound, true);
+  assert.equal(discovery.modelFound, true);
+  assert.equal(discovery.modelName, "qwen2.5-0.5b-instruct-q4_k_m.gguf");
+  assert.equal(discovery.modelChecksumOk, false);
 });
 
 test("invalid executable names and truncated models are not discovered as usable", async () => {
