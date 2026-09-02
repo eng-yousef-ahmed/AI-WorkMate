@@ -14,6 +14,7 @@ import { installLocalLlmModel } from "../src/ai/LocalLlmModelInstaller";
 import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
+  buildLlamaCliArgs,
   type LocalLlmHelperProcess,
   type LocalLlmHelperRunner,
 } from "../src/ai/LocalLlmProvider";
@@ -148,13 +149,39 @@ test("non-Windows platforms are unavailable without an injected helper", async (
   );
 });
 
+test("b10621 llama-cli argv omits removed -no-cnv and keeps a fixed -p completion list", () => {
+  const args = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text");
+  assert.equal(args.includes("-no-cnv"), false);
+  assert.equal(args.includes("--no-conversation"), false);
+  assert.deepEqual(args, [
+    "-m",
+    "injected-llama-model.gguf",
+    "-n",
+    "768",
+    "--temp",
+    "0",
+    "--top-k",
+    "1",
+    "-ngl",
+    "0",
+    "--no-display-prompt",
+    "-p",
+    "prompt-text",
+  ]);
+});
+
 test("injected llama helper returns model JSON without inventing a cloud hop", async () => {
   const meetingId = "11111111-1111-4111-8111-111111111111";
+  let seenArgs: readonly string[] | undefined;
   const provider = new LocalLlmProvider({
     platform: "linux",
-    helperRunner: scriptedLlamaRunner(validAnalysis(meetingId)),
+    helperRunner: (args) => {
+      seenArgs = args;
+      return scriptedLlamaRunner(validAnalysis(meetingId))(args);
+    },
   });
   const result = await provider.process(sampleRequest(meetingId));
+  assert.equal(seenArgs?.includes("-no-cnv"), false);
   assert.equal(result.providerId, "local-llama-cpp");
   assert.equal(result.persistedByProvider, false);
   const parsed = JSON.parse(result.output) as AnalysisDocument;

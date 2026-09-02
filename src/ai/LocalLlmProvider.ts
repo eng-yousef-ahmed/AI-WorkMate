@@ -88,22 +88,7 @@ export class LocalLlmProvider implements AIProvider {
     const cliPath = await this.resolveCliPath();
     const modelPath = await this.resolveModelPath();
     const prompt = buildAnalysisPrompt(transcript, this.clock().toISOString());
-    const args = [
-      "-m",
-      modelPath,
-      "-n",
-      "768",
-      "--temp",
-      "0",
-      "--top-k",
-      "1",
-      "-ngl",
-      "0",
-      "--no-display-prompt",
-      "-no-cnv",
-      "-p",
-      prompt,
-    ];
+    const args = buildLlamaCliArgs(modelPath, prompt);
     const runner = this.helperRunner ?? createSpawnRunner(cliPath);
     const child = runner(args);
     let timeout: NodeJS.Timeout | undefined;
@@ -278,6 +263,28 @@ export async function assertUsableLocalLlmModelFile(modelPath: string): Promise<
     throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model SHA-256 does not match the allowlisted catalog.", false);
   }
   return { sha256, bytes: contents.byteLength };
+}
+
+/**
+ * llama.cpp b10621+ removed `-no-cnv` (ggml-org/llama.cpp#27542). One-shot
+ * completion uses `-p` without conversation flags.
+ */
+export function buildLlamaCliArgs(modelPath: string, prompt: string): readonly string[] {
+  return [
+    "-m",
+    modelPath,
+    "-n",
+    "768",
+    "--temp",
+    "0",
+    "--top-k",
+    "1",
+    "-ngl",
+    "0",
+    "--no-display-prompt",
+    "-p",
+    prompt,
+  ];
 }
 
 export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: string): string {
