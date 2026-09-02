@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { TranscriptSegment } from "../domain/models";
 import { prepareWhisperWav } from "./PrepareWhisperAudio";
+import { getWhisperModelCatalogEntry } from "./WhisperRuntimeCatalog";
 import {
   TranscriptionError,
   type TranscriptionEngine,
@@ -189,6 +191,13 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
         const magic = bytes.subarray(0, 4).toString("ascii");
         if (magic !== "ggml" && magic !== "gguf") {
           throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model is not a ggml/gguf file: ${basename(candidate)}.`, false);
+        }
+        const catalog = getWhisperModelCatalogEntry(basename(candidate));
+        if (catalog !== undefined) {
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          if (sha256 !== catalog.sha256 || bytes.byteLength !== catalog.bytes) {
+            throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model SHA-256 did not match the allowlisted catalog: ${basename(candidate)}.`, false);
+          }
         }
         return candidate;
       } catch (error: unknown) {

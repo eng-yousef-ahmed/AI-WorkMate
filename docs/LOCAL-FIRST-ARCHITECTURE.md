@@ -31,6 +31,7 @@ Electron main process
    │     └── .NET/NAudio helper using CoreAudio/WASAPI microphone + loopback APIs
    ├── StorageRuntime native capture API (main process only; no renderer capture IPC)
    ├── LocalTranscriptionService / TranscriptionEngine (AIWPCM → local engine → transcript artifacts)
+   ├── WindowsLocalWhisperEngine + WhisperModelInstaller (allowlisted HTTPS models in LocalAppData)
    ├── OS credential primitive (Electron safeStorage / Windows DPAPI)
    └── optional AIProvider (local or policy-approved cloud)
 ```

@@ -33,3 +33,7 @@ export * from "./transcription/LocalTranscriptionService";
 export * from "./transcription/PrepareWhisperAudio";
 export * from "./transcription/WindowsLocalWhisperEngine";
 export * from "./transcription/WindowsLocalTranscriptionVerification";
+export * from "./transcription/WhisperRuntimeCatalog";
+export * from "./transcription/WhisperModelInstaller";
+export * from "./transcription/WhisperRuntimeDiscovery";
+export * from "./transcription/SpeechFixture";

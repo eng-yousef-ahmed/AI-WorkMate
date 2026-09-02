@@ -2,8 +2,8 @@
 
 Updated: 2026-09-02
 
-This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, implements Phase 6B Windows native audio provider code with real Windows helper verification, integrates that path into `StorageRuntime` (Phase 6C), adds Phase 7A local transcription of committed AIWPCM recordings, and adds Phase 7B production wiring for local whisper.cpp. It does not
-implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, a bundled Whisper binary/model, or the full AI pipeline. The persistent meeting store
+This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, implements Phase 6B Windows native audio provider code with real Windows helper verification, integrates that path into `StorageRuntime` (Phase 6C), adds Phase 7A local transcription of committed AIWPCM recordings, Phase 7B production wiring for local whisper.cpp, and Phase 7C Windows runtime/model install plus verification support. It does not
+implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, a Git-bundled Whisper binary/model, or the full AI pipeline. The persistent meeting store
 remains local SQLite plus filesystem artifacts; that does **not** mean that an
 explicitly approved cloud AI request is local.
 
@@ -18,6 +18,12 @@ explicitly approved cloud AI request is local.
 - **REMAINING GAP** — intentionally deferred work or a limitation of this phase.
 
 ## IMPLEMENTED
+
+### PHASE 7C Windows runtime/model installation and verification
+
+- **IMPLEMENTED / TESTED:** Allowlisted model install (`npm run install:whisper-model`) downloads only `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin`, writes atomically under `%LOCALAPPDATA%\AI-WorkMate\models\whisper\`, and fail-closes on SHA-256/size mismatch or interrupt. No renderer URL. CLI install remains a documented manual copy of `whisper-cli.exe`.
+- **IMPLEMENTED / TESTED:** `discoverWhisperRuntime()` and `npm run verify:windows-local-transcription` report helper/model presence, checksum, spoken-fixture transcription, journal/SQLite/lifecycle, and `cloudServiceUsed: false`. Linux fail-closes with `windowsVerified: false`.
+- **WINDOWS-VERIFIED: NO** — this sandbox did not run real whisper.cpp against a real model on win32.
 
 ### PHASE 7B real local whisper.cpp engine
 
@@ -144,11 +150,11 @@ explicitly approved cloud AI request is local.
 
 ## TESTED
 
-The following commands completed successfully in the Linux sandbox after the Phase 7B whisper.cpp engine work:
+The following commands completed successfully in the Linux sandbox after the Phase 7C install/verification work:
 
 - `npm run lint` — **PASSED**, ESLint with zero warnings.
 - `npm run typecheck` — **PASSED**.
-- `npm test` — **PASSED: 123/123 tests**; its nested build also passed.
+- `npm test` — **PASSED: 131/131 tests**; its nested build also passed.
 - `npm run test:storage` — **PASSED: 26/26 storage tests** for the complete `storage*.test.js` suite; its nested build also passed.
 - `npm run build` — **PASSED** (TypeScript output and renderer asset copy).
 
@@ -217,6 +223,7 @@ Automated coverage includes Windows native audio provider platform detection, mi
 | No fake production capture fallback | IMPLEMENTED / TESTED | Production factory/provider reports unsupported/provider-not-configured instead of creating mock bytes; helper doubles are confined to tests. |
 | Local transcription of AIWPCM recordings (Phase 7A) | IMPLEMENTED / TESTED | Validate/reconstruct/journal/lifecycle covered. |
 | Local whisper.cpp engine (Phase 7B) | IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED | Real spawn/protocol and resampling; CLI/model must be installed on Windows. Not WINDOWS-VERIFIED. |
+| Whisper model install + Windows verify (Phase 7C) | IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED | Allowlisted HTTPS install + spoken fixture verification. WINDOWS-VERIFIED: NO. |
 | Bundled whisper.cpp + ggml model | REMAINING GAP | Not committed to Git. |
 | Full AI/meeting pipeline | NOT TESTED / REMAINING GAP | Transcript-to-provider-to-saveAnalysis path is not wired. |
 

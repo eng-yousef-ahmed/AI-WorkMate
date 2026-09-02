@@ -188,7 +188,7 @@ test("Windows transcription verification fail-closes off Windows without fake me
   const result = await runWindowsLocalTranscriptionVerification();
   assert.equal(result.success, false);
   assert.equal(result.windowsVerified, false);
-  assert.equal(result.cloudContacted, false);
+  assert.equal(result.cloudServiceUsed, false);
   assert.equal(result.failureCode, "TRANSCRIPTION_ENGINE_UNAVAILABLE");
 });
 

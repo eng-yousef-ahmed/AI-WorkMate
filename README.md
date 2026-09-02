@@ -12,7 +12,9 @@ Windows desktop
    ├── NativeCaptureAdapter / WindowsCaptureAdapter boundary (capability discovery, fail-closed without provider)
    ├── WindowsNativeAudioProvider + Windows helper (WASAPI microphone/loopback; Windows-verified)
    ├── StorageRuntime native capture coordinator (main-process only)
-   ├── Local transcription boundary (AIWPCM validate/reconstruct → injected local engine)
+   ├── Local transcription pipeline (Phase 7A)
+   ├── WindowsLocalWhisperEngine (Phase 7B whisper.cpp)
+   ├── Whisper model installer / discovery (Phase 7C, LocalAppData, not Git)
    └── Optional provider adapters (local or cloud, policy-gated)
 ```
 
@@ -150,7 +152,29 @@ The CLI and ggml/gguf model are **not** in Git. Install:
 - `%LOCALAPPDATA%\AI-WorkMate\native\whisper-cli.exe`
 - `%LOCALAPPDATA%\AI-WorkMate\models\whisper\ggml-tiny.bin`
 
-Missing runtime/model fails with `TRANSCRIPTION_ENGINE_UNAVAILABLE`. Speaker diarization is not implemented. Tests inject helper doubles only. `npm run verify:windows-local-transcription` fail-closes off Windows and is **not WINDOWS-VERIFIED** until it succeeds on a real Windows host with a real model.
+Missing runtime/model fails with `TRANSCRIPTION_ENGINE_UNAVAILABLE`. Speaker diarization is not implemented. Tests inject helper doubles only.
+
+## Windows runtime/model install and verification (Phase 7C)
+
+Install the CLI manually:
+
+```bat
+copy whisper-cli.exe %LOCALAPPDATA%\AI-WorkMate\native\whisper-cli.exe
+```
+
+Install the allowlisted model (HTTPS + SHA-256, atomic, no renderer URL):
+
+```bat
+npm run install:whisper-model -- ggml-tiny.bin
+```
+
+Then on a **real Windows** machine:
+
+```bat
+npm run verify:windows-local-transcription
+```
+
+`windowsVerified` is true only if whisper.cpp actually transcribes the spoken fixture (`tests/fixtures/whisper-speech.wav`, rebuilt as 48 kHz / 2 ch / 32-bit AIWPCM). Linux fail-closes. **This Linux sandbox is not WINDOWS-VERIFIED.**
 
 ## Location migration
 

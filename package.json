@@ -18,7 +18,8 @@
     "package:win": "npm run build && npm run build:native:win && electron-builder --win",
     "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true",
     "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js",
-    "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js"
+    "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js",
+    "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js"
   },
   "repository": {
     "type": "git",
