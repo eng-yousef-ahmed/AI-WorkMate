@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { TranscriptSegment } from "../domain/models";
 import { prepareWhisperWav } from "./PrepareWhisperAudio";
+import { isWhisperCppModelMagic } from "./WhisperModelFormat";
 import { getWhisperModelCatalogEntry } from "./WhisperRuntimeCatalog";
 import {
   TranscriptionError,
@@ -188,9 +189,8 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
         if (bytes.byteLength < 64) {
           throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model is empty or truncated: ${basename(candidate)}.`, false);
         }
-        const magic = bytes.subarray(0, 4).toString("ascii");
-        if (magic !== "ggml" && magic !== "gguf") {
-          throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model is not a ggml/gguf file: ${basename(candidate)}.`, false);
+        if (!isWhisperCppModelMagic(bytes)) {
+          throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model is not a whisper.cpp ggml/gguf file: ${basename(candidate)}.`, false);
         }
         const catalog = getWhisperModelCatalogEntry(basename(candidate));
         if (catalog !== undefined) {

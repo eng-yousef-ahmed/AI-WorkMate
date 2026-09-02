@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 
+import { isWhisperCppModelMagic } from "./WhisperModelFormat";
 import { getWhisperModelCatalogEntry } from "./WhisperRuntimeCatalog";
 import {
   resolveWindowsWhisperCliPath,
@@ -40,7 +41,7 @@ export async function discoverWhisperRuntime(options: {
   };
   if (helperPath !== undefined) {
     discovery.helperName = basename(helperPath);
-    discovery.relativeHelperLocation = `%LOCALAPPDATA%\\AI-WorkMate\\native\\${basename(helperPath)}`;
+    discovery.relativeHelperLocation = `%LOCALAPPDATA%\\\\AI-WorkMate\\\\native\\\\${basename(helperPath)}`;
     if (platform === "win32") {
       discovery.engineVersion = await readWhisperVersion(helperPath);
     }
@@ -53,15 +54,14 @@ export async function discoverWhisperRuntime(options: {
     discovery.modelName = basename(modelPath);
     discovery.modelSha256 = sha256;
     discovery.modelBytes = contents.byteLength;
-    discovery.relativeModelLocation = `%LOCALAPPDATA%\\AI-WorkMate\\models\\whisper\\${basename(modelPath)}`;
+    discovery.relativeModelLocation = `%LOCALAPPDATA%\\\\AI-WorkMate\\\\models\\\\whisper\\\\${basename(modelPath)}`;
     if (catalog !== undefined) {
       discovery.modelChecksumOk = catalog.sha256 === sha256 && catalog.bytes === contents.byteLength;
     }
-    const magic = contents.subarray(0, 4).toString("ascii");
-    if (magic !== "ggml" && magic !== "gguf") {
+    if (!isWhisperCppModelMagic(contents)) {
       discovery.modelFound = false;
       discovery.failureCode = "TRANSCRIPTION_ENGINE_UNAVAILABLE";
-      discovery.failureMessage = "Located model is not ggml/gguf.";
+      discovery.failureMessage = "Located model is not a whisper.cpp ggml/gguf file (little-endian GGML_FILE_MAGIC or GGUF).";
     }
   }
   if (platform !== "win32") {
@@ -80,9 +80,8 @@ export async function assertUsableWhisperModelFile(modelPath: string): Promise<{
     throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", "Whisper model file is missing or truncated.", false);
   }
   const contents = await readFile(modelPath);
-  const magic = contents.subarray(0, 4).toString("ascii");
-  if (magic !== "ggml" && magic !== "gguf") {
-    throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", "Whisper model is not a ggml/gguf file.", false);
+  if (!isWhisperCppModelMagic(contents)) {
+    throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", "Whisper model is not a whisper.cpp ggml/gguf file.", false);
   }
   const sha256 = createHash("sha256").update(contents).digest("hex");
   const catalog = getWhisperModelCatalogEntry(basename(modelPath));

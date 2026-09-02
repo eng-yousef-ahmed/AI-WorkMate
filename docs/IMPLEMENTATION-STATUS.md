@@ -154,7 +154,7 @@ The following commands completed successfully in the Linux sandbox after the Pha
 
 - `npm run lint` — **PASSED**, ESLint with zero warnings.
 - `npm run typecheck` — **PASSED**.
-- `npm test` — **PASSED: 131/131 tests**; its nested build also passed.
+- `npm test` — **PASSED: 134/134 tests**; its nested build also passed. Whisper.cpp ggml models are validated with little-endian `GGML_FILE_MAGIC` (`0x67676d6c` on disk as `lmgg`), not ASCII `"ggml"`. **WINDOWS-VERIFIED: NO.**
 - `npm run test:storage` — **PASSED: 26/26 storage tests** for the complete `storage*.test.js` suite; its nested build also passed.
 - `npm run build` — **PASSED** (TypeScript output and renderer asset copy).
 
