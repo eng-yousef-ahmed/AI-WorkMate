@@ -22,10 +22,16 @@ explicitly approved cloud AI request is local.
 ### Transcript → AI analysis pipeline
 
 - **IMPLEMENTED / TESTED:** `LocalAnalysisService.analyzeCommittedTranscript()` loads a committed transcript by meeting UUID + recording UUID, enforces `AIProcessingPolicyEnforcer` **before** any provider receives content, then calls `LocalFirstStore.processTranscriptWithProvider()` → strict JSON/`AnalysisDocument` validation → `saveAnalysis()`.
-- **IMPLEMENTED / TESTED:** `LOCAL_ONLY` blocks cloud providers without transmission. `ASK_EACH_TIME` requires `userApprovedForThisRequest`. `CLOUD_ALLOWED` may use an injected cloud transport. Production default is an unconfigured local transport that **does not invent** summaries/decisions/tasks. No API keys, no test network calls, no cloud database.
+- **IMPLEMENTED / TESTED:** `LOCAL_ONLY` blocks cloud providers without transmission. `ASK_EACH_TIME` requires `userApprovedForThisRequest`. `CLOUD_ALLOWED` may use an injected cloud transport. Production default is `LocalLlmProvider` (llama.cpp). Missing CLI/model fail closed and **does not invent** summaries/decisions/tasks. No API keys, no test network calls, no cloud database.
 - **IMPLEMENTED / TESTED:** Analysis artifacts live under `DATA_ROOT/.../Analysis/` through the artifact journal (SHA-256, atomic write). SQLite indexes metadata and structured decision/task rows only. Invalid JSON, wrong meeting ID, schema-invalid tasks/decisions, and provider failure mark `FAILED` without claiming success. Interrupted `ANALYSIS_STARTED` recovers to `INCOMPLETE`.
 - **IMPLEMENTED / TESTED:** `StorageRuntime.analyzeCommittedTranscript()` is main-process only. No renderer analysis IPC, paths, provider URLs, or secrets.
-- **WINDOWS-VERIFIED: NO** — this phase does not require a Windows-native helper; Linux tests cover the pipeline.
+- **WINDOWS-VERIFIED: NO / REAL-AI-VERIFIED: NO** — Linux tests cover the pipeline and fail-closed verification. Real llama.cpp generation on Windows is pending.
+
+### Local llama.cpp runtime
+
+- **IMPLEMENTED / TEST-VERIFIED / CODE-VERIFIED:** `LocalLlmProvider` spawns `llama-cli.exe` with a fixed argv after discovering `%LOCALAPPDATA%\\AI-WorkMate\\native\\` and an allowlisted GGUF under `models\\llm\\`. HTTPS installer, checksum/size, truncated/invalid GGUF rejection, path traversal rejection, timeout/crash/cancel/malformed JSON fail closed.
+- **IMPLEMENTED / TEST-VERIFIED:** `npm run install:local-llm-model` and `npm run verify:windows-local-analysis`. Linux verification sets `windowsVerified: false` and `realAiVerified: false` without fabricating summary text.
+- **REAL-AI-VERIFIED: NO** — this Linux sandbox did not execute a real GGUF model.
 
 ### PHASE 7C Windows runtime/model installation and verification
 
@@ -194,7 +200,7 @@ Automated coverage includes Windows native audio provider platform detection, mi
 ## REMAINING GAP
 
 - **No platform meeting recorder:** Microsoft calendar discovery, Teams identification, the local capture/storage boundary, native source abstraction/policy/coordinator, Windows native audio provider, and runtime integration are implemented. Real Windows microphone/loopback helper capture and Phase 6C StorageRuntime persistence are **WINDOWS-VERIFIED**. Teams/Zoom/Google Meet/browser automation and screen/window capture providers remain out of scope.
-- **AI provider transports are not live:** The transcript → policy → provider → `saveAnalysis()` path is wired. Production still has no configured local model runtime and no live OpenAI transport/API key. Injected transports are for tests only.
+- **Local llama.cpp is wired but not REAL-AI-VERIFIED here:** Production defaults to `LocalLlmProvider`. CLI/GGUF are not in Git. No live OpenAI transport/API key. Injected helper doubles are for tests only.
 - **Whisper runtime is not bundled:** Phase 7B/7C wire whisper.cpp but do not commit `whisper-cli.exe` or ggml models. Install under `%LOCALAPPDATA%\AI-WorkMate`. Linux verification fail-closes. Real Windows local transcription of the spoken fixture is **WINDOWS-VERIFIED**.
 - Migration recovery can safely activate a fully copied destination or mark an interrupted copy incomplete; resumable copying/progress/cancellation UI is not implemented.
 - A signed production installer, a user-facing Keep/Delete uninstall choice, full Microsoft OAuth/MSAL sign-in UX, ordinary meeting-file encryption-at-rest, and automated backup retention are not implemented.
@@ -233,7 +239,9 @@ Automated coverage includes Windows native audio provider platform detection, mi
 | Local whisper.cpp engine (Phase 7B) | IMPLEMENTED / TESTED / WINDOWS-VERIFIED | Real spawn/protocol and resampling; CLI/model installed on Windows. Spoken-fixture STT committed locally after `b43172f0`. |
 | Whisper model install + Windows verify (Phase 7C) | IMPLEMENTED / TESTED / WINDOWS-VERIFIED | Allowlisted HTTPS install + spoken fixture. Real Windows: `windowsVerified` true, `recognizedText` present, SQLite/journal `COMMITTED`, `cloudServiceUsed` false. |
 | Bundled whisper.cpp + ggml model | REMAINING GAP | Not committed to Git. |
-| Transcript → AI analysis pipeline | IMPLEMENTED / TESTED / WINDOWS-UNVERIFIED | Committed transcript, policy gate, strict JSON, journaled `saveAnalysis()`. No live cloud API. |
+| Transcript → AI analysis pipeline | IMPLEMENTED / TESTED / CODE-VERIFIED | Committed transcript, policy gate, strict JSON, journaled `saveAnalysis()`. |
+| Local llama.cpp provider | IMPLEMENTED / TESTED / CODE-VERIFIED | Real spawn path; missing runtime fail-closed. **not REAL-AI-VERIFIED**. |
+| Bundled llama.cpp + GGUF | REMAINING GAP | Not committed to Git. |
 
 ## Final verification boundary
 

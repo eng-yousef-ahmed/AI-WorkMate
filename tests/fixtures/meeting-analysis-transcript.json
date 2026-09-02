@@ -1,0 +1,28 @@
+{
+  "meetingId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "recordingId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "speakers": [],
+  "timestamps": true,
+  "language": "en",
+  "createdAt": "2026-09-02T11:00:00.000Z",
+  "segments": [
+    {
+      "segmentId": "seg-1",
+      "startMs": 0,
+      "endMs": 4000,
+      "text": "AI WorkMate records meetings locally and keeps transcripts under DATA_ROOT."
+    },
+    {
+      "segmentId": "seg-2",
+      "startMs": 4000,
+      "endMs": 9000,
+      "text": "We decided to ship the local llama.cpp analysis path without sending content to a cloud provider."
+    },
+    {
+      "segmentId": "seg-3",
+      "startMs": 9000,
+      "endMs": 14000,
+      "text": "Please review the analysis artifacts and schedule the next local-first review."
+    }
+  ]
+}

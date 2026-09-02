@@ -15,7 +15,8 @@ Windows desktop
    ├── Local transcription pipeline (Phase 7A)
    ├── WindowsLocalWhisperEngine (Phase 7B whisper.cpp)
    ├── Whisper model installer / discovery (Phase 7C, LocalAppData, not Git)
-   └── Optional provider adapters (local or cloud, policy-gated)
+   ├── Local llama.cpp analysis provider (GGUF instruct model, LocalAppData, not Git)
+   └── Optional cloud provider adapters (policy-gated; not required for local analysis)
 ```
 
 There is no cloud database dependency in the storage foundation. Cloud AI, when explicitly enabled, is a transient processing integration and is not the persistent meeting-data store. AI WorkMate does not claim that cloud AI processing is 100% local.
@@ -178,6 +179,21 @@ npm run verify:windows-local-transcription
 
 **WINDOWS-VERIFIED:** After `b43172f0`, a real Windows run produced `success: true`, `windowsVerified: true`, `platform: "win32"`, `helperFound: true` (`whisper-cli.exe`), `modelFound: true` (`ggml-tiny.bin`), `engineVersion: "whisper.cpp version: 1.9.3"`, `transcriptionCompleted: true`, `recognizedText: "AI Workmate records meetings locally. This spoken fixture is for Windows Whisper Verification only."`, `sqliteStatus`/`journalStatus` `COMMITTED`, `meetingStatus` `COMPLETED`, `cloudServiceUsed: false`, `isolatedWorkspace: true`, `userDataUntouched: true`.
 
+## Local llama.cpp analysis
+
+Production `StorageRuntime` defaults to `LocalLlmProvider`. It loads a committed transcript, enforces `AIProcessingPolicyEnforcer`, spawns **llama.cpp** (`llama-cli.exe`) with a fixed argv, validates `AnalysisDocument` JSON, and calls `saveAnalysis()`. Transcript content is not uploaded.
+
+The CLI and GGUF model are **not** in Git:
+
+```bat
+mkdir %LOCALAPPDATA%\\AI-WorkMate\\native
+copy llama-cli.exe %LOCALAPPDATA%\\AI-WorkMate\\native\\llama-cli.exe
+npm run install:local-llm-model -- qwen2.5-0.5b-instruct-q4_k_m.gguf
+npm run verify:windows-local-analysis
+```
+
+`windowsVerified` / `realAiVerified` are true only if llama.cpp actually generates validated analysis JSON that is journaled locally. Linux fail-closes. This sandbox is **CODE-VERIFIED / TEST-VERIFIED**, **not REAL-AI-VERIFIED**.
+
 ## Location migration
 
 Changing the location is an explicit migration:
@@ -217,8 +233,8 @@ The desktop renderer receives an allow-listed preload API, not `fs`, `path`, `ip
 
 Credentials are represented by an OS-encrypted vault adapter using Electron `safeStorage`/Windows DPAPI semantics and are never placed in meeting folders or DATA_ROOT backups. The AI abstraction supports local and injected cloud adapters. `LOCAL_ONLY`, `CLOUD_ALLOWED`, and `ASK_EACH_TIME` are checked before content is handed to a provider.
 
-Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. Phase 6B adds Windows microphone and system-audio/loopback provider code and is **WINDOWS-VERIFIED** for real helper capture. Phase 6C wires that provider through `StorageRuntime` into the existing local-first journal path without capture IPC and is **WINDOWS-VERIFIED** for real microphone and WASAPI loopback persistence. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen capture, a bundled speech-to-text runtime, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Committed-transcript analysis (`LocalAnalysisService`) enforces AI policy then persists validated JSON through `saveAnalysis()`. Production has no live OpenAI key and does not invent analysis text.
+Phase 4 adds Microsoft Graph calendar discovery, Teams meeting detection, idempotent local meeting associations, and renderer-safe sync IPC. Phase 5 adds only the local recording/capture boundary and local file-backed chunk/stream adapter. Phase 6A adds the native-source capability/policy/coordinator boundary without adding a fake capture provider. Phase 6B adds Windows microphone and system-audio/loopback provider code and is **WINDOWS-VERIFIED** for real helper capture. Phase 6C wires that provider through `StorageRuntime` into the existing local-first journal path without capture IPC and is **WINDOWS-VERIFIED** for real microphone and WASAPI loopback persistence. The application still does not supply actual Teams/Zoom/Google Meet/browser/screen capture, a bundled speech-to-text runtime, AI provider implementation, background scheduler, or live Microsoft sign-in UX; no fake content or fake production calendar data is used. Committed-transcript analysis (`LocalAnalysisService`) enforces AI policy then persists validated JSON through `saveAnalysis()`. Production default is `LocalLlmProvider` (llama.cpp + allowlisted GGUF). Missing runtime/model fail closed. There is no live OpenAI key and no invented analysis text. **REAL-AI-VERIFIED** is not claimed until `npm run verify:windows-local-analysis` succeeds on Windows.
 
 ## Scope of this change
 
-This change deliberately implements local recording boundary/storage control, the native Windows capture source abstraction/policy boundary, Windows native audio provider code, Phase 6C StorageRuntime integration, and Phase 7 local whisper.cpp transcription. Real Windows microphone and WASAPI loopback capture, and real Windows spoken-fixture local transcription, are **WINDOWS-VERIFIED**. It does **not** implement Teams/Zoom/Google Meet/browser/screen/window recording, a Git-bundled Whisper CLI/model, advanced AI, live OAuth sign-in UX, background calendar scheduling, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity remain **WINDOWS-UNVERIFIED**. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.
+This change adds a production local llama.cpp analysis provider, allowlisted GGUF installer, discovery, and Windows verification harness on top of the existing analysis pipeline. Real Windows microphone/loopback capture and spoken-fixture Whisper transcription remain **WINDOWS-VERIFIED**. Real local LLM execution is **not REAL-AI-VERIFIED** in this Linux sandbox. It does **not** implement Teams/Zoom/Google Meet/browser/screen/window recording, Git-bundled Whisper/llama binaries, live OAuth sign-in UX, background calendar scheduling, or cloud synchronization. Optional encrypted sync remains a future opt-in boundary. Windows Electron GUI, Microsoft MSAL/DPAPI/ACL, disk-full, signed installer, update, uninstall behavior, and live Microsoft Graph connectivity remain **WINDOWS-UNVERIFIED**. See [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for exact implementation, test, and remaining-gap statuses.

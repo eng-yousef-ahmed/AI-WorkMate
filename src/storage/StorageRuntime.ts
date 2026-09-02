@@ -30,10 +30,10 @@ import { LocalTranscriptionService, type TranscriptionPersistResult } from "../t
 import { WindowsLocalWhisperEngine } from "../transcription/WindowsLocalWhisperEngine";
 import type { TranscriptionEngine } from "../transcription/TranscriptionEngine";
 import type { AIProvider } from "../ai/AIProvider";
+import { LocalLlmProvider } from "../ai/LocalLlmProvider";
 import {
   LocalAnalysisService,
   type AnalysisPersistResult,
-  unconfiguredLocalAIProvider,
 } from "../ai/LocalAnalysisService";
 import type { StorageConfigService } from "./StorageConfigService";
 import { DataRootValidationError, StorageError } from "./errors";
@@ -410,7 +410,7 @@ export class StorageRuntime {
     });
     this.analysis = new LocalAnalysisService({
       store,
-      provider: this.integrations.analysisProvider ?? unconfiguredLocalAIProvider(),
+      provider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
     });
   }
 

@@ -19,7 +19,9 @@
     "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true",
     "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js",
     "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js",
-    "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js"
+    "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js",
+    "install:local-llm-model": "npm run build && node dist/scripts/install-local-llm-model.js",
+    "verify:windows-local-analysis": "npm run build && node dist/scripts/verify-windows-local-analysis.js"
   },
   "repository": {
     "type": "git",

@@ -169,7 +169,7 @@ Calendar synchronization is idempotent. Discovering the same event repeatedly up
 - `CLOUD_ALLOWED`: a configured cloud integration may process content.
 - `ASK_EACH_TIME`: a cloud request requires explicit approval.
 
-Provider responses are written through the local store when the application chooses to persist them. `LocalAnalysisService` loads a committed transcript, runs `AIProcessingPolicyEnforcer` before any provider receives content, then `processTranscriptWithProvider()` validates JSON and calls `saveAnalysis()`. Cloud AI is processing only; it is never the meeting database. Production has no invented analysis text and no live API key. The Microsoft calendar provider is for discovery only and does not record, transcribe, or process meetings.
+Provider responses are written through the local store when the application chooses to persist them. `LocalAnalysisService` loads a committed transcript, runs `AIProcessingPolicyEnforcer` before any provider receives content, then `processTranscriptWithProvider()` validates JSON and calls `saveAnalysis()`. Production default is `LocalLlmProvider` (offline llama.cpp). Cloud AI is processing only; it is never the meeting database. Production has no invented analysis text and no live API key. Real GGUF execution on Windows is **not REAL-AI-VERIFIED** until `npm run verify:windows-local-analysis` succeeds there. The Microsoft calendar provider is for discovery only and does not record, transcribe, or process meetings.
 
 ## Meeting lifecycle contract (Phase 3)
 
