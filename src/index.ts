@@ -1,5 +1,7 @@
 export * from "./domain/models";
 export * from "./ai/AIProvider";
+export * from "./ai/AnalysisDocument";
+export * from "./ai/LocalAnalysisService";
 export * from "./security/CredentialStore";
 export * from "./storage/ArchiveService";
 export * from "./storage/BackupService";

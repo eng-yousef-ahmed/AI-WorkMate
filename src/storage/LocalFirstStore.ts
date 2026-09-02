@@ -17,6 +17,7 @@ import type {
 import { STORAGE_VERSION, type TranscriptSegment } from "../domain/models";
 import type { CalendarMeetingUpsertResult, NormalizedCalendarEvent } from "../calendar/CalendarModels";
 import type { AIProvider } from "../ai/AIProvider";
+import { parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
 import { BackupService } from "./BackupService";
 import { ExportService } from "./ExportService";
 import { LocalDatabase, type AuditRecord, type DuplicateMeetingKeys, type ParticipantRecord, type TranscriptRecord } from "./LocalDatabase";
@@ -179,6 +180,7 @@ export class LocalFirstStore {
     this.recoverInterruptedRecordings();
     await this.recoverArtifactOperations();
     this.recoverInterruptedTranscriptions();
+    this.recoverInterruptedAnalyses();
     this.refreshServices();
     this.initialized = true;
   }
@@ -228,6 +230,26 @@ export class LocalFirstStore {
       // Recovery may already have moved the meeting; preserve the original transcription error.
     }
     this.database.appendAudit(this.audit(status === "FAILED" ? "TRANSCRIPTION_FAILED" : "TRANSCRIPTION_INCOMPLETE", meetingId));
+  }
+
+  public beginAnalysis(meetingId: string, recordingId: string): void {
+    this.requireMeeting(meetingId);
+    this.transitionMeeting(meetingId, "PROCESSING");
+    this.database.appendAudit(this.audit("ANALYSIS_STARTED", meetingId, { recordingId }));
+  }
+
+  public completeAnalysis(meetingId: string): void {
+    this.transitionMeeting(meetingId, "COMPLETED");
+    this.database.appendAudit(this.audit("ANALYSIS_COMPLETED", meetingId));
+  }
+
+  public failAnalysis(meetingId: string, status: "FAILED" | "INCOMPLETE"): void {
+    try {
+      this.transitionMeeting(meetingId, status);
+    } catch {
+      // Recovery or the provider boundary may already have moved the meeting.
+    }
+    this.database.appendAudit(this.audit(status === "FAILED" ? "ANALYSIS_FAILED" : "ANALYSIS_INCOMPLETE", meetingId));
   }
 
   public transitionMeeting(meetingId: string, status: MeetingStatus): void {
@@ -883,14 +905,20 @@ export class LocalFirstStore {
     this.transitionMeeting(meeting.meetingId, "PROCESSING");
     try {
       const result = await provider.process({ meetingId: document.meetingId, purpose: "SUMMARY", content: JSON.stringify(document), language: document.language });
-      let analysis: AnalysisDocument;
-      try { analysis = JSON.parse(result.output) as AnalysisDocument; } catch { throw new StorageError("AI provider returned invalid analysis JSON; nothing was persisted."); }
-      if (analysis.meetingId !== document.meetingId) throw new StorageError("AI provider returned analysis for the wrong meeting.");
+      if (result.persistedByProvider !== false) {
+        throw new StorageError("AI provider must not persist meeting data; cloud AI is processing only.");
+      }
+      const analysis = parseAnalysisDocument(result.output, document.meetingId);
       await this.saveAnalysis(analysis);
       this.transitionMeeting(meeting.meetingId, "COMPLETED");
+      this.database.appendAudit(this.audit("ANALYSIS_COMPLETED", meeting.meetingId, { providerId: result.providerId }));
       return analysis;
     } catch (error) {
-      this.transitionMeeting(meeting.meetingId, "FAILED");
+      try {
+        this.transitionMeeting(meeting.meetingId, "FAILED");
+      } catch {
+        // Keep the provider/validation error as the thrown cause.
+      }
       throw error;
     }
   }
@@ -1036,6 +1064,36 @@ export class LocalFirstStore {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
+    }
+  }
+
+  private recoverInterruptedAnalyses(): void {
+    for (const operation of this.database.listIncompleteArtifactOperations()) {
+      if (!operation.artifactType.startsWith("ANALYSIS_")) {
+        continue;
+      }
+      const meeting = this.database.getMeeting(operation.meetingId);
+      if (meeting?.status === "PROCESSING") {
+        this.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+        this.database.appendAudit(this.audit("ANALYSIS_RECOVERED_INCOMPLETE", meeting.meetingId, {
+          operationId: operation.operationId,
+          reason: "APPLICATION_RESTARTED_DURING_ANALYSIS",
+        }));
+      }
+    }
+    for (const meeting of this.database.listMeetings()) {
+      if (meeting.status !== "PROCESSING") {
+        continue;
+      }
+      const audits = this.database.listAuditRecords(500).filter((record) => record.meetingId === meeting.meetingId);
+      const started = audits.some((record) => record.action === "ANALYSIS_STARTED");
+      const finished = audits.some((record) => record.action === "ANALYSIS_CREATED" || record.action === "ANALYSIS_COMPLETED");
+      if (started && !finished) {
+        this.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+        this.database.appendAudit(this.audit("ANALYSIS_RECOVERED_INCOMPLETE", meeting.meetingId, {
+          reason: "APPLICATION_RESTARTED_DURING_ANALYSIS",
+        }));
+      }
     }
   }
 
@@ -1290,9 +1348,7 @@ function validateTranscript(document: TranscriptDocument): void {
 }
 
 function validateAnalysis(document: AnalysisDocument): void {
-  if (!document.createdAt || document.meetingId.length === 0) {
-    throw new DataRootValidationError("Analysis must include meetingId and createdAt.");
-  }
+  validateAnalysisDocument(document);
 }
 
 function transcriptToText(document: TranscriptDocument): string {

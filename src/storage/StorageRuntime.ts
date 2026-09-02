@@ -29,6 +29,12 @@ import { LocalFirstStore } from "./LocalFirstStore";
 import { LocalTranscriptionService, type TranscriptionPersistResult } from "../transcription/LocalTranscriptionService";
 import { WindowsLocalWhisperEngine } from "../transcription/WindowsLocalWhisperEngine";
 import type { TranscriptionEngine } from "../transcription/TranscriptionEngine";
+import type { AIProvider } from "../ai/AIProvider";
+import {
+  LocalAnalysisService,
+  type AnalysisPersistResult,
+  unconfiguredLocalAIProvider,
+} from "../ai/LocalAnalysisService";
 import type { StorageConfigService } from "./StorageConfigService";
 import { DataRootValidationError, StorageError } from "./errors";
 import {
@@ -48,6 +54,7 @@ export interface StorageRuntimeIntegrations {
   nativeCaptureAdapter?: NativeCaptureAdapter;
   nativeCapturePolicy?: Partial<NativeCapturePolicy>;
   transcriptionEngine?: TranscriptionEngine;
+  analysisProvider?: AIProvider;
 }
 
 /** Application lifecycle boundary for first-run setup and location changes. */
@@ -55,6 +62,7 @@ export class StorageRuntime {
   public store: LocalFirstStore | undefined;
   public nativeCapture: NativeCaptureCoordinator | undefined;
   public transcription: LocalTranscriptionService | undefined;
+  public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
   private readonly config: StorageConfigService;
   private readonly storageOptions: LocalStorageServiceOptions;
@@ -246,6 +254,23 @@ export class StorageRuntime {
     return this.transcription.transcribeRecording(meetingId, recordingId);
   }
 
+  public async analyzeCommittedTranscript(
+    meetingId: string,
+    recordingId: string,
+    options: { userApprovedForThisRequest?: boolean } = {},
+  ): Promise<AnalysisPersistResult> {
+    if (this.analysis === undefined || this.store === undefined) {
+      throw new StorageError("Choose a local data location before using analysis.");
+    }
+    const policy = (await this.config.read()).aiProcessingPolicy;
+    return this.analysis.analyzeCommittedTranscript({
+      meetingId,
+      recordingId,
+      policy,
+      ...(options.userApprovedForThisRequest === undefined ? {} : { userApprovedForThisRequest: options.userApprovedForThisRequest }),
+    });
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -383,12 +408,17 @@ export class StorageRuntime {
       store,
       engine: this.integrations.transcriptionEngine ?? new WindowsLocalWhisperEngine(),
     });
+    this.analysis = new LocalAnalysisService({
+      store,
+      provider: this.integrations.analysisProvider ?? unconfiguredLocalAIProvider(),
+    });
   }
 
   private async detachStore(reason: string): Promise<void> {
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;
+    this.analysis = undefined;
     this.store?.close();
     this.store = undefined;
   }
