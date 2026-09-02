@@ -15,6 +15,7 @@ import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
   buildLlamaCliArgs,
+  resolveLocalLlmTimeoutMs,
   type LocalLlmHelperProcess,
   type LocalLlmHelperRunner,
 } from "../src/ai/LocalLlmProvider";
@@ -149,10 +150,11 @@ test("non-Windows platforms are unavailable without an injected helper", async (
   );
 });
 
-test("b10621 llama-cli argv omits removed -no-cnv and keeps a fixed -p completion list", () => {
-  const args = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text");
+test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conversation mode cannot wait on stdin", () => {
+  const args = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-cli.exe");
   assert.equal(args.includes("-no-cnv"), false);
   assert.equal(args.includes("--no-conversation"), false);
+  assert.equal(args.includes("--single-turn"), true);
   assert.deepEqual(args, [
     "-m",
     "injected-llama-model.gguf",
@@ -165,9 +167,21 @@ test("b10621 llama-cli argv omits removed -no-cnv and keeps a fixed -p completio
     "-ngl",
     "0",
     "--no-display-prompt",
+    "--single-turn",
     "-p",
     "prompt-text",
   ]);
+  const completionArgs = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-completion.exe");
+  assert.equal(completionArgs.includes("--single-turn"), false);
+  assert.equal(completionArgs.includes("-no-cnv"), false);
+});
+
+test("local LLM timeout is configurable with a hard upper bound", () => {
+  assert.equal(resolveLocalLlmTimeoutMs(undefined, ""), 180_000);
+  assert.equal(resolveLocalLlmTimeoutMs(20), 20);
+  assert.equal(resolveLocalLlmTimeoutMs(undefined, "600000"), 600_000);
+  assert.equal(resolveLocalLlmTimeoutMs(9_999_999), 900_000);
+  assert.equal(resolveLocalLlmTimeoutMs(-1, "not-a-number"), 180_000);
 });
 
 test("injected llama helper returns model JSON without inventing a cloud hop", async () => {
@@ -182,6 +196,7 @@ test("injected llama helper returns model JSON without inventing a cloud hop", a
   });
   const result = await provider.process(sampleRequest(meetingId));
   assert.equal(seenArgs?.includes("-no-cnv"), false);
+  assert.equal(seenArgs?.includes("--single-turn"), true);
   assert.equal(result.providerId, "local-llama-cpp");
   assert.equal(result.persistedByProvider, false);
   const parsed = JSON.parse(result.output) as AnalysisDocument;
@@ -210,6 +225,32 @@ test("malformed helper JSON, crash, timeout, and cancellation fail closed", asyn
   }).process(sampleRequest());
   controller.abort();
   await assert.rejects(pending, (error: unknown) => error instanceof LocalLlmError && error.code === "ANALYSIS_CANCELLED");
+});
+
+test("conversation-mode Ctrl+C exit 130 fails closed and a successful helper is never SIGINT-killed", async () => {
+  await assert.rejects(
+    new LocalLlmProvider({ platform: "linux", helperRunner: crashingRunner(130) }).process(sampleRequest()),
+    (error: unknown) =>
+      error instanceof LocalLlmError &&
+      error.code === "ANALYSIS_ENGINE_CRASHED" &&
+      error.message.includes("130"),
+  );
+  let killCount = 0;
+  const meetingId = "11111111-1111-4111-8111-111111111111";
+  const provider = new LocalLlmProvider({
+    platform: "linux",
+    helperRunner: () => {
+      const process = completed(JSON.stringify(validAnalysis(meetingId)), 0);
+      return {
+        ...process,
+        kill: () => {
+          killCount += 1;
+        },
+      };
+    },
+  });
+  await provider.process(sampleRequest(meetingId));
+  assert.equal(killCount, 0);
 });
 
 test("invalid helper and model paths are rejected", async () => {
@@ -399,8 +440,8 @@ function scriptedLlamaRunner(output: AnalysisDocument | string): LocalLlmHelperR
   return () => completed(text, 0);
 }
 
-function crashingRunner(): LocalLlmHelperRunner {
-  return () => completed("", 7);
+function crashingRunner(code = 7): LocalLlmHelperRunner {
+  return () => completed("", code);
 }
 
 function unkillableRunner(): LocalLlmHelperRunner {

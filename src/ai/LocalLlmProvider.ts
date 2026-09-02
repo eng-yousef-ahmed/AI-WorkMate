@@ -11,7 +11,14 @@ import { getLocalLlmModelCatalogEntry } from "./LocalLlmRuntimeCatalog";
 
 const PROVIDER_ID = "local-llama-cpp";
 const DEFAULT_TIMEOUT_MS = 180_000;
-const ALLOWED_CLI_NAMES = new Set(["llama-cli.exe", "llama-cli", "main.exe"]);
+const MAX_TIMEOUT_MS = 900_000;
+const ALLOWED_CLI_NAMES = new Set([
+  "llama-completion.exe",
+  "llama-completion",
+  "llama-cli.exe",
+  "llama-cli",
+  "main.exe",
+]);
 const MODEL_NAMES = ["qwen2.5-0.5b-instruct-q4_k_m.gguf"];
 
 export interface LocalLlmHelperExit {
@@ -65,7 +72,7 @@ export class LocalLlmProvider implements AIProvider {
     this.helperPathOverride = options.helperPath;
     this.modelPathOverride = options.modelPath;
     this.helperRunner = options.helperRunner;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMs = resolveLocalLlmTimeoutMs(options.timeoutMs);
     this.localAppData = options.localAppData ?? process.env.LOCALAPPDATA;
     this.clock = options.clock ?? (() => new Date());
     this.abortSignal = options.signal;
@@ -88,7 +95,7 @@ export class LocalLlmProvider implements AIProvider {
     const cliPath = await this.resolveCliPath();
     const modelPath = await this.resolveModelPath();
     const prompt = buildAnalysisPrompt(transcript, this.clock().toISOString());
-    const args = buildLlamaCliArgs(modelPath, prompt);
+    const args = buildLlamaCliArgs(modelPath, prompt, basename(cliPath));
     const runner = this.helperRunner ?? createSpawnRunner(cliPath);
     const child = runner(args);
     let timeout: NodeJS.Timeout | undefined;
@@ -160,7 +167,7 @@ export class LocalLlmProvider implements AIProvider {
     }
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_UNAVAILABLE",
-      "llama.cpp CLI was not found. Install llama-cli.exe under %LOCALAPPDATA%\\AI-WorkMate\\native\\.",
+      "llama.cpp CLI was not found. Install llama-completion.exe or llama-cli.exe under %LOCALAPPDATA%\\AI-WorkMate\\native\\.",
       false,
     );
   }
@@ -195,7 +202,7 @@ export class LocalLlmProvider implements AIProvider {
 
 export function llamaCliCandidates(localAppData = process.env.LOCALAPPDATA): string[] {
   const resourcesPath = stringRecord(process).resourcesPath;
-  const names = ["llama-cli.exe", "llama-cli"];
+  const names = ["llama-completion.exe", "llama-completion", "llama-cli.exe", "llama-cli"];
   const roots = [
     ...(typeof resourcesPath === "string" ? [join(resourcesPath, "native", "windows-llm")] : []),
     resolve(__dirname, "..", "..", "native", "windows-llm"),
@@ -266,10 +273,14 @@ export async function assertUsableLocalLlmModelFile(modelPath: string): Promise<
 }
 
 /**
- * llama.cpp b10621+ removed `-no-cnv` (ggml-org/llama.cpp#27542). One-shot
- * completion uses `-p` without conversation flags.
+ * llama.cpp b10621 `llama-cli` is conversation-mode by default. Closed stdin
+ * (`stdio: ignore`) then looks like Ctrl+C and the helper exits 130.
+ * `--single-turn` completes one `-p` turn and exits. Prefer `llama-completion`
+ * when present (one-shot; no conversation wait).
  */
-export function buildLlamaCliArgs(modelPath: string, prompt: string): readonly string[] {
+export function buildLlamaCliArgs(modelPath: string, prompt: string, helperName = "llama-cli.exe"): readonly string[] {
+  const name = helperName.toLowerCase();
+  const singleTurn = name.includes("completion") ? [] : ["--single-turn"];
   return [
     "-m",
     modelPath,
@@ -282,9 +293,19 @@ export function buildLlamaCliArgs(modelPath: string, prompt: string): readonly s
     "-ngl",
     "0",
     "--no-display-prompt",
+    ...singleTurn,
     "-p",
     prompt,
   ];
+}
+
+export function resolveLocalLlmTimeoutMs(requested?: number, envValue = process.env.AI_WORKMATE_LOCAL_LLM_TIMEOUT_MS): number {
+  const fromEnv = envValue === undefined || envValue.trim() === "" ? undefined : Number(envValue);
+  const candidate = requested ?? (fromEnv !== undefined && Number.isFinite(fromEnv) ? fromEnv : DEFAULT_TIMEOUT_MS);
+  if (!Number.isFinite(candidate) || candidate <= 0) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+  return Math.min(Math.floor(candidate), MAX_TIMEOUT_MS);
 }
 
 export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: string): string {
@@ -349,7 +370,7 @@ function assertSafeHelperPath(helperPath: string): string {
   }
   const absolute = isAbsolute(helperPath) ? resolve(helperPath) : resolve(helperPath);
   if (!ALLOWED_CLI_NAMES.has(basename(absolute).toLowerCase())) {
-    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM helper must be llama-cli.exe or llama-cli.", false);
+    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM helper must be llama-completion.exe or llama-cli.exe.", false);
   }
   if (dirname(absolute) === absolute) {
     throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local llama.cpp path must point to an executable file.", false);
@@ -371,7 +392,7 @@ function assertSafeModelPath(modelPath: string): string {
 function createSpawnRunner(helperPath: string): LocalLlmHelperRunner {
   return (args) => {
     const child = spawn(helperPath, [...args], {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     return {
@@ -382,7 +403,7 @@ function createSpawnRunner(helperPath: string): LocalLlmHelperRunner {
         child.once("exit", (code, signal) => resolveExit({ code, signal }));
       }),
       kill: (signal?: NodeJS.Signals | string) => {
-        child.kill(signal as NodeJS.Signals | undefined);
+        child.kill(signal === "SIGINT" ? "SIGTERM" : (signal as NodeJS.Signals | undefined));
       },
     };
   };
