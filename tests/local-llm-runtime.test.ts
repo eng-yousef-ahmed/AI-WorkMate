@@ -12,13 +12,14 @@ import { LocalAnalysisService } from "../src/ai/LocalAnalysisService";
 import { LocalLlmError } from "../src/ai/LocalLlmErrors";
 import { writeGgufFileMagic } from "../src/ai/LocalLlmModelFormat";
 import { installLocalLlmModel } from "../src/ai/LocalLlmModelInstaller";
-import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/AnalysisDocument";
+import { ANALYSIS_DOCUMENT_JSON_SCHEMA, assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/AnalysisDocument";
 import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
   buildAnalysisPrompt,
   LOCAL_LLM_MAX_PREDICT_TOKENS,
   buildLlamaCliArgs,
+  describeJsonCursor,
   describeLlamaStdout,
   extractJsonObject,
   localLlmCpuThreadCount,
@@ -244,6 +245,7 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
   assert.equal(args.includes("--single-turn"), true);
   assert.equal(args.includes("--json-schema"), true);
   assert.equal(args[args.indexOf("--json-schema") + 1]?.includes("\"taskId\""), true);
+  assert.equal(args[args.indexOf("--json-schema") + 1]?.includes("\"maxLength\""), true);
   assert.equal(args.includes("-c"), true);
   assert.equal(args.includes("-t"), true);
   assert.equal(args.includes("-b"), true);
@@ -306,6 +308,8 @@ test("llama.cpp stdout extracts one complete JSON object and rejects truncated o
   assert.equal(extractJsonObject(twoObjects), json);
   assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /nPredict=480/);
   assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /hit-n-limit/);
+  assert.match(describeJsonCursor(truncated), /\$\.summary/);
+  assert.match(describeLlamaStdout(truncated), /cursor=/);
 });
 
 test("truncated llama.cpp structured output fails closed without inventing analysis", async () => {
@@ -331,6 +335,33 @@ test("truncated llama.cpp structured output fails closed without inventing analy
       error.message.includes("nPredict=480") &&
       error.message.includes("hit-n-limit"),
   );
+});
+
+test("generation schema bounds string fields so a quality document fits in 480 tokens", () => {
+  assert.equal(ANALYSIS_DOCUMENT_JSON_SCHEMA.properties.summary.maxLength, 220);
+  assert.equal(ANALYSIS_DOCUMENT_JSON_SCHEMA.properties.decisions.items.properties.text.maxLength, 160);
+  assert.equal(ANALYSIS_DOCUMENT_JSON_SCHEMA.properties.tasks.items.properties.text.maxLength, 140);
+  const document = {
+    meetingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    createdAt: "2026-09-02T12:00:00.000Z",
+    summary: "AI WorkMate planning kept llama.cpp analysis LOCAL_ONLY and DATA_ROOT on the machine.",
+    decisions: [
+      { decisionId: "d1", text: "Keep analysis LOCAL_ONLY with llama.cpp and do not send transcript content to a cloud provider." },
+      { decisionId: "d2", text: "DATA_ROOT remains on the user machine." },
+      { decisionId: "d3", text: "Ship Windows real-AI verification before adding a larger instruct model." },
+    ],
+    tasks: [
+      { taskId: "t1", text: "Document the llama.cpp install under LocalAppData", assignee: "Omar Farouk", dueDate: "2026-09-12", status: "OPEN" as const },
+      { taskId: "t2", text: "Review encryption of transcripts under DATA_ROOT", assignee: "Nadia Rahman", dueDate: "2026-09-12", status: "OPEN" as const },
+      { taskId: "t3", text: "Add fail-closed tests that reject invented tasks", assignee: "Samir Haddad", dueDate: "2026-09-10", status: "OPEN" as const },
+    ],
+    risks: ["The 0.5B model may invent people."],
+    questions: ["Budget approval for a 7B local model is still needed."],
+    followups: [],
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(document), "utf8");
+  assert.equal(bytes <= 1200, true);
+  assert.equal(Math.ceil(bytes / 3.18) < LOCAL_LLM_MAX_PREDICT_TOKENS, true);
 });
 
 test("injected llama helper returns model JSON without inventing a cloud hop", async () => {
@@ -628,9 +659,8 @@ test("extraction quality accepts transcript facts and rejects placeholders and i
   const fixture = await loadAnalysisTranscriptFixture();
   const prompt = buildAnalysisPrompt(fixture, "2026-09-02T12:00:00.000Z");
   assert.equal(prompt.includes("Review the local analysis artifacts"), false);
-  assert.match(prompt, /Extract facts/);
-  assert.match(prompt, /compact JSON object/);
-  assert.match(prompt, /do not repeat the transcript/i);
+  assert.match(prompt, /minified JSON/);
+  assert.match(prompt, /Do not copy the transcript/);
   const good: AnalysisDocument = {
     meetingId: fixture.meetingId,
     createdAt: "2026-09-02T12:00:00.000Z",

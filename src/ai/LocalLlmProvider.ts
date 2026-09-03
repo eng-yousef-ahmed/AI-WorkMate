@@ -21,9 +21,10 @@ const PROVIDER_ID = "local-llama-cpp";
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_TIMEOUT_MS = 900_000;
 /**
- * Compact AnalysisDocument for the quality fixture is ~900–1400 UTF-8 bytes
- * (~280–450 Qwen tokens). Windows 7B at 320 tokens produced 923 bytes that
- * never closed (`truncated-object`). 480 leaves headroom without restoring 768.
+ * Quality-valid minified AnalysisDocument is ~1056 bytes (~333 Qwen tokens at
+ * the Windows 3.18 bytes/token rate). Pretty JSON is ~1339 bytes (~422 tokens).
+ * 480 is ~44% over minified and ~14% over pretty. The 1528-byte truncated 7B
+ * run was unbounded string fields, not a missing schema member.
  */
 export const LOCAL_LLM_MAX_PREDICT_TOKENS = 480;
 const CONTEXT_TOKENS = 2048;
@@ -432,16 +433,13 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
     return `${speaker}: ${segment.text}`;
   }).join("\n");
   return [
-    "Extract facts. Reply with one compact JSON object only. No markdown, no commentary, do not repeat the transcript.",
-    "Do not invent people, deadlines, decisions, or tasks. Omit optional fields or use [] when unstated.",
-    "A decision is a group agreement. A task is work a named person agreed to do. Questions are not decisions.",
-    "Use short ids (d1, t1). One-sentence summary. One-sentence decision and task text. Keep names, dates, and LOCAL_ONLY facts.",
-    `meetingId must be exactly ${transcript.meetingId}.`,
-    `createdAt must be exactly ${createdAt}.`,
-    "summary: 1-2 short sentences with names and topics from the transcript.",
-    "decisions: [{decisionId,text}] plus optional owner.",
-    "tasks: [{taskId,text}] plus optional assignee, dueDate, status OPEN|IN_PROGRESS|DONE|CANCELLED.",
-    "assignee and dueDate only when spoken. risks, questions, followups: short strings or [].",
+    "Return minified JSON only: one object, no extra spaces or newlines, no markdown, no commentary.",
+    "Do not copy the transcript. Do not invent people, dates, decisions, or tasks.",
+    "Short ids d1/t1. One short sentence per summary, decision, and task. Keep spoken names, dates, and LOCAL_ONLY facts.",
+    "Questions are not decisions. Omit optional keys or use [] when unstated.",
+    `meetingId=${transcript.meetingId}`,
+    `createdAt=${createdAt}`,
+    "Fields: summary, decisions[{decisionId,text,owner?}], tasks[{taskId,text,assignee?,dueDate?,status?}], risks[], questions[], followups[].",
     "Transcript:",
     dialogue,
   ].join("\n");
@@ -521,7 +519,104 @@ export function describeLlamaStdout(stdout: string, stderr = ""): string {
   } else {
     kinds.push("complete-object");
   }
-  return `nPredict=${LOCAL_LLM_MAX_PREDICT_TOKENS} bytes=${Buffer.byteLength(text, "utf8")} firstBrace=${start} lastBrace=${end} ${kinds.join(",") || "empty"}`;
+  const cursor = describeJsonCursor(text);
+  return `nPredict=${LOCAL_LLM_MAX_PREDICT_TOKENS} bytes=${Buffer.byteLength(text, "utf8")} firstBrace=${start} lastBrace=${end} cursor=${cursor} ${kinds.join(",") || "empty"}`;
+}
+
+/**
+ * Path into a truncated JSON object (keys/indexes only — never string values).
+ */
+export function describeJsonCursor(stdout: string): string {
+  const start = stdout.indexOf("{");
+  if (start < 0) {
+    return "none";
+  }
+  const path: string[] = ["$"];
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let expectingKey = false;
+  let currentKey = "";
+  let collectingKey = false;
+  const arrayIndex: number[] = [];
+  for (let index = start; index < stdout.length; index += 1) {
+    const char = stdout[index] ?? "";
+    if (inString) {
+      if (escape) {
+        escape = false;
+        if (collectingKey) {
+          currentKey += char;
+        }
+      } else if (char === "\\") {
+        escape = true;
+      } else if (char === "\"") {
+        inString = false;
+        if (collectingKey) {
+          collectingKey = false;
+          path.push(currentKey);
+          expectingKey = false;
+        }
+      } else if (collectingKey && currentKey.length < 40) {
+        currentKey += char;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      if (expectingKey) {
+        collectingKey = true;
+        currentKey = "";
+      }
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      expectingKey = true;
+      continue;
+    }
+    if (char === "[") {
+      depth += 1;
+      arrayIndex.push(0);
+      path.push("0");
+      expectingKey = false;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (path.length > 1 && !/^\d+$/.test(path[path.length - 1] ?? "")) {
+        path.pop();
+      }
+      expectingKey = false;
+      continue;
+    }
+    if (char === "]") {
+      depth -= 1;
+      arrayIndex.pop();
+      if (path.length > 1 && /^\d+$/.test(path[path.length - 1] ?? "")) {
+        path.pop();
+      }
+      expectingKey = false;
+      continue;
+    }
+    if (char === ",") {
+      if (arrayIndex.length > 0 && path[path.length - 1] !== undefined && /^\d+$/.test(path[path.length - 1] ?? "")) {
+        const next = (arrayIndex[arrayIndex.length - 1] ?? 0) + 1;
+        arrayIndex[arrayIndex.length - 1] = next;
+        path[path.length - 1] = String(next);
+        expectingKey = false;
+      } else {
+        if (path.length > 1 && !/^\d+$/.test(path[path.length - 1] ?? "")) {
+          path.pop();
+        }
+        expectingKey = true;
+      }
+      continue;
+    }
+    if (char === ":") {
+      expectingKey = false;
+    }
+  }
+  return `${path.join(".")} depth=${depth} inString=${inString ? "1" : "0"}`;
 }
 
 function looksLikePredictLimit(logs: string): boolean {
