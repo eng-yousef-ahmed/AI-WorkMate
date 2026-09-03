@@ -17,6 +17,7 @@ import {
   LocalLlmProvider,
   assertUsableLocalLlmModelFile,
   buildAnalysisPrompt,
+  LOCAL_LLM_MAX_PREDICT_TOKENS,
   buildLlamaCliArgs,
   describeLlamaStdout,
   extractJsonObject,
@@ -250,13 +251,15 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
     "-m",
     "injected-llama-model.gguf",
     "-n",
-    "320",
+    String(LOCAL_LLM_MAX_PREDICT_TOKENS),
     "-c",
     "2048",
     "-t",
     args[args.indexOf("-t") + 1],
   ]);
-  assert.equal(Number(args[args.indexOf("-n") + 1]) <= 320, true);
+  assert.equal(Number(args[args.indexOf("-n") + 1]), 480);
+  assert.equal(LOCAL_LLM_MAX_PREDICT_TOKENS > 320, true);
+  assert.equal(LOCAL_LLM_MAX_PREDICT_TOKENS < 768, true);
   const completionArgs = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-completion.exe");
   assert.equal(completionArgs.includes("--single-turn"), true);
   assert.equal(completionArgs.includes("--json-schema"), true);
@@ -301,6 +304,33 @@ test("llama.cpp stdout extracts one complete JSON object and rejects truncated o
   );
   const twoObjects = `${json}{"meetingId":"other"}`;
   assert.equal(extractJsonObject(twoObjects), json);
+  assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /nPredict=480/);
+  assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /hit-n-limit/);
+});
+
+test("truncated llama.cpp structured output fails closed without inventing analysis", async () => {
+  const truncated = "{\"meetingId\":\"11111111-1111-4111-8111-111111111111\",\"summary\":\"Keep analysis LOCAL_ONLY\",\"decisions\":[{\"decisionId\":\"d1\",\"text\":\"Stay";
+  await assert.rejects(
+    new LocalLlmProvider({
+      platform: "linux",
+      helperRunner: () => ({
+        stdout: (async function* () {
+          yield Buffer.from(truncated, "utf8");
+        })(),
+        stderr: (async function* () {
+          yield Buffer.from("n_remain = 0\n", "utf8");
+        })(),
+        exited: Promise.resolve({ code: 0, signal: null }),
+        kill: () => undefined,
+      }),
+    }).process(sampleRequest()),
+    (error: unknown) =>
+      error instanceof LocalLlmError &&
+      error.code === "ANALYSIS_ENGINE_INVALID_OUTPUT" &&
+      error.message.includes("truncated") &&
+      error.message.includes("nPredict=480") &&
+      error.message.includes("hit-n-limit"),
+  );
 });
 
 test("injected llama helper returns model JSON without inventing a cloud hop", async () => {
@@ -599,6 +629,8 @@ test("extraction quality accepts transcript facts and rejects placeholders and i
   const prompt = buildAnalysisPrompt(fixture, "2026-09-02T12:00:00.000Z");
   assert.equal(prompt.includes("Review the local analysis artifacts"), false);
   assert.match(prompt, /Extract facts/);
+  assert.match(prompt, /compact JSON object/);
+  assert.match(prompt, /do not repeat the transcript/i);
   const good: AnalysisDocument = {
     meetingId: fixture.meetingId,
     createdAt: "2026-09-02T12:00:00.000Z",

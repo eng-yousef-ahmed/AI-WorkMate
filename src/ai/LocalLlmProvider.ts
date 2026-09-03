@@ -20,7 +20,12 @@ const PROVIDER_ID = "local-llama-cpp";
 /** Fail-closed wall clock. 7B CPU JSON decode should finish well under this once we cap `-n` and skip re-hashing 4.7GB on spawn. */
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_TIMEOUT_MS = 900_000;
-const MAX_PREDICT_TOKENS = 320;
+/**
+ * Compact AnalysisDocument for the quality fixture is ~900–1400 UTF-8 bytes
+ * (~280–450 Qwen tokens). Windows 7B at 320 tokens produced 923 bytes that
+ * never closed (`truncated-object`). 480 leaves headroom without restoring 768.
+ */
+export const LOCAL_LLM_MAX_PREDICT_TOKENS = 480;
 const CONTEXT_TOKENS = 2048;
 const CPU_BATCH_SIZE = 256;
 const MAX_CPU_THREADS = 8;
@@ -151,7 +156,7 @@ export class LocalLlmProvider implements AIProvider {
           true,
         );
       }
-      const output = extractJsonObject(stdoutText);
+      const output = extractJsonObject(stdoutText, stderrText);
       return {
         providerId: this.descriptor.id,
         output,
@@ -387,7 +392,7 @@ export function buildLlamaCliArgs(modelPath: string, prompt: string, _helperName
     "-m",
     modelPath,
     "-n",
-    String(MAX_PREDICT_TOKENS),
+    String(LOCAL_LLM_MAX_PREDICT_TOKENS),
     "-c",
     String(CONTEXT_TOKENS),
     "-t",
@@ -427,17 +432,16 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
     return `${speaker}: ${segment.text}`;
   }).join("\n");
   return [
-    "Extract facts from this meeting transcript. Copy wording from the transcript.",
-    "Do not invent people, deadlines, decisions, or tasks. If a fact is not stated, omit the optional field or use an empty array.",
-    "A decision is something the group agreed. A task is work a named person agreed to do. Questions and open items are not decisions.",
-    "Reply with one JSON object and no markdown.",
+    "Extract facts. Reply with one compact JSON object only. No markdown, no commentary, do not repeat the transcript.",
+    "Do not invent people, deadlines, decisions, or tasks. Omit optional fields or use [] when unstated.",
+    "A decision is a group agreement. A task is work a named person agreed to do. Questions are not decisions.",
+    "Use short ids (d1, t1). One-sentence summary. One-sentence decision and task text. Keep names, dates, and LOCAL_ONLY facts.",
     `meetingId must be exactly ${transcript.meetingId}.`,
     `createdAt must be exactly ${createdAt}.`,
-    "summary must describe this meeting using names and topics from the transcript.",
-    "decisions is an array of {decisionId, text} plus optional owner and decidedAt strings.",
-    "tasks is an array of {taskId, text} plus optional assignee, dueDate, and status. status if present is OPEN, IN_PROGRESS, DONE, or CANCELLED.",
-    "Put assignee only when the transcript names who will do the work. Put dueDate only when a date is spoken.",
-    "risks, questions, and followups are string arrays taken from the transcript.",
+    "summary: 1-2 short sentences with names and topics from the transcript.",
+    "decisions: [{decisionId,text}] plus optional owner.",
+    "tasks: [{taskId,text}] plus optional assignee, dueDate, status OPEN|IN_PROGRESS|DONE|CANCELLED.",
+    "assignee and dueDate only when spoken. risks, questions, followups: short strings or [].",
     "Transcript:",
     dialogue,
   ].join("\n");
@@ -463,14 +467,14 @@ function parseTranscriptJson(content: string, expectedMeetingId: string): Transc
   return document;
 }
 
-export function extractJsonObject(stdout: string): string {
+export function extractJsonObject(stdout: string, stderr = ""): string {
   const text = stripBomAndAnsi(stdout);
   const fenced = unwrapSingleMarkdownFence(text);
   const start = fenced.indexOf("{");
   if (start < 0) {
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_INVALID_OUTPUT",
-      `Local llama.cpp produced no JSON object (${describeLlamaStdout(text)}).`,
+      `Local llama.cpp produced no JSON object (${describeLlamaStdout(text, stderr)}).`,
       false,
     );
   }
@@ -478,7 +482,7 @@ export function extractJsonObject(stdout: string): string {
   if (extracted === undefined) {
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_INVALID_OUTPUT",
-      `Local llama.cpp JSON object is truncated or unbalanced (${describeLlamaStdout(text)}).`,
+      `Local llama.cpp JSON object is truncated or unbalanced (${describeLlamaStdout(text, stderr)}).`,
       false,
     );
   }
@@ -487,7 +491,7 @@ export function extractJsonObject(stdout: string): string {
   } catch (error: unknown) {
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_INVALID_OUTPUT",
-      `Local llama.cpp stdout is not valid JSON (${describeLlamaStdout(text)}).`,
+      `Local llama.cpp stdout is not valid JSON (${describeLlamaStdout(text, stderr)}).`,
       false,
       { cause: error },
     );
@@ -495,16 +499,20 @@ export function extractJsonObject(stdout: string): string {
   return extracted;
 }
 
-export function describeLlamaStdout(stdout: string): string {
+export function describeLlamaStdout(stdout: string, stderr = ""): string {
   const text = stripBomAndAnsi(stdout);
+  const logs = stripBomAndAnsi(stderr);
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   const kinds: string[] = [];
   if (/```/.test(text)) {
     kinds.push("markdown-fence");
   }
-  if (/(?:^|\s)(?:llama_|ggml_|print_info|load_tensors|system_info)/i.test(text)) {
+  if (/(?:^|\s)(?:llama_|ggml_|print_info|load_tensors|system_info)/i.test(`${text}\n${logs}`)) {
     kinds.push("runtime-log");
+  }
+  if (looksLikePredictLimit(`${text}\n${logs}`)) {
+    kinds.push("hit-n-limit");
   }
   if (start < 0) {
     kinds.push("no-object");
@@ -513,7 +521,11 @@ export function describeLlamaStdout(stdout: string): string {
   } else {
     kinds.push("complete-object");
   }
-  return `bytes=${Buffer.byteLength(text, "utf8")} firstBrace=${start} lastBrace=${end} ${kinds.join(",") || "empty"}`;
+  return `nPredict=${LOCAL_LLM_MAX_PREDICT_TOKENS} bytes=${Buffer.byteLength(text, "utf8")} firstBrace=${start} lastBrace=${end} ${kinds.join(",") || "empty"}`;
+}
+
+function looksLikePredictLimit(logs: string): boolean {
+  return /n_remain\s*=\s*0|stopped by limit|hit.*n_predict|n_predict.*reached/i.test(logs);
 }
 
 function stripBomAndAnsi(value: string): string {
