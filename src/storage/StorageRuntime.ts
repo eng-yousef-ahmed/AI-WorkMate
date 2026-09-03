@@ -428,8 +428,8 @@ function productionNativeCapturePolicy(overrides: Partial<NativeCapturePolicy> |
   return {
     MICROPHONE_AUDIO: "ALLOW",
     SYSTEM_AUDIO: "ALLOW",
-    SCREEN: "DENY",
-    WINDOW: "DENY",
+    SCREEN: "ALLOW",
+    WINDOW: "ALLOW",
     ...overrides,
   };
 }

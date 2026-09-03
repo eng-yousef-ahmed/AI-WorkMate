@@ -1,9 +1,9 @@
 # AI WorkMate implementation status
 
-Updated: 2026-09-02
+Updated: 2026-09-03
 
 This checkout hardens the existing local-first storage foundation, adds the Phase 4 Microsoft 365 calendar discovery integration layer, implements the Phase 5 local recording/capture boundary, adds the Phase 6A native Windows capture source boundary, implements Phase 6B Windows native audio provider code with real Windows helper verification, integrates that path into `StorageRuntime` (Phase 6C), adds Phase 7A local transcription of committed AIWPCM recordings, Phase 7B production wiring for local whisper.cpp, and Phase 7C Windows runtime/model install plus verification support. It does not
-implement real Teams/Zoom/Google Meet/browser automation, screen/window capture, a Git-bundled Whisper binary/model, or the full AI pipeline. The persistent meeting store
+implement real Teams/Zoom/Google Meet/browser automation, a Git-bundled Whisper binary/model, or claim Windows-verified screen capture. The persistent meeting store
 remains local SQLite plus filesystem artifacts; that does **not** mean that an
 explicitly approved cloud AI request is local.
 
@@ -56,13 +56,20 @@ explicitly approved cloud AI request is local.
 
 - **IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED:** `StorageRuntime` attaches `NativeCaptureCoordinator` + `LocalRecordingCaptureEngine` to the live `LocalFirstStore`. On Windows the factory uses `WindowsNativeAudioProvider`; non-Windows remains fail-closed. Main-process APIs are `discoverNativeCaptureCapabilities`, `startNativeCapture`, `stopNativeCapture`, `abortNativeCapture`, and `getNativeCaptureState`.
 - **IMPLEMENTED / TESTED / WINDOWS-VERIFIED:** Native chunks that pass provider validation are appended through `LocalRecordingCaptureEngine` and committed through the existing artifact journal, SHA-256, atomic write, recording metadata, and meeting UUID lifecycle path.
-- **IMPLEMENTED / TESTED / WINDOWS-VERIFIED:** Stop, abort, malformed native records, permission denial, and runtime close abort remaining sessions without fabricating media. Screen/window stay policy-denied.
+- **IMPLEMENTED / TESTED / WINDOWS-VERIFIED:** Stop, abort, malformed native records, permission denial, and runtime close abort remaining sessions without fabricating media. Screen/window policy is ALLOW on Windows; availability still depends on the screen helper.
 - **IMPLEMENTED / TESTED:** No capture IPC, DATA_ROOT, absolute paths, device paths, or native process controls are exposed to the renderer.
 - **WINDOWS-VERIFIED:** Real Windows `npm run verify:windows-native-capture` (`durationMs`: 10000, `platform`: `win32`, `helperFound`: true, `isolatedWorkspace`: true, `userDataUntouched`: true, `success`: true, `windowsVerified`: true) used helper `C:\AI-WorkMate\native\windows-audio\bin\Release\net8.0-windows\win-x64\publish\AIWorkMate.WindowsAudioCapture.exe`.
   - Abort: `success` true, `meetingStatus` `INCOMPLETE`, `artifactJournalState` `INCOMPLETE`, `sqliteRecordingCount` 0.
   - Microphone (`Jack Mic (Realtek Audio)`, default, 48000 Hz, 2 ch, 32-bit): `chunkCount` 154, sequences 0–153, `totalBytes`/`finalArtifactSize` 5313806, SHA-256 `1cd89fa503322140872b2e685f822a4ebc60cdfb037a75451473644c17c3a02d`, `recordingId` `74c4bcdd-f5b9-44bb-a0ae-050eeabe2125`, `meetingId` `432d7cad-17d6-4d8e-a4d3-6c661c2bd24a`, `captureId` `05e0a945-a573-4ade-8fdd-ece5feeb15bd`, `meetingStatus` `PROCESSING`, journal `COMMITTED`, SQLite `COMMITTED`, `finalArtifactExists` true, format `aiwpcm` / `application/x-ai-workmate-pcm-jsonl`.
   - Loopback (`Speakers / Headphones (Realtek Audio)`, default, 48000 Hz, 2 ch, 32-bit): `chunkCount` 156, sequences 0–155, `totalBytes`/`finalArtifactSize` 5998897, SHA-256 `2309c82d9c7f7ffb5c570d5244735c5a15f2808fc849c002bd7c496418789273`, `recordingId` `264dd851-eac8-40e0-b062-fd2486c60297`, `meetingId` `a4450f06-9fb5-4f19-ab16-1b9eee305d15`, `captureId` `4d201281-771a-48b3-b19e-24e790ec2a59`, `meetingStatus` `PROCESSING`, journal `COMMITTED`, SQLite `COMMITTED`, `finalArtifactExists` true, same format.
-- **REMAINING GAP:** Capture UI, mixed microphone+loopback sessions, screen/window providers, and Teams/Zoom automation.
+- **REMAINING GAP:** Capture UI, mixed microphone+loopback sessions, Windows-verified screen/window helper execution, and Teams/Zoom automation.
+
+### Windows native screen/window capture
+
+- **IMPLEMENTED / TESTED / CODE-VERIFIED:** `WindowsNativeScreenProvider` plus `native/windows-screen/` (.NET 8, Windows 10 19041+ / Windows 11). Display: DXGI Desktop Duplication. Window: Windows Graphics Capture. Intermediate format `aiwvid` JSONL JPEG with SHA-256. `WindowsCompositeNativeCaptureProvider` routes audio vs video so a missing screen helper does not disable WASAPI.
+- **IMPLEMENTED / TESTED:** Enumeration, source-ID validation (`display:` / `hwnd:`), JPEG SOI + hash checks, out-of-order rejection, abort/disk-full incomplete journal, no capture IPC.
+- **IMPLEMENTED / TESTED:** `npm run verify:windows-native-screen-capture` fail-closes off Windows (`windowsVerified: false`). Isolated DATA_ROOT, no cloud.
+- **WINDOWS-VERIFIED: NO** — helper was not compiled or executed on Windows in this sandbox. Limits: DXGI DDA needs an interactive desktop; WGC cannot capture protected content and may fail when minimized; JPEG ~5 fps max width 1280; not H.264; no mixed A/V.
 
 ### PHASE 6B real Windows native audio provider code
 
@@ -72,7 +79,7 @@ explicitly approved cloud AI request is local.
 - **IMPLEMENTED / TESTED:** Provider-side stream validation rejects invalid timestamps, out-of-order helper chunk sequence, changed source IDs, changed format, empty/invalid byte lengths, and SHA-256 mismatch before the data can be committed. The coordinator still adds its own ordered write into `LocalRecordingCaptureEngine`.
 - **IMPLEMENTED / TESTED:** Windows microphone and system-audio/loopback sessions integrate with `NativeCaptureCoordinator` and the existing Phase 5 local capture/storage path. Tests cover lifecycle to `PROCESSING`, artifact journal commit, recording metadata, duplicate ownership, wrong meeting UUIDs, unavailable selected devices, native stream failure, disk-space preflight failure, and incomplete abort behavior using injected helper-process doubles.
 - **IMPLEMENTED / CODE-VERIFIED:** `package.json` now includes `build:native:win` for `dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true`, and `package:win` runs the native publish before Electron packaging. The packaged helper is configured as an Electron `extraResources` payload.
-- **REMAINING GAP:** Microphone/system-audio synchronization, mixing, echo cancellation, device-change UI, signed helper distribution validation, and screen/window capture providers remain future work.
+- **REMAINING GAP:** Microphone/system-audio synchronization, mixing, echo cancellation, device-change UI, signed helper distribution validation, and Windows-verified screen/window execution remain future work.
 
 ### PHASE 6A native Windows capture source boundary
 
@@ -82,7 +89,7 @@ explicitly approved cloud AI request is local.
 - **IMPLEMENTED / TESTED:** When an injected native adapter produces actual chunks, the coordinator passes them through the existing local capture/storage pipeline in sequence. Existing chunk validation, SHA-256 verification, atomic staged writes, artifact journal transitions, recording metadata, lifecycle to `PROCESSING`, and disk-space fail-closed behavior remain the authority.
 - **IMPLEMENTED / TESTED:** Native startup failure does not create a local recording or mark a meeting completed. Native safe-stop/abort marks the local capture `INCOMPLETE`; native stream failures mark the partial local recording `INCOMPLETE`, while finalization/storage failure marks `FAILED`; unsupported or unavailable capabilities never create fake recordings.
 - **IMPLEMENTED / TESTED / CODE-VERIFIED:** No capture IPC was added. Existing Electron guarantees remain intact: context isolation, disabled node integration, sandboxed renderer, trusted sender/frame checks, preload-only allow-listed channels, and no renderer filesystem path exposure.
-- **WINDOWS-VERIFIED / REMAINING GAP:** Phase 6B microphone and loopback helper capture was executed on a real Windows host. Screen/window native providers remain unimplemented.
+- **WINDOWS-VERIFIED / REMAINING GAP:** Phase 6B microphone and loopback helper capture was executed on a real Windows host. Screen/window helper source is implemented but not Windows-executed.
 
 ### PHASE 5 local recording/capture boundary
 
@@ -229,7 +236,7 @@ Automated coverage includes Windows native audio provider platform detection, mi
 | Teams vs other-online vs normal detection | IMPLEMENTED / TESTED | Platform is stored as `TEAMS`, `OTHER_ONLINE`, or `NONE`; non-Teams online meetings are not classified as Teams. |
 | Calendar association idempotency | IMPLEMENTED / TESTED | `calendar_event_associations` links provider/external ID to internal UUID with uniqueness and lifecycle preservation. |
 | Renderer-safe calendar sync IPC | IMPLEMENTED / TESTED | Sync IPC returns counts and sanitized error codes only; no credentials/raw Graph/path data. |
-| Local capture boundary | IMPLEMENTED / TESTED / CODE-VERIFIED | `CaptureEngine` + `LocalRecordingCaptureEngine` control local chunk/stream writes, ownership, journal, SHA-256, disk-space safe-stop, and recovery. Screen/window providers remain unimplemented. |
+| Local capture boundary | IMPLEMENTED / TESTED / CODE-VERIFIED | `CaptureEngine` + `LocalRecordingCaptureEngine` control local chunk/stream writes, ownership, journal, SHA-256, disk-space safe-stop, and recovery. |
 | Native Windows capture source boundary | IMPLEMENTED / TESTED / CODE-VERIFIED | `NativeCaptureAdapter`, `WindowsCaptureAdapter`, and `NativeCaptureCoordinator` define capability discovery, default-deny policy, ownership, source-to-local pipeline orchestration, typed errors, and fail-closed unsupported/provider-missing behavior. |
 | Windows microphone audio helper (Phase 6B) | IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED | Prior real-Windows helper run: `mic-test.jsonl` 977 lines, Jack Mic (Realtek Audio), no error records. Not re-executed on this Linux host. |
 | Windows system-audio loopback helper (Phase 6B) | IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED | Prior real-Windows helper run: `loopback-test.jsonl` 2229 lines, Speakers / Headphones (Realtek Audio), no error records. Not re-executed on this Linux host. |

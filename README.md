@@ -11,6 +11,7 @@ Windows desktop
    ├── LocalRecordingCaptureEngine (local chunk/stream boundary only)
    ├── NativeCaptureAdapter / WindowsCaptureAdapter boundary (capability discovery, fail-closed without provider)
    ├── WindowsNativeAudioProvider + Windows helper (WASAPI microphone/loopback; Windows-verified)
+   ├── WindowsNativeScreenProvider + Windows helper (DXGI Desktop Duplication / Windows Graphics Capture; Linux tests only)
    ├── StorageRuntime native capture coordinator (main-process only)
    ├── Local transcription pipeline (Phase 7A)
    ├── WindowsLocalWhisperEngine (Phase 7B whisper.cpp)
@@ -99,7 +100,7 @@ Phase 6A adds the production native-source boundary above the Phase 5 local capt
 
 `NativeCaptureCoordinator` applies explicit capture policy, rejects denied/unavailable capabilities before creating a local recording, owns duplicate active capture checks by internal meeting UUID, rejects wrong-meeting stop/abort calls, passes real native chunks into `LocalRecordingCaptureEngine` in sequence, and preserves the existing local storage, SHA-256, artifact journal, lifecycle, and disk-space semantics. No capture IPC was added, so the renderer still receives no filesystem path or direct capture controls.
 
-**Verification limit:** Linux/headless tests use injected adapter doubles at the boundary to verify orchestration and failure behavior. Screen/window native providers remain **REMAINING GAP**. Microphone and WASAPI loopback helper execution was **WINDOWS-VERIFIED** on a real Windows host in Phase 6B.
+**Verification limit:** Linux/headless tests use injected adapter doubles at the boundary to verify orchestration and failure behavior. Screen/window helper execution is **not WINDOWS-VERIFIED**. Microphone and WASAPI loopback helper execution was **WINDOWS-VERIFIED** on a real Windows host in Phase 6B.
 
 ## Windows native audio provider (Phase 6B)
 
@@ -107,7 +108,7 @@ Phase 6B adds production code for the first real native provider path: `WindowsN
 
 The provider does not write files and does not choose output paths. It starts the helper, validates the helper's real PCM records, and feeds them into `NativeCaptureCoordinator` / `LocalRecordingCaptureEngine`. The intermediate persisted format is `aiwpcm` with MIME `application/x-ai-workmate-pcm-jsonl`: JSON Lines containing a format record and captured PCM chunk records. Each audio chunk carries source, sequence, capture timestamp, sample rate, channels, bits per sample, byte length, SHA-256 of the PCM payload, and base64 PCM bytes. The sample format is whatever WASAPI reports for the selected endpoint; the helper records that format per capture.
 
-Packaging includes a Windows helper build step: `npm run build:native:win`, and `npm run package:win` runs it before Electron packaging. Real Windows verification confirmed: `npm run build:native:win` succeeded; `capabilities` enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio); microphone capture produced `mic-test.jsonl` (977 lines: format + 976 audio chunks, no errors); WASAPI loopback produced `loopback-test.jsonl` (2229 lines: format + audio chunks, no errors). That helper used the real NAudio implementation with no mock production capture. Status: **IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED** for microphone and loopback helper capture. Screen/window capture remains a **REMAINING GAP**. Microphone/system-audio synchronization/mixing is not solved; each stream remains independently owned and sequenced.
+Packaging includes a Windows helper build step: `npm run build:native:win`, and `npm run package:win` runs it before Electron packaging. Real Windows verification confirmed: `npm run build:native:win` succeeded; `capabilities` enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio); microphone capture produced `mic-test.jsonl` (977 lines: format + 976 audio chunks, no errors); WASAPI loopback produced `loopback-test.jsonl` (2229 lines: format + audio chunks, no errors). That helper used the real NAudio implementation with no mock production capture. Status: **IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED** for microphone and loopback helper capture. Screen/window helper source is implemented but **not WINDOWS-VERIFIED**. Microphone/system-audio synchronization/mixing is not solved; each stream remains independently owned and sequenced.
 
 ## Windows runtime verification (Phase 6C)
 
@@ -126,7 +127,21 @@ The command uses the real helper (no mocks) through `StorageRuntime.startNativeC
 
 ## Application integration of Windows native capture (Phase 6C)
 
-`StorageRuntime` now owns the production capture stack: `createNativeCaptureAdapter()` → `WindowsNativeAudioProvider` on Windows → `NativeCaptureCoordinator` → `LocalRecordingCaptureEngine` → `LocalFirstStore`. On Windows, microphone and system-audio policy is allow-listed in the main process only; screen/window remain denied. Capture remains fail-closed when the helper is missing, the platform is unsupported, a device is unavailable, permission is denied, records are malformed, or the native process fails. Native capture is **not** exposed as renderer IPC: no DATA_ROOT, absolute paths, device paths, or native process controls leave the main process. Tests cover the runtime integration boundary with helper doubles confined to test code.
+`StorageRuntime` now owns the production capture stack: `createNativeCaptureAdapter()` → `WindowsCompositeNativeCaptureProvider` on Windows → `NativeCaptureCoordinator` → `LocalRecordingCaptureEngine` → `LocalFirstStore`. On Windows, microphone, system-audio, screen, and window policy is allow-listed in the main process only. A missing screen helper does not disable audio. Capture remains fail-closed when the helper is missing, the platform is unsupported, a device is unavailable, permission is denied, records are malformed, or the native process fails. Native capture is **not** exposed as renderer IPC: no DATA_ROOT, absolute paths, device paths, or native process controls leave the main process. Tests cover the runtime integration boundary with helper doubles confined to test code.
+
+## Windows native screen/window capture
+
+Production code for display and window capture lives in `WindowsNativeScreenProvider` plus `native/windows-screen/` (.NET 8, Windows 10 19041+ / Windows 11). Display capture uses DXGI Desktop Duplication (`DuplicateOutput`) for a selected `display:` source. Window capture uses Windows Graphics Capture (`CreateForWindow`) for a selected `hwnd:` source. The helper never chooses an output path. It emits JSON Lines (`aiwvid` / `application/x-ai-workmate-video-jsonl`) with JPEG frames, sequence, timestamps, byte length, and SHA-256. The TypeScript provider validates JPEG SOI (`FF D8`) and hashes before feeding `NativeCaptureCoordinator`.
+
+Limits: DXGI Desktop Duplication typically requires a desktop session (not a disconnected RDP session). Windows Graphics Capture cannot capture protected content and may fail for minimized/UWP windows. Frames are scaled to a max width of 1280 at ~5 fps JPEG. This is an intermediate capture format, not H.264. Mixed audio+video sessions are not implemented.
+
+On a **real Windows** machine after `npm run build:native:win`:
+
+```bat
+npm run verify:windows-native-screen-capture
+```
+
+Linux fail-closes with `windowsVerified: false`. This sandbox is **not WINDOWS-VERIFIED** for screen/window capture.
 
 ## Local transcription (Phase 7)
 

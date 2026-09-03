@@ -11,7 +11,7 @@ import {
   type NativeCaptureStartRequest,
   unavailableCapability,
 } from "./NativeCaptureAdapter";
-import { WindowsNativeAudioProvider } from "./WindowsNativeAudioProvider";
+import { WindowsCompositeNativeCaptureProvider } from "./WindowsCompositeNativeCaptureProvider";
 
 export interface WindowsNativeCaptureProvider {
   discoverCapabilities(): Promise<NativeCaptureCapabilities>;
@@ -113,10 +113,10 @@ export function createNativeCaptureAdapter(options: CreateNativeCaptureAdapterOp
     return new WindowsCaptureAdapter({
       ...options,
       platform,
-      provider: options.provider ?? new WindowsNativeAudioProvider({
+      provider: options.provider ?? new WindowsCompositeNativeCaptureProvider({
         platform,
         clock: options.clock,
-        ...(options.helperPath === undefined ? {} : { helperPath: options.helperPath }),
+        ...(options.helperPath === undefined ? {} : { audioHelperPath: options.helperPath }),
       }),
     });
   }

@@ -1,0 +1,669 @@
+using System.Collections.Concurrent;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Vortice.Direct3D;
+using Vortice.Direct3D11;
+using Vortice.DXGI;
+using Windows.Graphics.Capture;
+using Windows.Graphics.DirectX;
+using Windows.Graphics.DirectX.Direct3D11;
+using Windows.Graphics.Imaging;
+using WinRT;
+
+Console.OutputEncoding = Encoding.UTF8;
+Console.Error.WriteLine("AI WorkMate Windows screen helper starting.");
+
+try
+{
+    var command = args.Length == 0 ? "" : args[0].ToLowerInvariant();
+    return command switch
+    {
+        "capabilities" => WriteCapabilities(),
+        "capture" => await CaptureAsync(args.Skip(1).ToArray()),
+        _ => Fail("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", $"Unknown command: {command}", false, 2),
+    };
+}
+catch (UnauthorizedAccessException ex)
+{
+    return Fail("NATIVE_PERMISSION_DENIED", ex.Message, true, 10);
+}
+catch (CaptureException ex)
+{
+    return Fail(ex.Code, ex.Message, ex.Retryable, 11);
+}
+catch (Exception ex)
+{
+    return Fail("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", ex.Message, true, 1);
+}
+
+static int WriteCapabilities()
+{
+    var displays = EnumerateDisplays();
+    var windows = EnumerateWindows();
+    Console.Out.WriteLine(JsonSerializer.Serialize(new
+    {
+        checkedAt = DateTimeOffset.UtcNow.ToString("O"),
+        displays,
+        windows,
+        captureApi = new { screen = "DXGI_DESKTOP_DUPLICATION", window = "WINDOWS_GRAPHICS_CAPTURE" },
+        minWindowsBuild = 17763,
+    }));
+    return 0;
+}
+
+static List<object> EnumerateDisplays()
+{
+    using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+    var displays = new List<object>();
+    var adapterIndex = 0;
+    while (factory.EnumAdapters1(adapterIndex, out var adapter).Success)
+    {
+        using (adapter)
+        {
+            var outputIndex = 0;
+            while (adapter.EnumOutputs(outputIndex, out var output).Success)
+            {
+                using (output)
+                {
+                    var desc = output.Description;
+                    var bounds = desc.DesktopCoordinates;
+                    var id = DisplayId(desc.DeviceName);
+                    displays.Add(new
+                    {
+                        id,
+                        label = string.IsNullOrWhiteSpace(desc.DeviceName) ? $"Display {displays.Count + 1}" : desc.DeviceName,
+                        isDefault = displays.Count == 0,
+                        width = Math.Abs(bounds.Right - bounds.Left),
+                        height = Math.Abs(bounds.Bottom - bounds.Top),
+                    });
+                }
+                outputIndex++;
+            }
+        }
+        adapterIndex++;
+    }
+    return displays;
+}
+
+static List<object> EnumerateWindows()
+{
+    var windows = new List<object>();
+    NativeMethods.EnumWindows((hwnd, _) =>
+    {
+        if (!IsCapturableWindow(hwnd))
+        {
+            return true;
+        }
+        var title = GetWindowTitle(hwnd);
+        windows.Add(new
+        {
+            id = WindowId(hwnd),
+            label = title,
+            isDefault = false,
+        });
+        return true;
+    }, IntPtr.Zero);
+    return windows;
+}
+
+static async Task<int> CaptureAsync(string[] args)
+{
+    var parsed = ParseArguments(args);
+    var kind = parsed.GetValueOrDefault("kind")?.ToLowerInvariant();
+    var format = parsed.GetValueOrDefault("format")?.ToLowerInvariant();
+    var sourceId = parsed.GetValueOrDefault("source-id");
+    if (format != "aiwvid-jsonl")
+    {
+        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Only aiwvid-jsonl output is supported by the Windows screen helper.", false);
+    }
+    if (kind == "screen")
+    {
+        return CaptureDisplay(sourceId);
+    }
+    if (kind == "window")
+    {
+        return await CaptureWindowAsync(sourceId);
+    }
+    throw new CaptureException("NATIVE_CAPABILITY_UNAVAILABLE", "Capture kind must be screen or window.", false);
+}
+
+static int CaptureDisplay(string? sourceId)
+{
+    using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+    if (!TryFindOutput(factory, sourceId, out var adapter, out var output, out var displayId, out var label))
+    {
+        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The requested Windows display is unavailable.", true);
+    }
+    using (adapter)
+    using (output)
+    {
+        D3D11.D3D11CreateDevice(
+            adapter,
+            DriverType.Unknown,
+            DeviceCreationFlags.BgraSupport,
+            new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
+            out var device).CheckError();
+        using (device)
+        {
+            using var output1 = output.QueryInterface<IDXGIOutput1>();
+            using var duplication = output1.DuplicateOutput(device);
+            var bounds = output.Description.DesktopCoordinates;
+            var width = Math.Abs(bounds.Right - bounds.Left);
+            var height = Math.Abs(bounds.Bottom - bounds.Top);
+            return RunFrameLoop(
+                "SCREEN",
+                displayId,
+                label,
+                width,
+                height,
+                (w, h, timeoutMs) => AcquireDuplicationFrame(device, duplication, w, h, timeoutMs));
+        }
+    }
+}
+
+static async Task<int> CaptureWindowAsync(string? sourceId)
+{
+    if (string.IsNullOrWhiteSpace(sourceId) || !TryParseWindowId(sourceId, out var hwnd) || !NativeMethods.IsWindow(hwnd) || !IsCapturableWindow(hwnd))
+    {
+        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The requested Windows window is unavailable.", true);
+    }
+    if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+    {
+        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The requested Windows window has no client rectangle.", true);
+    }
+    var title = GetWindowTitle(hwnd);
+    var width = Math.Max(1, rect.Right - rect.Left);
+    var height = Math.Max(1, rect.Bottom - rect.Top);
+
+    D3D11.D3D11CreateDevice(
+        null,
+        DriverType.Hardware,
+        DeviceCreationFlags.BgraSupport,
+        new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
+        out var d3dDevice).CheckError();
+    using (d3dDevice)
+    {
+        var winrtDevice = CreateWinRtDevice(d3dDevice);
+        var item = CreateCaptureItemForWindow(hwnd);
+        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(
+            winrtDevice,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            2,
+            item.Size);
+        using var session = pool.CreateCaptureSession(item);
+        session.IsCursorCaptureEnabled = true;
+        var latest = new ConcurrentQueue<byte[]>();
+        var closed = false;
+        item.Closed += (_, _) => closed = true;
+        pool.FrameArrived += (sender, _) =>
+        {
+            using var frame = sender.TryGetNextFrame();
+            if (frame is null)
+            {
+                return;
+            }
+            try
+            {
+                var bytes = EncodeSoftwareBitmap(frame);
+                if (bytes.Length > 0)
+                {
+                    latest.Enqueue(bytes);
+                    while (latest.Count > 2)
+                    {
+                        latest.TryDequeue(out _);
+                    }
+                }
+            }
+            catch
+            {
+                // The next loop iteration reports stream failure if no frames arrive.
+            }
+        };
+        session.StartCapture();
+        return RunFrameLoop(
+            "WINDOW",
+            WindowId(hwnd),
+            title,
+            width,
+            height,
+            (_, _, timeoutMs) =>
+            {
+                if (closed || !NativeMethods.IsWindow(hwnd))
+                {
+                    throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The captured window disappeared.", true);
+                }
+                var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (latest.TryDequeue(out var jpeg) && jpeg.Length > 0)
+                    {
+                        return jpeg;
+                    }
+                    Thread.Sleep(20);
+                }
+                return latest.TryDequeue(out var fallback) ? fallback : Array.Empty<byte>();
+            });
+    }
+}
+
+static int RunFrameLoop(
+    string source,
+    string sourceId,
+    string sourceLabel,
+    int width,
+    int height,
+    Func<int, int, int, byte[]> acquireJpeg)
+{
+    var startedAt = DateTimeOffset.UtcNow.ToString("O");
+    var sequence = 0L;
+    var stopped = false;
+    var errors = new ConcurrentQueue<Exception>();
+    var scaled = ScaleSize(width, height, 1280);
+    WriteRecord(new
+    {
+        recordType = "format",
+        source,
+        sourceId,
+        sourceLabel,
+        startedAt,
+        format = VideoFormat(scaled.width, scaled.height),
+    });
+
+    var control = Task.Run(async () =>
+    {
+        string? line;
+        while ((line = await Console.In.ReadLineAsync()) != null)
+        {
+            var command = line.Trim().ToLowerInvariant();
+            if (command == "stop" || command.StartsWith("abort", StringComparison.Ordinal))
+            {
+                stopped = true;
+                return;
+            }
+        }
+        stopped = true;
+    });
+
+    try
+    {
+        while (!stopped && !control.IsCompleted)
+        {
+            byte[] jpeg;
+            try
+            {
+                jpeg = acquireJpeg(scaled.width, scaled.height, 250);
+            }
+            catch (CaptureException)
+            {
+                throw;
+            }
+            catch (SharpGen.Runtime.SharpGenException ex) when (ex.HResult == unchecked((int)0x887A0026) || ex.Descriptor.Native == unchecked((int)0x887A0026))
+            {
+                throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The captured display was lost or its mode changed.", true);
+            }
+            if (jpeg.Length == 0)
+            {
+                Thread.Sleep(50);
+                continue;
+            }
+            var record = new
+            {
+                recordType = "chunk",
+                sequence = sequence++,
+                timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                source,
+                sourceId,
+                format = VideoFormat(scaled.width, scaled.height),
+                width = scaled.width,
+                height = scaled.height,
+                byteLength = jpeg.Length,
+                sha256 = Convert.ToHexString(SHA256.HashData(jpeg)).ToLowerInvariant(),
+                dataBase64 = Convert.ToBase64String(jpeg),
+            };
+            WriteRecord(record);
+            Thread.Sleep(150);
+        }
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        errors.Enqueue(ex);
+        throw;
+    }
+}
+
+static byte[] AcquireDuplicationFrame(ID3D11Device device, IDXGIOutputDuplication duplication, int width, int height, int timeoutMs)
+{
+    var result = duplication.AcquireNextFrame(timeoutMs, out _, out var resource);
+    if (result.Failure)
+    {
+        return Array.Empty<byte>();
+    }
+    try
+    {
+        using (resource)
+        using var texture = resource.QueryInterface<ID3D11Texture2D>();
+        var desc = texture.Description;
+        desc.Usage = ResourceUsage.Staging;
+        desc.BindFlags = BindFlags.None;
+        desc.CpuAccessFlags = CpuAccessFlags.Read;
+        desc.MiscFlags = ResourceOptionFlags.None;
+        using var staging = device.CreateTexture2D(desc);
+        device.ImmediateContext.CopyResource(staging, texture);
+        var mapped = device.ImmediateContext.Map(staging, 0, MapMode.Read);
+        try
+        {
+            return EncodeBgraJpeg(mapped.DataPointer, mapped.RowPitch, (int)desc.Width, (int)desc.Height, width, height);
+        }
+        finally
+        {
+            device.ImmediateContext.Unmap(staging, 0);
+        }
+    }
+    finally
+    {
+        duplication.ReleaseFrame();
+    }
+}
+
+static unsafe byte[] EncodeBgraJpeg(IntPtr data, int rowPitch, int srcWidth, int srcHeight, int destWidth, int destHeight)
+{
+    using var source = new Bitmap(srcWidth, srcHeight, PixelFormat.Format32bppArgb);
+    var bits = source.LockBits(new Rectangle(0, 0, srcWidth, srcHeight), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+    try
+    {
+        var dest = (byte*)bits.Scan0;
+        var src = (byte*)data;
+        for (var y = 0; y < srcHeight; y++)
+        {
+            Buffer.MemoryCopy(src + (y * rowPitch), dest + (y * bits.Stride), bits.Stride, Math.Min(bits.Stride, srcWidth * 4));
+        }
+    }
+    finally
+    {
+        source.UnlockBits(bits);
+    }
+    using var scaled = destWidth == srcWidth && destHeight == srcHeight
+        ? source
+        : new Bitmap(source, destWidth, destHeight);
+    using var stream = new MemoryStream();
+    var encoder = ImageCodecInfo.GetImageEncoders().First(codec => codec.FormatID == ImageFormat.Jpeg.Guid);
+    using var parameters = new EncoderParameters(1);
+    parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 70L);
+    scaled.Save(stream, encoder, parameters);
+    return stream.ToArray();
+}
+
+static byte[] EncodeSoftwareBitmap(Direct3D11CaptureFrame frame)
+{
+    var bitmap = SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().GetAwaiter().GetResult();
+    if (bitmap is null)
+    {
+        return Array.Empty<byte>();
+    }
+    using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+    var encoder = BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream).AsTask().GetAwaiter().GetResult();
+    encoder.SetSoftwareBitmap(bitmap);
+    encoder.BitmapTransform.ScaledWidth = (uint)ScaleSize(bitmap.PixelWidth, bitmap.PixelHeight, 1280).width;
+    encoder.BitmapTransform.ScaledHeight = (uint)ScaleSize(bitmap.PixelWidth, bitmap.PixelHeight, 1280).height;
+    encoder.FlushAsync().AsTask().GetAwaiter().GetResult();
+    stream.Seek(0);
+    var buffer = new Windows.Storage.Streams.Buffer((uint)stream.Size);
+    stream.ReadAsync(buffer, (uint)stream.Size, Windows.Storage.Streams.InputStreamOptions.None).AsTask().GetAwaiter().GetResult();
+    var bytes = new byte[buffer.Length];
+    buffer.CopyTo(bytes);
+    return bytes;
+}
+
+static IDirect3DDevice CreateWinRtDevice(ID3D11Device device)
+{
+    using var dxgi = device.QueryInterface<IDXGIDevice>();
+    var hr = NativeMethods.CreateDirect3D11DeviceFromDXGIDevice(dxgi.NativePointer, out var inspectable);
+    if (hr < 0 || inspectable == IntPtr.Zero)
+    {
+        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Could not create a WinRT Direct3D device for Graphics Capture.", false);
+    }
+    try
+    {
+        return MarshalInspectable<IDirect3DDevice>.FromAbi(inspectable);
+    }
+    finally
+    {
+        Marshal.Release(inspectable);
+    }
+}
+
+static GraphicsCaptureItem CreateCaptureItemForWindow(IntPtr hwnd)
+{
+    var interop = GraphicsCaptureItem.As<IGraphicsCaptureItemInterop>();
+    var guid = typeof(GraphicsCaptureItem).GUID;
+    var hr = interop.CreateForWindow(hwnd, ref guid, out var item);
+    if (hr < 0 || item is null)
+    {
+        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "Windows Graphics Capture could not attach to the selected window.", true);
+    }
+    return item;
+}
+
+static bool TryFindOutput(IDXGIFactory1 factory, string? sourceId, out IDXGIAdapter1 adapter, out IDXGIOutput output, out string displayId, out string label)
+{
+    adapter = null!;
+    output = null!;
+    displayId = "";
+    label = "";
+    var adapterIndex = 0;
+    while (factory.EnumAdapters1(adapterIndex, out var candidateAdapter).Success)
+    {
+        var outputIndex = 0;
+        while (candidateAdapter.EnumOutputs(outputIndex, out var candidateOutput).Success)
+        {
+            var id = DisplayId(candidateOutput.Description.DeviceName);
+            if (string.IsNullOrWhiteSpace(sourceId) || string.Equals(sourceId, id, StringComparison.OrdinalIgnoreCase))
+            {
+                adapter = candidateAdapter;
+                output = candidateOutput;
+                displayId = id;
+                label = candidateOutput.Description.DeviceName;
+                return true;
+            }
+            candidateOutput.Dispose();
+            outputIndex++;
+        }
+        candidateAdapter.Dispose();
+        adapterIndex++;
+    }
+    return false;
+}
+
+static object VideoFormat(int width, int height) => new
+{
+    container = "AIWVID_JSONL",
+    encoding = "JPEG",
+    width,
+    height,
+    bitsPerPixel = 24,
+    frameIntervalMs = 200,
+};
+
+static (int width, int height) ScaleSize(int width, int height, int maxWidth)
+{
+    if (width <= maxWidth || width <= 0 || height <= 0)
+    {
+        return (Math.Max(1, width), Math.Max(1, height));
+    }
+    var scaledHeight = Math.Max(1, (int)Math.Round(height * (maxWidth / (double)width)));
+    return (maxWidth, scaledHeight);
+}
+
+static string DisplayId(string deviceName)
+{
+    var name = deviceName.Replace(@"\\.\", "", StringComparison.Ordinal).Replace("\\", "", StringComparison.Ordinal);
+    if (string.IsNullOrWhiteSpace(name))
+    {
+        name = "DISPLAY";
+    }
+    return $"display:{name}";
+}
+
+static string WindowId(IntPtr hwnd) => $"hwnd:{hwnd.ToInt64():X}";
+
+static bool TryParseWindowId(string sourceId, out IntPtr hwnd)
+{
+    hwnd = IntPtr.Zero;
+    if (!sourceId.StartsWith("hwnd:", StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+    if (!long.TryParse(sourceId[5..], System.Globalization.NumberStyles.HexNumber, null, out var value))
+    {
+        return false;
+    }
+    hwnd = new IntPtr(value);
+    return hwnd != IntPtr.Zero;
+}
+
+static bool IsCapturableWindow(IntPtr hwnd)
+{
+    if (!NativeMethods.IsWindow(hwnd) || !NativeMethods.IsWindowVisible(hwnd))
+    {
+        return false;
+    }
+    if (NativeMethods.GetWindowTextLength(hwnd) <= 0)
+    {
+        return false;
+    }
+    var style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE);
+    if ((style.ToInt64() & NativeMethods.WS_EX_TOOLWINDOW) != 0)
+    {
+        return false;
+    }
+    if (NativeMethods.DwmGetWindowAttribute(hwnd, NativeMethods.DWMWA_CLOAKED, out var cloaked, sizeof(int)) == 0 && cloaked != 0)
+    {
+        return false;
+    }
+    return true;
+}
+
+static string GetWindowTitle(IntPtr hwnd)
+{
+    var length = NativeMethods.GetWindowTextLength(hwnd);
+    var builder = new StringBuilder(length + 1);
+    NativeMethods.GetWindowText(hwnd, builder, builder.Capacity);
+    return builder.ToString();
+}
+
+static Dictionary<string, string> ParseArguments(string[] args)
+{
+    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    for (var index = 0; index < args.Length; index++)
+    {
+        var token = args[index];
+        if (!token.StartsWith("--", StringComparison.Ordinal))
+        {
+            continue;
+        }
+        var key = token[2..];
+        if (index + 1 >= args.Length || args[index + 1].StartsWith("--", StringComparison.Ordinal))
+        {
+            result[key] = "true";
+        }
+        else
+        {
+            result[key] = args[++index];
+        }
+    }
+    return result;
+}
+
+static void WriteRecord(object record)
+{
+    Console.Out.WriteLine(JsonSerializer.Serialize(record));
+    Console.Out.Flush();
+}
+
+static int Fail(string code, string message, bool retryable, int exitCode)
+{
+    Console.Out.WriteLine(JsonSerializer.Serialize(new
+    {
+        recordType = "error",
+        code,
+        message,
+        retryable,
+    }));
+    Console.Error.WriteLine($"{code}: {message}");
+    return exitCode;
+}
+
+internal sealed class CaptureException : Exception
+{
+    public string Code { get; }
+    public bool Retryable { get; }
+
+    public CaptureException(string code, string message, bool retryable) : base(message)
+    {
+        Code = code;
+        Retryable = retryable;
+    }
+}
+
+[ComImport]
+[Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IGraphicsCaptureItemInterop
+{
+    [PreserveSig]
+    int CreateForWindow(IntPtr window, ref Guid iid, [MarshalAs(UnmanagedType.IInspectable)] out GraphicsCaptureItem result);
+
+    [PreserveSig]
+    int CreateForMonitor(IntPtr monitor, ref Guid iid, [MarshalAs(UnmanagedType.IInspectable)] out GraphicsCaptureItem result);
+}
+
+internal static class NativeMethods
+{
+    public const int GWL_EXSTYLE = -20;
+    public const int WS_EX_TOOLWINDOW = 0x00000080;
+    public const int DWMWA_CLOAKED = 14;
+
+    public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hwnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextLength(IntPtr hwnd);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    public static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [DllImport("d3d11.dll", EntryPoint = "CreateDirect3D11DeviceFromDXGIDevice")]
+    public static extern int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+}

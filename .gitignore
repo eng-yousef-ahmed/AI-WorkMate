@@ -16,3 +16,5 @@ credential-vault.json
 # Native helper build output
 native/windows-audio/bin/
 native/windows-audio/obj/
+native/windows-screen/bin/
+native/windows-screen/obj/

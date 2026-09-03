@@ -16,8 +16,9 @@
     "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
     "desktop": "npm run build && electron dist/src/desktop/main.js",
     "package:win": "npm run build && npm run build:native:win && electron-builder --win",
-    "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true",
+    "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true && dotnet publish native/windows-screen/AIWorkMate.WindowsScreenCapture.csproj -c Release -r win-x64 --self-contained true",
     "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js",
+    "verify:windows-native-screen-capture": "npm run build && node dist/scripts/verify-windows-native-screen-capture.js",
     "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js",
     "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js",
     "install:local-llm-model": "npm run build && node dist/scripts/install-local-llm-model.js",
@@ -69,6 +70,10 @@
       {
         "from": "native/windows-audio/bin/Release/net8.0-windows/win-x64/publish/AIWorkMate.WindowsAudioCapture.exe",
         "to": "native/windows-audio/AIWorkMate.WindowsAudioCapture.exe"
+      },
+      {
+        "from": "native/windows-screen/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/AIWorkMate.WindowsScreenCapture.exe",
+        "to": "native/windows-screen/AIWorkMate.WindowsScreenCapture.exe"
       }
     ]
   }
