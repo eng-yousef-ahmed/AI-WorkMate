@@ -464,18 +464,107 @@ function parseTranscriptJson(content: string, expectedMeetingId: string): Transc
 }
 
 export function extractJsonObject(stdout: string): string {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    throw new LocalLlmError("ANALYSIS_ENGINE_INVALID_OUTPUT", "Local llama.cpp produced no JSON object.", false);
+  const text = stripBomAndAnsi(stdout);
+  const fenced = unwrapSingleMarkdownFence(text);
+  const start = fenced.indexOf("{");
+  if (start < 0) {
+    throw new LocalLlmError(
+      "ANALYSIS_ENGINE_INVALID_OUTPUT",
+      `Local llama.cpp produced no JSON object (${describeLlamaStdout(text)}).`,
+      false,
+    );
   }
-  const candidate = stdout.slice(start, end + 1);
+  const extracted = extractBalancedJsonObject(fenced, start);
+  if (extracted === undefined) {
+    throw new LocalLlmError(
+      "ANALYSIS_ENGINE_INVALID_OUTPUT",
+      `Local llama.cpp JSON object is truncated or unbalanced (${describeLlamaStdout(text)}).`,
+      false,
+    );
+  }
   try {
-    JSON.parse(candidate);
+    JSON.parse(extracted);
   } catch (error: unknown) {
-    throw new LocalLlmError("ANALYSIS_ENGINE_INVALID_OUTPUT", "Local llama.cpp stdout is not valid JSON.", false, { cause: error });
+    throw new LocalLlmError(
+      "ANALYSIS_ENGINE_INVALID_OUTPUT",
+      `Local llama.cpp stdout is not valid JSON (${describeLlamaStdout(text)}).`,
+      false,
+      { cause: error },
+    );
   }
-  return candidate;
+  return extracted;
+}
+
+export function describeLlamaStdout(stdout: string): string {
+  const text = stripBomAndAnsi(stdout);
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  const kinds: string[] = [];
+  if (/```/.test(text)) {
+    kinds.push("markdown-fence");
+  }
+  if (/(?:^|\s)(?:llama_|ggml_|print_info|load_tensors|system_info)/i.test(text)) {
+    kinds.push("runtime-log");
+  }
+  if (start < 0) {
+    kinds.push("no-object");
+  } else if (extractBalancedJsonObject(text, start) === undefined) {
+    kinds.push("truncated-object");
+  } else {
+    kinds.push("complete-object");
+  }
+  return `bytes=${Buffer.byteLength(text, "utf8")} firstBrace=${start} lastBrace=${end} ${kinds.join(",") || "empty"}`;
+}
+
+function stripBomAndAnsi(value: string): string {
+  const escape = String.fromCharCode(27);
+  return value.replace(/^\uFEFF/, "").split(escape).map((part, index) => {
+    if (index === 0) {
+      return part;
+    }
+    const end = part.search(/[A-Za-z]/);
+    return end >= 0 ? part.slice(end + 1) : part;
+  }).join("");
+}
+
+function unwrapSingleMarkdownFence(value: string): string {
+  const match = value.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/i);
+  return match?.[1] ?? value;
+}
+
+function extractBalancedJsonObject(value: string, start: number): string | undefined {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (char === "\\") {
+        escape = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(start, index + 1);
+      }
+      if (depth < 0) {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
 }
 
 function assertSafeHelperPath(helperPath: string): string {

@@ -18,6 +18,8 @@ import {
   assertUsableLocalLlmModelFile,
   buildAnalysisPrompt,
   buildLlamaCliArgs,
+  describeLlamaStdout,
+  extractJsonObject,
   localLlmCpuThreadCount,
   resolveLocalLlmTimeoutMs,
   type LocalLlmHelperProcess,
@@ -272,6 +274,33 @@ test("local LLM timeout is configurable with a hard upper bound", () => {
   assert.equal(resolveLocalLlmTimeoutMs(undefined, "600000"), 600_000);
   assert.equal(resolveLocalLlmTimeoutMs(9_999_999), 900_000);
   assert.equal(resolveLocalLlmTimeoutMs(-1, "not-a-number"), 180_000);
+});
+
+test("llama.cpp stdout extracts one complete JSON object and rejects truncated or log-wrapped invalid slices", () => {
+  const document = {
+    meetingId: "11111111-1111-4111-8111-111111111111",
+    createdAt: "2026-09-02T12:00:00.000Z",
+    summary: "Keep analysis LOCAL_ONLY.",
+    decisions: [{ decisionId: "d1", text: "Stay local" }],
+    tasks: [{ taskId: "t1", text: "Document install" }],
+    risks: [],
+    questions: [],
+    followups: [],
+  };
+  const json = JSON.stringify(document);
+  const wrapped = `llama_model_loader: loaded\n${json}\nllama_perf_context_print: eval time = 12.3 ms\n`;
+  assert.equal(extractJsonObject(wrapped), json);
+  assert.match(describeLlamaStdout(wrapped), /runtime-log/);
+  assert.match(describeLlamaStdout(wrapped), /complete-object/);
+  const fenced = "```json\n" + json + "\n```";
+  assert.equal(JSON.parse(extractJsonObject(fenced)).summary, document.summary);
+  const truncated = "{\"meetingId\":\"11111111-1111-4111-8111-111111111111\",\"summary\":\"Keep";
+  assert.throws(
+    () => extractJsonObject(truncated),
+    (error: unknown) => error instanceof LocalLlmError && error.message.includes("truncated"),
+  );
+  const twoObjects = `${json}{"meetingId":"other"}`;
+  assert.equal(extractJsonObject(twoObjects), json);
 });
 
 test("injected llama helper returns model JSON without inventing a cloud hop", async () => {
