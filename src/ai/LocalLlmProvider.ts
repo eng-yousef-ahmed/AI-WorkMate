@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { access, open, stat } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { TranscriptDocument } from "../domain/models";
@@ -16,8 +17,13 @@ import {
 } from "./LocalLlmRuntimeCatalog";
 
 const PROVIDER_ID = "local-llama-cpp";
+/** Fail-closed wall clock. 7B CPU JSON decode should finish well under this once we cap `-n` and skip re-hashing 4.7GB on spawn. */
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_TIMEOUT_MS = 900_000;
+const MAX_PREDICT_TOKENS = 320;
+const CONTEXT_TOKENS = 2048;
+const CPU_BATCH_SIZE = 256;
+const MAX_CPU_THREADS = 8;
 const ALLOWED_CLI_NAMES = new Set([
   "llama-completion.exe",
   "llama-completion",
@@ -196,7 +202,7 @@ export class LocalLlmProvider implements AIProvider {
       : [assertSafeModelPath(this.modelPathOverride)];
     for (const candidate of candidates) {
       try {
-        await assertUsableLocalLlmModelFile(candidate);
+        await assertReadyLocalLlmModelFile(candidate);
         return candidate;
       } catch (error: unknown) {
         if (error instanceof LocalLlmError && error.code === "ANALYSIS_PATH_REJECTED") {
@@ -286,21 +292,34 @@ export async function resolveWindowsLlamaModelPath(modelPath?: string, localAppD
   return undefined;
 }
 
+export async function assertReadyLocalLlmModelFile(modelPath: string): Promise<void> {
+  const catalog = getLocalLlmModelCatalogEntry(basename(modelPath));
+  const files = catalog?.files ?? [{ filename: basename(modelPath), bytes: 64, sha256: "", url: "" }];
+  const directory = dirname(modelPath);
+  for (const file of files) {
+    const shardPath = join(directory, file.filename);
+    const fileStat = await stat(shardPath);
+    if (!fileStat.isFile() || fileStat.size < 64) {
+      throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model file is missing or truncated.", false);
+    }
+    if (catalog !== undefined && fileStat.size !== file.bytes) {
+      throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model size does not match the allowlisted catalog.", false);
+    }
+    const header = Buffer.alloc(4);
+    const handle = await open(shardPath, "r");
+    try {
+      await handle.read(header, 0, 4, 0);
+    } finally {
+      await handle.close();
+    }
+    if (!isGgufModelMagic(header)) {
+      throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model is not a GGUF file.", false);
+    }
+  }
+}
+
 export async function assertUsableLocalLlmModelFile(modelPath: string): Promise<{ sha256: string; bytes: number }> {
-  const fileStat = await stat(modelPath);
-  if (!fileStat.isFile() || fileStat.size < 64) {
-    throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model file is missing or truncated.", false);
-  }
-  const header = Buffer.alloc(4);
-  const handle = await open(modelPath, "r");
-  try {
-    await handle.read(header, 0, 4, 0);
-  } finally {
-    await handle.close();
-  }
-  if (!isGgufModelMagic(header)) {
-    throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", "Local LLM model is not a GGUF file.", false);
-  }
+  await assertReadyLocalLlmModelFile(modelPath);
   const catalog = getLocalLlmModelCatalogEntry(basename(modelPath));
   const directory = dirname(modelPath);
   if (catalog !== undefined) {
@@ -348,12 +367,35 @@ export async function hashLocalLlmFile(filePath: string): Promise<{ sha256: stri
  * for the next turn until our timeout. Prompt is `-p` (not stdin). Do not use
  * `-no-cnv` (removed from llama-cli; avoid it on both binaries).
  */
+export function localLlmCpuThreadCount(available = availableParallelism()): number {
+  if (!Number.isFinite(available) || available < 1) {
+    return 1;
+  }
+  return Math.min(MAX_CPU_THREADS, Math.floor(available));
+}
+
+/**
+ * b10621 one-shot: `llama-completion -m MODEL --single-turn -p PROMPT`.
+ * `-m` is the first split shard; llama.cpp loads `00002-of-00002` beside it.
+ * `-n` is capped so 7B CPU constrained JSON cannot spend the whole timeout
+ * generating filler. Threads/batch/ctx are explicit CPU settings.
+ * Do not use `-no-cnv`.
+ */
 export function buildLlamaCliArgs(modelPath: string, prompt: string, _helperName = "llama-cli.exe"): readonly string[] {
+  const threads = String(localLlmCpuThreadCount());
   return [
     "-m",
     modelPath,
     "-n",
-    "768",
+    String(MAX_PREDICT_TOKENS),
+    "-c",
+    String(CONTEXT_TOKENS),
+    "-t",
+    threads,
+    "-tb",
+    threads,
+    "-b",
+    String(CPU_BATCH_SIZE),
     "--temp",
     "0",
     "--top-k",
@@ -379,17 +421,11 @@ export function resolveLocalLlmTimeoutMs(requested?: number, envValue = process.
 }
 
 export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: string): string {
-  const transcriptJson = JSON.stringify({
-    meetingId: transcript.meetingId,
-    language: transcript.language,
-    speakers: transcript.speakers,
-    segments: transcript.segments.map((segment) => ({
-      speakerId: segment.speakerId,
-      startMs: segment.startMs,
-      endMs: segment.endMs,
-      text: segment.text,
-    })),
-  });
+  const names = new Map(transcript.speakers.map((speaker) => [speaker.speakerId, speaker.displayName ?? speaker.speakerId]));
+  const dialogue = transcript.segments.map((segment) => {
+    const speaker = segment.speakerId === undefined ? "Speaker" : names.get(segment.speakerId) ?? segment.speakerId;
+    return `${speaker}: ${segment.text}`;
+  }).join("\n");
   return [
     "Extract facts from this meeting transcript. Copy wording from the transcript.",
     "Do not invent people, deadlines, decisions, or tasks. If a fact is not stated, omit the optional field or use an empty array.",
@@ -402,9 +438,9 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
     "tasks is an array of {taskId, text} plus optional assignee, dueDate, and status. status if present is OPEN, IN_PROGRESS, DONE, or CANCELLED.",
     "Put assignee only when the transcript names who will do the work. Put dueDate only when a date is spoken.",
     "risks, questions, and followups are string arrays taken from the transcript.",
-    "Transcript JSON:",
-    transcriptJson,
-  ].join(" ");
+    "Transcript:",
+    dialogue,
+  ].join("\n");
 }
 
 function parseTranscriptJson(content: string, expectedMeetingId: string): TranscriptDocument {

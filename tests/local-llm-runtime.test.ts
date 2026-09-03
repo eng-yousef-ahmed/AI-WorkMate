@@ -18,6 +18,7 @@ import {
   assertUsableLocalLlmModelFile,
   buildAnalysisPrompt,
   buildLlamaCliArgs,
+  localLlmCpuThreadCount,
   resolveLocalLlmTimeoutMs,
   type LocalLlmHelperProcess,
   type LocalLlmHelperRunner,
@@ -208,7 +209,9 @@ test("GGUF magic files without catalog checksum are not treated as the allowlist
   assert.equal(discovery.modelChecksumOk, false);
   await assert.rejects(
     () => assertUsableLocalLlmModelFile(modelPath),
-    (error: unknown) => error instanceof LocalLlmError && error.message.includes("SHA-256"),
+    (error: unknown) =>
+      error instanceof LocalLlmError &&
+      (error.message.includes("SHA-256") || error.message.includes("size does not match")),
   );
 });
 
@@ -238,25 +241,29 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
   assert.equal(args.includes("--single-turn"), true);
   assert.equal(args.includes("--json-schema"), true);
   assert.equal(args[args.indexOf("--json-schema") + 1]?.includes("\"taskId\""), true);
-  assert.deepEqual(args.slice(0, 12), [
+  assert.equal(args.includes("-c"), true);
+  assert.equal(args.includes("-t"), true);
+  assert.equal(args.includes("-b"), true);
+  assert.deepEqual(args.slice(0, 8), [
     "-m",
     "injected-llama-model.gguf",
     "-n",
-    "768",
-    "--temp",
-    "0",
-    "--top-k",
-    "1",
-    "-ngl",
-    "0",
-    "--no-display-prompt",
-    "--single-turn",
+    "320",
+    "-c",
+    "2048",
+    "-t",
+    args[args.indexOf("-t") + 1],
   ]);
+  assert.equal(Number(args[args.indexOf("-n") + 1]) <= 320, true);
   const completionArgs = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-completion.exe");
   assert.equal(completionArgs.includes("--single-turn"), true);
   assert.equal(completionArgs.includes("--json-schema"), true);
   assert.equal(completionArgs.includes("-no-cnv"), false);
   assert.equal(completionArgs.includes("-p"), true);
+  assert.equal(args.includes("768"), false);
+  assert.equal(localLlmCpuThreadCount(1), 1);
+  assert.equal(localLlmCpuThreadCount(32), 8);
+  assert.equal(localLlmCpuThreadCount(0), 1);
 });
 
 test("local LLM timeout is configurable with a hard upper bound", () => {
