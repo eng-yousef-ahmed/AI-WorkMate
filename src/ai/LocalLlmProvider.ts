@@ -434,8 +434,9 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
   }).join("\n");
   return [
     "Return minified JSON only: one object, no extra spaces or newlines, no markdown, no commentary.",
-    "Do not copy the transcript. Do not invent people, dates, decisions, or tasks.",
-    "Short ids d1/t1. One short sentence per summary, decision, and task. Keep spoken names, dates, and LOCAL_ONLY facts.",
+    "Do not invent people, dates, decisions, or tasks. Do not paste the full transcript into any field.",
+    "Summary: one sentence that names this meeting using the product and system names the speakers used.",
+    "Short ids d1/t1. One short sentence per decision and task, using the speakers' words for systems, owners, and dates.",
     "Questions are not decisions. Omit optional keys or use [] when unstated.",
     `meetingId=${transcript.meetingId}`,
     `createdAt=${createdAt}`,
