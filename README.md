@@ -100,7 +100,7 @@ Phase 6A adds the production native-source boundary above the Phase 5 local capt
 
 `NativeCaptureCoordinator` applies explicit capture policy, rejects denied/unavailable capabilities before creating a local recording, owns duplicate active capture checks by internal meeting UUID, rejects wrong-meeting stop/abort calls, passes real native chunks into `LocalRecordingCaptureEngine` in sequence, and preserves the existing local storage, SHA-256, artifact journal, lifecycle, and disk-space semantics. No capture IPC was added, so the renderer still receives no filesystem path or direct capture controls.
 
-**Verification limit:** Linux/headless tests use injected adapter doubles at the boundary to verify orchestration and failure behavior. Screen/window helper execution is **not WINDOWS-VERIFIED**. Microphone and WASAPI loopback helper execution was **WINDOWS-VERIFIED** on a real Windows host in Phase 6B.
+**Verification limit:** Linux/headless tests use injected adapter doubles at the boundary to verify orchestration and failure behavior. The DXGI screen helper runtime verification was executed on a real Windows host (`npm run verify:windows-native-screen-capture -- --duration-ms=10000`). Windows Graphics Capture (WGC) window helper runtime verification is implemented (`npm run verify:windows-native-window-capture`) but was not executed in this Linux sandbox. Microphone and WASAPI loopback helper execution was **WINDOWS-VERIFIED** on a real Windows host in Phase 6B.
 
 ## Windows native audio provider (Phase 6B)
 
@@ -108,7 +108,7 @@ Phase 6B adds production code for the first real native provider path: `WindowsN
 
 The provider does not write files and does not choose output paths. It starts the helper, validates the helper's real PCM records, and feeds them into `NativeCaptureCoordinator` / `LocalRecordingCaptureEngine`. The intermediate persisted format is `aiwpcm` with MIME `application/x-ai-workmate-pcm-jsonl`: JSON Lines containing a format record and captured PCM chunk records. Each audio chunk carries source, sequence, capture timestamp, sample rate, channels, bits per sample, byte length, SHA-256 of the PCM payload, and base64 PCM bytes. The sample format is whatever WASAPI reports for the selected endpoint; the helper records that format per capture.
 
-Packaging includes a Windows helper build step: `npm run build:native:win`, and `npm run package:win` runs it before Electron packaging. Real Windows verification confirmed: `npm run build:native:win` succeeded; `capabilities` enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio); microphone capture produced `mic-test.jsonl` (977 lines: format + 976 audio chunks, no errors); WASAPI loopback produced `loopback-test.jsonl` (2229 lines: format + audio chunks, no errors). That helper used the real NAudio implementation with no mock production capture. Status: **IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED** for microphone and loopback helper capture. Screen/window helper source is implemented but **not WINDOWS-VERIFIED**. Microphone/system-audio synchronization/mixing is not solved; each stream remains independently owned and sequenced.
+Packaging includes a Windows helper build step: `npm run build:native:win`, and `npm run package:win` runs it before Electron packaging. Real Windows verification confirmed: `npm run build:native:win` succeeded; `capabilities` enumerated Jack Mic (Realtek Audio) and Speakers / Headphones (Realtek Audio); microphone capture produced `mic-test.jsonl` (977 lines: format + 976 audio chunks, no errors); WASAPI loopback produced `loopback-test.jsonl` (2229 lines: format + audio chunks, no errors). That helper used the real NAudio implementation with no mock production capture. Status: **IMPLEMENTED / TESTED / CODE-VERIFIED / WINDOWS-VERIFIED** for microphone and loopback helper capture. The DXGI screen helper runtime verification is **WINDOWS-VERIFIED**; the WGC window helper runtime verification is implemented but **not WINDOWS-VERIFIED** yet. Microphone/system-audio synchronization/mixing is not solved; each stream remains independently owned and sequenced.
 
 ## Windows runtime verification (Phase 6C)
 
@@ -139,9 +139,12 @@ On a **real Windows** machine after `npm run build:native:win`:
 
 ```bat
 npm run verify:windows-native-screen-capture
+npm run verify:windows-native-window-capture
 ```
 
-Linux fail-closes with `windowsVerified: false`. This sandbox is **not WINDOWS-VERIFIED** for screen/window capture.
+The screen command was executed on a real Windows host (`--duration-ms=10000`): `success: true`, `windowsVerified: true`, isolated temp DATA_ROOT, real DXGI Desktop Duplication frames committed through the artifact journal (SQLite `COMMITTED`). The window command captures a real enumerated HWND through Windows Graphics Capture for the requested duration, commits the `aiwvid` JSONL artifact through the same StorageRuntime/journal pipeline, and verifies sequence ordering, JPEG framing, SHA-256, SQLite `COMMITTED` status, and the final artifact. Window selection is deterministic: the helper's enumeration already excludes invisible/cloaked/tool/untitled windows, and the verifier prefers ordinary application windows over the shell desktop (`Program Manager`), ordering candidates by numeric HWND. If WGC produces no frames for the selected window (for example it is minimized, protected/DRM content, or otherwise ineligible), verification **fails clearly** and never silently falls back to SCREEN capture.
+
+Linux fail-closes with `windowsVerified: false`. The DXGI screen runtime verification is **WINDOWS-VERIFIED** (real Windows host run); the WGC window runtime verification is implemented and Linux-tested but was **not** executed in this Linux sandbox.
 
 ## Local transcription (Phase 7)
 
