@@ -85,7 +85,60 @@ test("WGC device/API handling uses canonical CsWinRT conversions, API guards, an
     "[stage:frame-pool]",
     "[stage:capture-session]",
     "[stage:start-capture]",
+    "[stage:is-supported]",
+    "[stage:monitor-resolve]",
+    "[stage:adapter-select]",
   ]) {
     assert.ok(source.includes(stage), `WGC init failures must be tagged with ${stage}`);
   }
+});
+
+test("WGC WINDOW zero-frame pipeline is adapter-bound, rooted, instrumented, and never silently swallows frame delivery failure", async () => {
+  const source = await readFile(PROGRAM_CS_PATH, "utf8");
+  // The D3D11 device must be bound to the DXGI adapter of the window's monitor (the same
+  // binding the Windows-verified SCREEN path uses); a default-adapter device silently
+  // receives no WGC frames on multi-GPU machines.
+  assert.ok(
+    source.includes("NativeMethods.IsIconic(hwnd)"),
+    "Minimized windows must be excluded from enumeration: WGC never delivers frames for them",
+  );
+  assert.ok(
+    source.includes("MonitorFromWindow(hwnd, NativeMethods.MONITOR_DEFAULTTONEAREST)"),
+    "WGC device selection must resolve the window's monitor",
+  );
+  assert.ok(
+    source.includes("GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi)"),
+    "WGC device selection must read the monitor device name to find its DXGI output/adapter",
+  );
+  assert.ok(
+    source.includes('ApiInformation.IsMethodPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "IsSupported", 0)'),
+    "WGC support must be pre-flighted with GraphicsCaptureSession.IsSupported (RDP/basic adapters StartCapture silently and deliver nothing)",
+  );
+  // Strong process-lifetime roots: FrameArrived is delivered asynchronously on the pool
+  // thread, so item/pool/session/device must outlive the synchronous capture loop.
+  assert.ok(source.includes("internal static class WindowCaptureRoots"), "WGC session graph must have process-lifetime roots");
+  assert.ok(source.includes("WindowCaptureRoots.Clear()"), "WGC session roots must be released after the capture loop");
+  // Every delivery stage must be counted and reported, never swallowed: the zero-frame
+  // failure carries structured counters through the error record state.
+  for (const counter of [
+    "frameArrivedCount = FrameArrivedCount",
+    "tryGetNextFrameCount = TryGetNextFrameCount",
+    "frameAcquiredCount = FrameAcquiredCount",
+    "readbackCount = ReadbackCount",
+    "jpegEncodedCount = JpegEncodedCount",
+    "encodeFailureCount = EncodeFailureCount",
+  ]) {
+    assert.ok(source.includes(counter), `WGC pipeline state must report ${counter.split(" ")[0]}`);
+  }
+  assert.ok(source.includes("state.ToRecord()"), "The zero-frame error must attach the structured pipeline state");
+  assert.ok(source.includes("startCaptureSucceeded = StartCaptureSucceeded"), "Pipeline state must report whether StartCapture succeeded");
+  assert.ok(source.includes("HandleWindowFrameArrived(sender, state)"), "FrameArrived must dispatch into the counted, non-swallowing handler");
+  assert.ok(
+    source.includes('stage = state.FrameArrivedCount == 0 ? "frame-arrival"'),
+    "The zero-frame failure must name the exact WGC stage where delivery stopped",
+  );
+  assert.ok(
+    source.includes("NATIVE_CAPTURE_STREAM_FAILED") && source.includes("delivered no JPEG frames"),
+    "A silent zero-frame session must fail closed with a stage-precise native error",
+  );
 });

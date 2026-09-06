@@ -11,6 +11,7 @@ import {
   type NativeCaptureCapability,
   type NativeCaptureErrorCode,
   type NativeCaptureErrorInfo,
+  type NativeCaptureErrorState,
   type NativeCaptureKind,
   type NativeCaptureSession,
   type NativeCaptureStartRequest,
@@ -415,11 +416,14 @@ function parseCaptureRecord(text: string, capability: NativeCaptureKind): Window
     throw nativeError("NATIVE_CAPTURE_STREAM_FAILED", "Windows native screen helper emitted a non-object record.", capability, true);
   }
   if (value.recordType === "error") {
+    const errorState = isRecord(value.state) ? (value.state as NativeCaptureErrorState) : undefined;
     throw nativeError(
       stringValue(value.code, "NATIVE_CAPTURE_STREAM_FAILED") as NativeCaptureErrorCode,
       stringValue(value.message, "Windows native screen helper reported an error."),
       capability,
       booleanValue(value.retryable, true),
+      undefined,
+      errorState,
     );
   }
   if (value.recordType === "format") {
@@ -641,10 +645,14 @@ function nativeError(
   capability: NativeCaptureKind | undefined,
   retryable: boolean,
   cause?: unknown,
+  state?: NativeCaptureErrorState,
 ): NativeCaptureError {
   const info: NativeCaptureErrorInfo = { code, message, retryable };
   if (capability !== undefined) {
     info.capability = capability;
+  }
+  if (state !== undefined) {
+    info.state = state;
   }
   return new NativeCaptureError(info, cause === undefined ? undefined : { cause });
 }

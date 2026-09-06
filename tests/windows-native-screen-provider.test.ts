@@ -182,6 +182,51 @@ test("Windows native screen provider rejects out-of-order chunks and non-JPEG pa
   );
 });
 
+test("Windows native window capture surfaces the helper's structured zero-frame pipeline state", async () => {
+  const state = {
+    stage: "frame-arrival",
+    startCaptureSucceeded: true,
+    frameArrivedCount: 0,
+    tryGetNextFrameCount: 0,
+    tryGetNextFrameNullCount: 0,
+    frameAcquiredCount: 0,
+    readbackCount: 0,
+    jpegEncodedCount: 0,
+    encodeFailureCount: 0,
+    itemClosed: false,
+    monitor: "\\\\.\\DISPLAY1",
+    elapsedMs: 10000,
+  };
+  const runner = new ScriptedHelperRunner((args) => {
+    assert.deepEqual(args, ["capture", "--kind", "window", "--format", "aiwvid-jsonl", "--source-id", "hwnd:00000000000A1B2C"]);
+    return completedProcess(`${JSON.stringify({
+      recordType: "error",
+      code: "NATIVE_CAPTURE_STREAM_FAILED",
+      message: "Windows Graphics Capture delivered no JPEG frames for window \"Notepad\" (hwnd:00000000000A1B2C) over 10000ms [stage:frame-arrival]: startCaptureSucceeded=True frameArrivedCount=0.",
+      retryable: true,
+      state,
+    })}\n`);
+  });
+  const provider = new WindowsNativeScreenProvider({ platform: "win32", helperRunner: runner.run, clock: fixedClock() });
+  const session = await provider.startCapture({
+    capability: "WINDOW",
+    sourceId: "hwnd:00000000000A1B2C",
+    format: WINDOWS_SCREEN_CAPTURE_FORMAT,
+    mimeType: WINDOWS_SCREEN_CAPTURE_MIME_TYPE,
+  });
+  await assert.rejects(
+    collect(session.chunks),
+    (error: unknown) =>
+      error instanceof NativeCaptureError &&
+      error.code === "NATIVE_CAPTURE_STREAM_FAILED" &&
+      error.message.includes("[stage:frame-arrival]") &&
+      error.state?.stage === "frame-arrival" &&
+      error.state?.frameArrivedCount === 0 &&
+      error.state?.startCaptureSucceeded === true &&
+      error.state?.monitor === "\\\\.\\DISPLAY1",
+  );
+});
+
 test("Windows native screen abort and disk-full stay incomplete without SQLite recording", async () => {
   await withTempStore(async (store) => {
     const meeting = await store.createMeeting({ title: "Screen abort", meetingDate: "2026-09-01" });

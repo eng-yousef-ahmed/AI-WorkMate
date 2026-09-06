@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NativeCaptureError, type NativeCaptureSourceDescriptor } from "./NativeCaptureAdapter";
+import {
+  NativeCaptureError,
+  type NativeCaptureErrorState,
+  type NativeCaptureSourceDescriptor,
+} from "./NativeCaptureAdapter";
 import {
   WINDOWS_SCREEN_CAPTURE_FORMAT,
   WINDOWS_SCREEN_CAPTURE_MIME_TYPE,
@@ -45,6 +49,8 @@ export interface WindowsRuntimeWindowCaptureCaseResult {
   jpegFrames?: number;
   failureCode?: string;
   failureMessage?: string;
+  /** Structured WGC pipeline state attached by the native helper to its error record. */
+  nativeCaptureState?: NativeCaptureErrorState;
 }
 
 export interface WindowsRuntimeWindowCaptureVerificationResult {
@@ -356,12 +362,14 @@ async function verifyCapture(
     }
     return result;
   } catch (error: unknown) {
+    const state = error instanceof NativeCaptureError ? error.state : undefined;
     return {
       capability: "WINDOW",
       success: false,
       meetingId: meeting.meetingId,
       failureCode: error instanceof NativeCaptureError ? error.code : "NATIVE_CAPTURE_STREAM_FAILED",
       failureMessage: error instanceof Error ? error.message : String(error),
+      ...(state === undefined ? {} : { nativeCaptureState: state }),
     };
   }
 }
@@ -374,6 +382,7 @@ function stopFailureResult(
 ): WindowsRuntimeWindowCaptureCaseResult {
   const message = error instanceof Error ? error.message : String(error);
   const failureCode = error instanceof NativeCaptureError ? error.code : "NATIVE_CAPTURE_STREAM_FAILED";
+  const state = error instanceof NativeCaptureError ? error.state : undefined;
   if (message.includes("empty recording capture")) {
     return {
       capability: "WINDOW",
@@ -382,6 +391,7 @@ function stopFailureResult(
       captureId,
       failureCode: "NATIVE_CAPTURE_STREAM_FAILED",
       failureMessage: `Windows Graphics Capture produced no frames for window "${source.label ?? source.sourceId}" (${source.sourceId}); the window may be minimized, protected (DRM), or otherwise ineligible. Window verification never falls back to SCREEN capture. Restore or switch to an ordinary visible window and re-run.`,
+      ...(state === undefined ? {} : { nativeCaptureState: state }),
     };
   }
   return {
@@ -391,6 +401,7 @@ function stopFailureResult(
     captureId,
     failureCode,
     failureMessage: `Windows Graphics Capture failed for window "${source.label ?? source.sourceId}" (${source.sourceId}): ${message}`,
+    ...(state === undefined ? {} : { nativeCaptureState: state }),
   };
 }
 

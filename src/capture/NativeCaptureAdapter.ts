@@ -23,11 +23,37 @@ export type NativeCaptureErrorCode =
   | "NATIVE_CAPTURE_POLICY_DENIED"
   | "NATIVE_CAPTURE_SESSION_NOT_FOUND";
 
+/**
+ * Structured pipeline state attached by the Windows screen helper to a native error
+ * record. Emitted by the WGC WINDOW path so a zero-frame run reports the exact stage
+ * where delivery stopped plus per-stage counters (frameArrivedCount etc.).
+ */
+export interface NativeCaptureErrorState {
+  stage?: string;
+  startCaptureSucceeded?: boolean;
+  frameArrivedCount?: number;
+  tryGetNextFrameCount?: number;
+  tryGetNextFrameNullCount?: number;
+  frameAcquiredCount?: number;
+  readbackCount?: number;
+  jpegEncodedCount?: number;
+  encodeFailureCount?: number;
+  encodeFailure?: string;
+  itemClosed?: boolean;
+  firstFrameArrivedAt?: string;
+  firstFrameEncodedAt?: string;
+  lastFrameEncodedAt?: string;
+  monitor?: string;
+  monitorLabel?: string;
+  elapsedMs?: number;
+}
+
 export interface NativeCaptureErrorInfo {
   code: NativeCaptureErrorCode;
   message: string;
   capability?: NativeCaptureKind;
   retryable: boolean;
+  state?: NativeCaptureErrorState;
 }
 
 export interface NativeCaptureSourceDescriptor {
@@ -128,6 +154,7 @@ export class NativeCaptureError extends Error {
   public readonly code: NativeCaptureErrorCode;
   public readonly capability: NativeCaptureKind | undefined;
   public readonly retryable: boolean;
+  public readonly state: NativeCaptureErrorState | undefined;
 
   public constructor(info: NativeCaptureErrorInfo, options?: ErrorOptions) {
     super(info.message, options);
@@ -135,6 +162,7 @@ export class NativeCaptureError extends Error {
     this.code = info.code;
     this.capability = info.capability;
     this.retryable = info.retryable;
+    this.state = info.state;
   }
 
   public toJSON(): NativeCaptureErrorInfo {
@@ -145,6 +173,9 @@ export class NativeCaptureError extends Error {
     };
     if (this.capability !== undefined) {
       info.capability = this.capability;
+    }
+    if (this.state !== undefined) {
+      info.state = this.state;
     }
     return info;
   }

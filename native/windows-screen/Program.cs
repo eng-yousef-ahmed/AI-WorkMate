@@ -35,7 +35,7 @@ catch (UnauthorizedAccessException ex)
 }
 catch (CaptureException ex)
 {
-    return Fail(ex.Code, ex.Message, ex.Retryable, 11);
+    return Fail(ex.Code, ex.Message, ex.Retryable, 11, ex.State);
 }
 catch (Exception ex)
 {
@@ -202,19 +202,82 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
     {
         throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "GraphicsCaptureSession.StartCapture is not available on this Windows build.", false);
     }
+    try
+    {
+        // IsSupported is false exactly when WGC can never deliver frames: remote desktop
+        // sessions and basic display adapters StartCapture "successfully" but stay silent.
+        if (ApiInformation.IsMethodPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "IsSupported", 0)
+            && !GraphicsCaptureSession.IsSupported())
+        {
+            throw new CaptureException(
+                "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+                $"Windows Graphics Capture is not supported for the current session or display adapter, so window \"{title}\" ({WindowId(hwnd)}) can never deliver frames (remote desktop and basic display adapters are common causes).",
+                false);
+        }
+    }
+    catch (CaptureException)
+    {
+        throw;
+    }
+    catch (Exception ex)
+    {
+        throw new CaptureException(
+            "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+            $"Windows Graphics Capture support check failed for window \"{title}\" ({WindowId(hwnd)}) [stage:is-supported] {Describe(ex)}",
+            false);
+    }
 
+    var state = new WindowCaptureState();
+    // WGC frame delivery is tied to the adapter that presents the window: bind the D3D11
+    // device to the adapter driving the window's monitor (the SCREEN path binds the same
+    // way). A default-adapter device on a multi-GPU/hybrid machine can make StartCapture
+    // succeed while the frame pool silently never receives a frame.
+    var monitor = NativeMethods.MonitorFromWindow(hwnd, NativeMethods.MONITOR_DEFAULTTONEAREST);
+    if (monitor == IntPtr.Zero)
+    {
+        throw new CaptureException(
+            "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+            $"Windows Graphics Capture could not resolve the monitor of window \"{title}\" ({WindowId(hwnd)}) [stage:monitor-resolve].",
+            false);
+    }
+    var monitorInfo = new NativeMethods.MONITORINFOEX
+    {
+        cbSize = Marshal.SizeOf<NativeMethods.MONITORINFOEX>(),
+        szDevice = new string('\0', 32),
+    };
+    if (!NativeMethods.GetMonitorInfo(monitor, ref monitorInfo) || string.IsNullOrWhiteSpace(monitorInfo.szDevice.TrimEnd('\0')))
+    {
+        throw new CaptureException(
+            "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+            $"Windows Graphics Capture could not read the monitor of window \"{title}\" ({WindowId(hwnd)}) [stage:monitor-resolve].",
+            false);
+    }
+    state.MonitorDevice = monitorInfo.szDevice.TrimEnd('\0');
     ID3D11Device d3dDevice;
     try
     {
-        D3D11.D3D11CreateDevice(
-            null,
-            DriverType.Hardware,
-            DeviceCreationFlags.BgraSupport,
-            new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
-            out d3dDevice).CheckError();
-        if (d3dDevice is null)
+        using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+        if (!TryFindOutputForMonitor(state.MonitorDevice, factory, out var adapter, out var output, out _, out var monitorLabel))
         {
-            throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for Windows Graphics Capture.", false);
+            throw new CaptureException(
+                "NATIVE_DEVICE_UNAVAILABLE",
+                $"The monitor ({state.MonitorDevice}) of window \"{title}\" ({WindowId(hwnd)}) is not an active DXGI output [stage:adapter-select]; Windows Graphics Capture requires a WDDM graphics adapter.",
+                true);
+        }
+        state.MonitorLabel = monitorLabel;
+        using (adapter)
+        using (output)
+        {
+            D3D11.D3D11CreateDevice(
+                adapter,
+                DriverType.Unknown,
+                DeviceCreationFlags.BgraSupport,
+                new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
+                out d3dDevice).CheckError();
+            if (d3dDevice is null)
+            {
+                throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for Windows Graphics Capture.", false);
+            }
         }
     }
     catch (CaptureException)
@@ -264,42 +327,29 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
         }
         using var pool = CreateFramePool(winrtDevice, item, title, hwnd);
         using var session = CreateCaptureSession(pool, item, title, hwnd);
-        var latest = new ConcurrentQueue<byte[]>();
         var closed = false;
         try
         {
-            item.Closed += (_, _) => closed = true;
-            // The handler's second parameter is named `args` (not `_`): a lambda parameter named `_`
-            // is an ordinary variable in scope (typed object here for TypedEventHandler<..., object>),
-            // so an `out _` argument in the body would pass that object variable to
-            // ConcurrentQueue<byte[]>.TryDequeue(out byte[]) instead of being a discard -> CS1503.
-            // With no `_` in scope, the `out _` below is a genuine discard that drops the oldest JPEG.
-            pool.FrameArrived += (sender, args) =>
+            item.Closed += (_, _) =>
             {
-                using var frame = sender.TryGetNextFrame();
-                if (frame is null)
-                {
-                    return;
-                }
-                try
-                {
-                    var bytes = EncodeSoftwareBitmap(frame);
-                    if (bytes.Length > 0)
-                    {
-                        latest.Enqueue(bytes);
-                        while (latest.Count > 2)
-                        {
-                            latest.TryDequeue(out _);
-                        }
-                    }
-                }
-                catch
-                {
-                    // The next loop iteration reports stream failure if no frames arrive.
-                }
+                closed = true;
+                state.ItemClosed = true;
             };
+            // WGC raises FrameArrived on the free-threaded pool's own thread; the handler
+            // must never be collectable and must never swallow failures silently. Strong
+            // process-lifetime roots keep the whole session graph alive for the capture.
+            WindowCaptureRoots.Item = item;
+            WindowCaptureRoots.WinRtDevice = winrtDevice;
+            WindowCaptureRoots.Pool = pool;
+            WindowCaptureRoots.Session = session;
+            state.Stage = "frame-arrival";
+            // The lambda parameter is named `args` (not `_`) because a lambda parameter named
+            // `_` would make `out _` in the handler an argument instead of a discard.
+            pool.FrameArrived += (sender, args) => HandleWindowFrameArrived(sender, state);
             session.IsCursorCaptureEnabled = true;
             session.StartCapture();
+            state.StartCaptureSucceeded = true;
+            state.CaptureStartedAtUtc = DateTimeOffset.UtcNow;
         }
         catch (Exception ex)
         {
@@ -308,29 +358,54 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
                 $"Windows Graphics Capture could not start capturing window \"{title}\" ({WindowId(hwnd)}) [stage:start-capture] {Describe(ex)}",
                 false);
         }
-        return RunFrameLoop(
-            "WINDOW",
-            WindowId(hwnd),
-            title,
-            width,
-            height,
-            (_, _, timeoutMs) =>
-            {
-                if (closed || !NativeMethods.IsWindow(hwnd))
+        var exitCode = 0;
+        try
+        {
+            exitCode = RunFrameLoop(
+                "WINDOW",
+                WindowId(hwnd),
+                title,
+                width,
+                height,
+                (_, _, timeoutMs) =>
                 {
-                    throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The captured window disappeared.", true);
-                }
-                var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-                while (DateTime.UtcNow < deadline)
-                {
-                    if (latest.TryDequeue(out var jpeg) && jpeg.Length > 0)
+                    if (closed || !NativeMethods.IsWindow(hwnd))
                     {
-                        return jpeg;
+                        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The captured window disappeared.", true);
                     }
-                    Thread.Sleep(20);
-                }
-                return latest.TryDequeue(out var fallback) ? fallback : Array.Empty<byte>();
-            });
+                    var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+                    while (DateTime.UtcNow < deadline)
+                    {
+                        if (state.Latest.TryDequeue(out var jpeg) && jpeg.Length > 0)
+                        {
+                            return jpeg;
+                        }
+                        Thread.Sleep(20);
+                    }
+                    return state.Latest.TryDequeue(out var fallback) ? fallback : Array.Empty<byte>();
+                });
+        }
+        finally
+        {
+            WindowCaptureRoots.Clear();
+        }
+        if (state.JpegEncodedCount == 0)
+        {
+            // StartCapture succeeded but the pipeline stopped without one JPEG. Report the
+            // exact stage where delivery stopped and the counters, so a Windows run pinpoints
+            // the failing WGC stage without another diagnostic build.
+            var stage = state.FrameArrivedCount == 0 ? "frame-arrival"
+                : state.FrameAcquiredCount == 0 ? "try-get-next-frame"
+                : state.ReadbackCount == 0 ? "surface-readback"
+                : "jpeg-encode";
+            var elapsedMs = (long)(DateTimeOffset.UtcNow - state.CaptureStartedAtUtc).TotalMilliseconds;
+            throw new CaptureException(
+                "NATIVE_CAPTURE_STREAM_FAILED",
+                $"Windows Graphics Capture delivered no JPEG frames for window \"{title}\" ({WindowId(hwnd)}) over {elapsedMs}ms [stage:{stage}]: startCaptureSucceeded={state.StartCaptureSucceeded} frameArrivedCount={state.FrameArrivedCount} tryGetNextFrameCount={state.TryGetNextFrameCount} tryGetNextFrameNullCount={state.TryGetNextFrameNullCount} frameAcquiredCount={state.FrameAcquiredCount} readbackCount={state.ReadbackCount} jpegEncodedCount={state.JpegEncodedCount} encodeFailureCount={state.EncodeFailureCount}{(state.EncodeFailure is null ? "" : $" encodeFailure={state.EncodeFailure}")} itemClosed={state.ItemClosed} monitor={state.MonitorDevice} monitorLabel={state.MonitorLabel}.",
+                true,
+                state.ToRecord());
+        }
+        return exitCode;
     }
 }
 
@@ -546,25 +621,58 @@ static unsafe byte[] EncodeBgraJpeg(IntPtr data, int rowPitch, int srcWidth, int
     return stream.ToArray();
 }
 
-static byte[] EncodeSoftwareBitmap(Direct3D11CaptureFrame frame)
+static SoftwareBitmap? TryCopySurfaceToSoftwareBitmap(Direct3D11CaptureFrame frame, WindowCaptureState state)
 {
-    using var bitmap = SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().GetAwaiter().GetResult();
-    if (bitmap is null)
+    // Stage 10/11 of the WGC pipeline: read the capture frame's surface into CPU-accessible
+    // pixels. Failures are recorded with the exact exception, never silently swallowed.
+    try
     {
+        var bitmap = SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().GetAwaiter().GetResult();
+        if (bitmap is null)
+        {
+            state.RecordEncodeFailure("surface-readback", "SoftwareBitmap.CreateCopyFromSurfaceAsync returned no bitmap.");
+            return null;
+        }
+        state.ReadbackCount += 1;
+        return bitmap;
+    }
+    catch (Exception ex)
+    {
+        state.RecordEncodeFailure("surface-readback", Describe(ex));
+        return null;
+    }
+}
+
+static byte[] TryEncodeJpegToBytes(SoftwareBitmap bitmap, WindowCaptureState state)
+{
+    // Stage 12 of the WGC pipeline: JPEG encoding. Failures are recorded with the exact
+    // exception, never silently swallowed.
+    try
+    {
+        using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+        var encoder = BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream).AsTask().GetAwaiter().GetResult();
+        encoder.SetSoftwareBitmap(bitmap);
+        encoder.BitmapTransform.ScaledWidth = (uint)ScaleSize(bitmap.PixelWidth, bitmap.PixelHeight, 1280).width;
+        encoder.BitmapTransform.ScaledHeight = (uint)ScaleSize(bitmap.PixelWidth, bitmap.PixelHeight, 1280).height;
+        encoder.FlushAsync().AsTask().GetAwaiter().GetResult();
+        stream.Seek(0);
+        var buffer = new Windows.Storage.Streams.Buffer((uint)stream.Size);
+        stream.ReadAsync(buffer, (uint)stream.Size, Windows.Storage.Streams.InputStreamOptions.None).AsTask().GetAwaiter().GetResult();
+        var bytes = new byte[buffer.Length];
+        buffer.CopyTo(bytes);
+        if (bytes.Length > 0)
+        {
+            state.JpegEncodedCount += 1;
+            return bytes;
+        }
+        state.RecordEncodeFailure("jpeg-encode", "BitmapEncoder produced no JPEG bytes.");
         return Array.Empty<byte>();
     }
-    using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
-    var encoder = BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream).AsTask().GetAwaiter().GetResult();
-    encoder.SetSoftwareBitmap(bitmap);
-    encoder.BitmapTransform.ScaledWidth = (uint)ScaleSize(bitmap.PixelWidth, bitmap.PixelHeight, 1280).width;
-    encoder.BitmapTransform.ScaledHeight = (uint)ScaleSize(bitmap.PixelWidth, bitmap.PixelHeight, 1280).height;
-    encoder.FlushAsync().AsTask().GetAwaiter().GetResult();
-    stream.Seek(0);
-    var buffer = new Windows.Storage.Streams.Buffer((uint)stream.Size);
-    stream.ReadAsync(buffer, (uint)stream.Size, Windows.Storage.Streams.InputStreamOptions.None).AsTask().GetAwaiter().GetResult();
-    var bytes = new byte[buffer.Length];
-    buffer.CopyTo(bytes);
-    return bytes;
+    catch (Exception ex)
+    {
+        state.RecordEncodeFailure("jpeg-encode", Describe(ex));
+        return Array.Empty<byte>();
+    }
 }
 
 static IDirect3DDevice CreateWinRtDevice(ID3D11Device device)
@@ -714,6 +822,12 @@ static bool IsCapturableWindow(IntPtr hwnd)
     {
         return false;
     }
+    // Windows Graphics Capture never delivers frames for minimized windows (the DWM has no
+    // surface content for them), so they must not be advertised or selected as capturable.
+    if (NativeMethods.IsIconic(hwnd))
+    {
+        return false;
+    }
     if (NativeMethods.GetWindowTextLength(hwnd) <= 0)
     {
         return false;
@@ -767,15 +881,11 @@ static void WriteRecord(object record)
     Console.Out.Flush();
 }
 
-static int Fail(string code, string message, bool retryable, int exitCode)
+static int Fail(string code, string message, bool retryable, int exitCode, object? state = null)
 {
-    Console.Out.WriteLine(JsonSerializer.Serialize(new
-    {
-        recordType = "error",
-        code,
-        message,
-        retryable,
-    }));
+    WriteRecord(state is null
+        ? new { recordType = "error", code, message, retryable }
+        : new { recordType = "error", code, message, retryable, state });
     Console.Error.WriteLine($"{code}: {message}");
     return exitCode;
 }
@@ -814,15 +924,104 @@ static string Describe(Exception ex)
     return builder.ToString();
 }
 
+static void HandleWindowFrameArrived(Direct3D11CaptureFramePool sender, WindowCaptureState state)
+{
+    // Stage 8/9 of the WGC pipeline: FrameArrived fired; pull the frame with TryGetNextFrame.
+    // Every sub-stage is counted so a zero-JPEG session reports exactly where delivery stopped.
+    state.FrameArrivedCount += 1;
+    state.FirstFrameArrivedAt ??= DateTimeOffset.UtcNow.ToString("O");
+    state.Stage = "try-get-next-frame";
+    try
+    {
+        using var frame = sender.TryGetNextFrame();
+        state.TryGetNextFrameCount += 1;
+        if (frame is null)
+        {
+            state.TryGetNextFrameNullCount += 1;
+            return;
+        }
+        state.FrameAcquiredCount += 1;
+        state.Stage = "surface-readback";
+        var bitmap = TryCopySurfaceToSoftwareBitmap(frame, state);
+        if (bitmap is null)
+        {
+            return;
+        }
+        using (bitmap)
+        {
+            state.Stage = "jpeg-encode";
+            var jpeg = TryEncodeJpegToBytes(bitmap, state);
+            if (jpeg.Length > 0)
+            {
+                state.LastFrameEncodedAt = DateTimeOffset.UtcNow.ToString("O");
+                state.FirstFrameEncodedAt ??= state.LastFrameEncodedAt;
+                // Overflow trim drops the oldest JPEG (out _ is a discard because no lambda
+                // parameter named `_` is in scope in this regular method).
+                state.Stage = "chunk-write";
+                state.Latest.Enqueue(jpeg);
+                while (state.Latest.Count > 2)
+                {
+                    state.Latest.TryDequeue(out _);
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        state.RecordEncodeFailure(state.Stage, Describe(ex));
+    }
+}
+
+static bool TryFindOutputForMonitor(string monitorDevice, IDXGIFactory1 factory, out IDXGIAdapter1 adapter, out IDXGIOutput output, out string displayId, out string label)
+{
+    adapter = null!;
+    output = null!;
+    displayId = "";
+    label = "";
+    var targetId = DisplayId(monitorDevice);
+    uint adapterIndex = 0;
+    while (factory.EnumAdapters1(adapterIndex, out var candidateAdapter).Success)
+    {
+        adapterIndex++;
+        if (candidateAdapter is null)
+        {
+            break;
+        }
+        uint outputIndex = 0;
+        while (candidateAdapter.EnumOutputs(outputIndex, out var candidateOutput).Success)
+        {
+            outputIndex++;
+            if (candidateOutput is null)
+            {
+                break;
+            }
+            var id = DisplayId(candidateOutput.Description.DeviceName);
+            if (string.Equals(id, targetId, StringComparison.OrdinalIgnoreCase))
+            {
+                adapter = candidateAdapter;
+                output = candidateOutput;
+                displayId = id;
+                label = candidateOutput.Description.DeviceName;
+                return true;
+            }
+            candidateOutput.Dispose();
+        }
+        candidateAdapter.Dispose();
+    }
+    return false;
+}
+
 internal sealed class CaptureException : Exception
 {
     public string Code { get; }
     public bool Retryable { get; }
+    public object? State { get; }
 
-    public CaptureException(string code, string message, bool retryable) : base(message)
+    public CaptureException(string code, string message, bool retryable, object? state = null) : base(message)
     {
         Code = code;
         Retryable = retryable;
+        State = state;
     }
 }
 
@@ -847,6 +1046,7 @@ internal static class NativeMethods
     public const int GWL_EXSTYLE = -20;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
     public const int DWMWA_CLOAKED = 14;
+    public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
     public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
@@ -858,6 +1058,15 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hwnd, StringBuilder lpString, int nMaxCount);
@@ -884,5 +1093,96 @@ internal static class NativeMethods
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MONITORINFOEX
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public int dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
+    }
+}
+
+// Per-session pipeline state for WINDOW (WGC) capture. FrameArrived runs on the frame
+// pool's own thread while the capture loop runs on the main thread, so counters are plain
+// longs (atomic on the win-x64 build) and only the final snapshot is reported.
+internal sealed class WindowCaptureState
+{
+    public string Stage = "initializing";
+    public bool StartCaptureSucceeded;
+    public bool ItemClosed;
+    public long FrameArrivedCount;
+    public long TryGetNextFrameCount;
+    public long TryGetNextFrameNullCount;
+    public long FrameAcquiredCount;
+    public long ReadbackCount;
+    public long JpegEncodedCount;
+    public long EncodeFailureCount;
+    public string? EncodeFailure;
+    public string? FirstFrameArrivedAt;
+    public string? FirstFrameEncodedAt;
+    public string? LastFrameEncodedAt;
+    public string? MonitorDevice;
+    public string? MonitorLabel;
+    public DateTimeOffset CaptureStartedAtUtc;
+    public readonly ConcurrentQueue<byte[]> Latest = new();
+
+    public void RecordEncodeFailure(string stage, string description)
+    {
+        EncodeFailureCount += 1;
+        if (EncodeFailure is null)
+        {
+            EncodeFailure = $"[stage:{stage}] {description}";
+        }
+    }
+
+    public object ToRecord()
+    {
+        var elapsedMs = CaptureStartedAtUtc == default
+            ? 0L
+            : (long)(DateTimeOffset.UtcNow - CaptureStartedAtUtc).TotalMilliseconds;
+        return new
+        {
+            stage = Stage,
+            startCaptureSucceeded = StartCaptureSucceeded,
+            frameArrivedCount = FrameArrivedCount,
+            tryGetNextFrameCount = TryGetNextFrameCount,
+            tryGetNextFrameNullCount = TryGetNextFrameNullCount,
+            frameAcquiredCount = FrameAcquiredCount,
+            readbackCount = ReadbackCount,
+            jpegEncodedCount = JpegEncodedCount,
+            encodeFailureCount = EncodeFailureCount,
+            encodeFailure = EncodeFailure,
+            itemClosed = ItemClosed,
+            firstFrameArrivedAt = FirstFrameArrivedAt,
+            firstFrameEncodedAt = FirstFrameEncodedAt,
+            lastFrameEncodedAt = LastFrameEncodedAt,
+            monitor = MonitorDevice,
+            monitorLabel = MonitorLabel,
+            elapsedMs = elapsedMs,
+        };
+    }
+}
+
+// Process-lifetime roots for the WGC session graph. FrameArrived delivery is asynchronous
+// and the capture loop is synchronous on the main thread; keeping strong references here
+// guarantees the item, device, pool, and session are never collected or finalized mid-run.
+internal static class WindowCaptureRoots
+{
+    public static GraphicsCaptureItem? Item;
+    public static IDirect3DDevice? WinRtDevice;
+    public static Direct3D11CaptureFramePool? Pool;
+    public static GraphicsCaptureSession? Session;
+
+    public static void Clear()
+    {
+        Item = null;
+        WinRtDevice = null;
+        Pool = null;
+        Session = null;
     }
 }
