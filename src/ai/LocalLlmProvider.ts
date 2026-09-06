@@ -429,12 +429,20 @@ export function resolveLocalLlmTimeoutMs(requested?: number, envValue = process.
 export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: string): string {
   const names = new Map(transcript.speakers.map((speaker) => [speaker.speakerId, speaker.displayName ?? speaker.speakerId]));
   const dialogue = transcript.segments.map((segment) => {
-    const speaker = segment.speakerId === undefined ? "Speaker" : names.get(segment.speakerId) ?? segment.speakerId;
+    if (segment.speakerId === undefined) {
+      // Speaker-less segments (e.g. local Whisper output) carry no speaker
+      // identity; render them as bare transcript lines so no phantom
+      // participant name is introduced into the dialogue.
+      return segment.text;
+    }
+    const speaker = names.get(segment.speakerId) ?? segment.speakerId;
     return `${speaker}: ${segment.text}`;
   }).join("\n");
   return [
     "Return minified JSON only: one object, no extra spaces or newlines, no markdown, no commentary.",
     "Do not invent people, dates, decisions, or tasks. Do not paste the full transcript into any field.",
+    "Lines without a name prefix have no speaker label; never treat a line prefix or a bracketed source tag such as [Microphone] or [System Audio] as a person.",
+    "Use an owner or assignee only when that name is actually spoken/present in the transcript; otherwise omit the owner/assignee field.",
     "Summary: one sentence that names this meeting using the product and system names the speakers used.",
     "Short ids d1/t1. One short sentence per decision and task, using the speakers' words for systems, owners, and dates.",
     "Questions are not decisions. Omit optional keys or use [] when unstated.",
