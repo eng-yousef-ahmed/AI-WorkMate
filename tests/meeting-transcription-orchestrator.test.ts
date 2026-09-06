@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -8,10 +8,30 @@ import { randomUUID, createHash } from "node:crypto";
 import { LocalFirstStore } from "../src/storage/LocalFirstStore";
 import { MeetingTranscriptionOrchestrator } from "../src/processing/MeetingTranscriptionOrchestrator";
 import type { TranscriptionEngine, TranscriptionRequest, TranscriptionEngineResult } from "../src/transcription/TranscriptionEngine";
-import type { AIProvider } from "../src/ai/AIProvider";
+import type { AIProcessRequest, AIProcessResult, AIProvider } from "../src/ai/AIProvider";
 import { StorageError } from "../src/storage/errors";
-import type { AnalysisDocument } from "../src/domain/models";
+import type { ActionItem, AnalysisDocument, Decision } from "../src/domain/models";
 import { buildUnifiedTranscriptDocument } from "../src/processing/sourceAttribution";
+
+interface RawStatement {
+  get(): Record<string, unknown> | undefined;
+}
+
+interface RawDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): RawStatement;
+}
+
+function rawDb(store: LocalFirstStore): RawDatabase {
+  return (store.database as unknown as { database: RawDatabase }).database;
+}
+
+type FakeTranscriptionEngineResult = TranscriptionEngineResult & { createdAt: string };
+
+type FakeAnalysisDocument = AnalysisDocument & {
+  decisions: (Decision & { createdAt: string })[];
+  tasks: (ActionItem & { createdAt: string; updatedAt: string })[];
+};
 
 class FakeTranscriptionEngine implements TranscriptionEngine {
   public readonly descriptor = { id: "fake-whisper", name: "Fake Whisper", displayName: "Fake Whisper", kind: "LOCAL" as const, capabilities: { offline: true } };
@@ -29,7 +49,7 @@ class FakeTranscriptionEngine implements TranscriptionEngine {
       this.failRetryable = false;
       throw new StorageError("interrupted");
     }
-    return {
+    const result: FakeTranscriptionEngineResult = {
       meetingId: request.meetingId,
       recordingId: request.recordingId!,
       language: "en",
@@ -38,23 +58,24 @@ class FakeTranscriptionEngine implements TranscriptionEngine {
       engine: this.descriptor,
       createdAt: new Date().toISOString(),
       segments: [{ segmentId: randomUUID(), startMs: 0, endMs: 1000, text: `Fake transcript for ${request.recordingId} AI WorkMate LOCAL_ONLY DATA_ROOT llama.cpp install fail-closed tests` }]
-    } as any;
+    };
+    return result;
   }
 }
 
 class FakeAIProvider implements AIProvider {
   public readonly descriptor = { id: "fake-ai", name: "Fake AI", displayName: "Fake AI", kind: "LOCAL" as const, dataTransmission: "LOCAL_ONLY" as const, capabilities: { offline: true } };
-  public processCalls: any[] = [];
+  public processCalls: AIProcessRequest[] = [];
   public failNext = false;
 
-  public async process(request: any): Promise<any> {
+  public async process(request: AIProcessRequest): Promise<AIProcessResult> {
     this.processCalls.push(request);
     if (this.failNext) {
       this.failNext = false;
       throw new StorageError("Hard failure");
     }
     
-    const analysis: AnalysisDocument = {
+    const analysis: FakeAnalysisDocument = {
       meetingId: request.meetingId,
       createdAt: new Date().toISOString(),
       summary: "Fake summary AI WorkMate",
@@ -63,11 +84,12 @@ class FakeAIProvider implements AIProvider {
       risks: [],
       questions: [],
       followups: []
-    } as any;
+    };
 
     return {
       providerId: "fake-ai",
       persistedByProvider: false,
+      processedAt: new Date().toISOString(),
       output: JSON.stringify(analysis)
     };
   }
@@ -117,25 +139,23 @@ async function createTestEnv() {
 
 async function setupMeetingAndRecordings(store: LocalFirstStore, mic: boolean, sys: boolean) {
   const meetingId = randomUUID();
-  (store.database as any).database.exec(`
+  rawDb(store).exec(`
     INSERT INTO meetings (meeting_id, title, slug, folder_name, folder_relative_path, meeting_date, created_at, updated_at, status, storage_version)
     VALUES ('${meetingId}', 'Test Meeting', 'test-meeting', 'Test_Meeting', 'Meetings/Test_Meeting', '2026-09-06', '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 'COMPLETED', 6)
   `);
 
   const addRecording = async (capability: string) => {
-    const fs = require("node:fs/promises");
-    const path = require("node:path");
-    const dir = path.join(store.getDataRoot(), "Meetings/Test_Meeting/Recording/Original");
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, `meeting_${meetingId}_${capability}.aiwpcm`), Buffer.from(validJsonl, "utf8"));
+    const dir = join(store.getDataRoot(), "Meetings/Test_Meeting/Recording/Original");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `meeting_${meetingId}_${capability}.aiwpcm`), Buffer.from(validJsonl, "utf8"));
     
     const sha256 = createHash("sha256").update(validJsonl).digest("hex");
-    (store.database as any).database.exec(`
+    rawDb(store).exec(`
       INSERT INTO artifacts (file_id, meeting_id, relative_path, artifact_type, mime_type, size, created_at, modified_at, sha256, status, recording_variant)
       VALUES ('${randomUUID()}', '${meetingId}', 'Meetings/Test_Meeting/Recording/Original/meeting_${meetingId}_${capability}.aiwpcm', 'RECORDING_ORIGINAL', 'application/x-ai-workmate-pcm-jsonl', ${validJsonl.length}, '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', '${sha256}', 'AVAILABLE', 'ORIGINAL')
     `);
-    const fileId = (store.database as any).database.prepare(`SELECT file_id FROM artifacts WHERE relative_path = 'Meetings/Test_Meeting/Recording/Original/meeting_${meetingId}_${capability}.aiwpcm'`).get().file_id;
-    (store.database as any).database.exec(`
+    const fileId = rawDb(store).prepare(`SELECT file_id FROM artifacts WHERE relative_path = 'Meetings/Test_Meeting/Recording/Original/meeting_${meetingId}_${capability}.aiwpcm'`).get()!.file_id as string;
+    rawDb(store).exec(`
       INSERT INTO recordings (recording_id, meeting_id, artifact_id, recording_variant, created_at, capture_source, final_status, sha256)
       VALUES ('${randomUUID()}', '${meetingId}', '${fileId}', 'ORIGINAL', '2026-09-06T12:00:00Z', 'fake:${capability}', 'COMMITTED', '${sha256}')
     `);
@@ -250,7 +270,7 @@ test("Processing Orchestrator 9 - stale analysis invalidation", async () => {
   assert.strictEqual(analysisProvider.processCalls.length, 1);
   
   // simulate transcript change by updating SHA in DB manually
-  (store.database as any).database.exec(`UPDATE transcripts SET source_sha256 = 'different' WHERE meeting_id = '${meetingId}'`);
+  rawDb(store).exec(`UPDATE transcripts SET source_sha256 = 'different' WHERE meeting_id = '${meetingId}'`);
   
   // Because SHA doesn't match recording, transcription will rerun, generating a new transcript artifact ID
   await orchestrator.processCompletedMeeting(meetingId);
@@ -308,7 +328,7 @@ test("Processing Orchestrator 13 - corrupt source artifact fails transcription",
   const recording = recordings[0]!;
   
   // Corrupt the SHA
-  (store.database as any).database.exec(`UPDATE recordings SET sha256 = 'invalid-sha' WHERE recording_id = '${recording.recordingId}'`);
+  rawDb(store).exec(`UPDATE recordings SET sha256 = 'invalid-sha' WHERE recording_id = '${recording.recordingId}'`);
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording SHA verification failed/);
   
@@ -320,8 +340,7 @@ test("Processing Orchestrator 17 - analysis quality rejection", async () => {
   const meetingId = await setupMeetingAndRecordings(store, true, false);
   
   // Mock AI Provider to return bad analysis
-  const originalProcess = analysisProvider.process.bind(analysisProvider);
-  analysisProvider.process = async (request: any) => {
+  analysisProvider.process = async (request: AIProcessRequest): Promise<AIProcessResult> => {
     const analysis: AnalysisDocument = {
       meetingId: request.meetingId,
       createdAt: new Date().toISOString(),
@@ -331,10 +350,11 @@ test("Processing Orchestrator 17 - analysis quality rejection", async () => {
       risks: [],
       questions: [],
       followups: []
-    } as any;
+    };
     return {
       providerId: "fake-ai",
       persistedByProvider: false,
+      processedAt: new Date().toISOString(),
       output: JSON.stringify(analysis)
     };
   };
@@ -349,7 +369,7 @@ test("Processing Orchestrator 19 - invalid meeting transition throws error", asy
   const meetingId = await setupMeetingAndRecordings(store, true, false);
   
   // Meeting must be COMPLETED, PROCESSING, INCOMPLETE, or FAILED. SCHEDULED is invalid.
-  (store.database as any).database.exec(`UPDATE meetings SET status = 'SCHEDULED' WHERE meeting_id = '${meetingId}'`);
+  rawDb(store).exec(`UPDATE meetings SET status = 'SCHEDULED' WHERE meeting_id = '${meetingId}'`);
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Meeting is not ready for processing/);
   
@@ -357,7 +377,7 @@ test("Processing Orchestrator 19 - invalid meeting transition throws error", asy
 });
 
 test("Processing Orchestrator 22 - final COMPLETED only after all commits", async () => {
-  const { root, store, orchestrator, transcriptionEngine } = await createTestEnv();
+  const { root, store, orchestrator } = await createTestEnv();
   const meetingId = await setupMeetingAndRecordings(store, true, false);
   
   // Intercept the final saveAnalysis to check meeting status right before completion
@@ -387,8 +407,8 @@ test("Processing Orchestrator 27 - missing json artifact fails transcript reuse"
     // Delete the JSON artifact so reuse fails and re-processing triggers
     const a = store.database.getArtifact(t.jsonArtifactId);
     const absPath = store.resolveArtifactAbsolutePath(a!.relativePath);
-    (store.database as any).database.exec(`PRAGMA foreign_keys=OFF; DELETE FROM artifacts WHERE file_id = '${t.jsonArtifactId}'; PRAGMA foreign_keys=ON;`);
-    try { await require("node:fs/promises").rm(absPath, { force: true }); } catch {}
+    rawDb(store).exec(`PRAGMA foreign_keys=OFF; DELETE FROM artifacts WHERE file_id = '${t.jsonArtifactId}'; PRAGMA foreign_keys=ON;`);
+    try { await rm(absPath, { force: true }); } catch { /* already removed */ }
   
   // This should force it to regenerate
   await orchestrator.processCompletedMeeting(meetingId);
@@ -404,11 +424,11 @@ test("Processing Orchestrator 11 - legacy transcript without capability or SHA i
   const meetingId = await setupMeetingAndRecordings(store, true, false);
 
   const fileId = randomUUID();
-  (store.database as any).database.exec(`
+  rawDb(store).exec(`
     INSERT INTO artifacts (file_id, meeting_id, relative_path, artifact_type, mime_type, size, created_at, modified_at, sha256, status)
     VALUES ('${fileId}', '${meetingId}', 'dummy.json', 'TRANSCRIPT_JSON', 'application/json', 1, '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 'dummy', 'AVAILABLE')
   `);
-  (store.database as any).database.exec(`
+  rawDb(store).exec(`
     INSERT INTO transcripts (transcript_id, meeting_id, json_artifact_id, text_artifact_id, language, created_at, recording_id, engine_id)
     VALUES ('${randomUUID()}', '${meetingId}', '${fileId}', '${fileId}', 'en', '2026-09-06T12:00:00Z', (SELECT recording_id FROM recordings LIMIT 1), 'fake-whisper')
   `);
@@ -428,7 +448,7 @@ test("Processing Orchestrator 14 - source recording SHA mismatch fails processin
   const recording = store.database.listRecordings(meetingId)[0]!;
   const artifact = store.database.getArtifact(recording.artifactId)!;
   const absPath = store.resolveArtifactAbsolutePath(artifact.relativePath);
-  await require("node:fs/promises").writeFile(absPath, Buffer.from("corrupted", "utf8"));
+  await writeFile(absPath, Buffer.from("corrupted", "utf8"));
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording SHA verification failed/);
   
@@ -547,7 +567,7 @@ test("Processing Orchestrator 25 - path traversal rejection", async () => {
   const { root, store, orchestrator } = await createTestEnv();
   const meetingId = await setupMeetingAndRecordings(store, true, false);
   
-  (store.database as any).database.exec(`UPDATE artifacts SET relative_path = '../../../etc/passwd' WHERE meeting_id = '${meetingId}'`);
+  rawDb(store).exec(`UPDATE artifacts SET relative_path = '../../../etc/passwd' WHERE meeting_id = '${meetingId}'`);
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Unsafe/i);
   
@@ -559,7 +579,7 @@ test("Processing Orchestrator 26 - verifies artifact exists before processing", 
   const meetingId = await setupMeetingAndRecordings(store, true, false);
   
   const recording = store.database.listRecordings(meetingId)[0]!;
-  (store.database as any).database.exec(`UPDATE artifacts SET status = 'MISSING' WHERE file_id = '${recording.artifactId}'`);
+  rawDb(store).exec(`UPDATE artifacts SET status = 'MISSING' WHERE file_id = '${recording.artifactId}'`);
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording artifact missing/);
   
@@ -572,7 +592,7 @@ test("Processing Orchestrator 28 - missing text artifact fails transcript reuse"
   
   await orchestrator.processCompletedMeeting(meetingId);
   const t = store.database.listTranscripts(meetingId)[0]!;
-  (store.database as any).database.exec(`UPDATE artifacts SET status = 'MISSING' WHERE file_id = '${t.textArtifactId}'`);
+  rawDb(store).exec(`UPDATE artifacts SET status = 'MISSING' WHERE file_id = '${t.textArtifactId}'`);
   
   await orchestrator.processCompletedMeeting(meetingId);
   const newT = store.database.listTranscripts(meetingId)[0]!;
@@ -589,7 +609,7 @@ test("Processing Orchestrator 30 - analysis artifact SHA missing fails reuse", a
   const a = store.database.listAnalysis(meetingId)[0]!;
   
   const absPath = store.resolveArtifactAbsolutePath(store.database.getArtifact(a.artifactId)!.relativePath);
-  await require("node:fs/promises").writeFile(absPath, Buffer.from("bad data"));
+  await writeFile(absPath, Buffer.from("bad data"));
   
   // Actually update both the expected SHA *and* force inspect to run by invalidating the database record
   // Or simply delete the row from DB completely

@@ -950,7 +950,7 @@ export class LocalDatabase {
 
   public updateProcessingJob(jobId: string, updates: Partial<ProcessingJobRecord>): void {
     const sets: string[] = [];
-    const params: Record<string, any> = { $jobId: jobId };
+    const params: Record<string, SqlValue> = { $jobId: jobId };
     if (updates.state !== undefined) {
       sets.push("state = $state");
       params.$state = updates.state;
