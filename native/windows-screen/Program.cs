@@ -9,6 +9,7 @@ using System.Text.Json;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
+using Windows.Foundation.Metadata;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
@@ -38,7 +39,7 @@ catch (CaptureException ex)
 }
 catch (Exception ex)
 {
-    return Fail("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", ex.Message, true, 1);
+    return Fail("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", Describe(ex), true, 1);
 }
 
 static int WriteCapabilities()
@@ -184,60 +185,129 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
     var width = Math.Max(1, rect.Right - rect.Left);
     var height = Math.Max(1, rect.Bottom - rect.Top);
 
-    D3D11.D3D11CreateDevice(
-        null,
-        DriverType.Hardware,
-        DeviceCreationFlags.BgraSupport,
-        new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
-        out var d3dDevice).CheckError();
-    if (d3dDevice is null)
+    // Pre-flight Windows Graphics Capture availability. When an OS API is missing, CsWinRT's
+    // activation-factory lookup fails a QueryInterface and surfaces E_NOINTERFACE as an
+    // InvalidCastException whose message is only "Specified cast is not valid." Failing fast
+    // here with the actual reason keeps WGC verification errors actionable.
+    if (!ApiInformation.IsTypePresent("Windows.Graphics.Capture.GraphicsCaptureItem"))
     {
-        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for Windows Graphics Capture.", false);
+        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Windows Graphics Capture (GraphicsCaptureItem) is not available on this Windows build; window capture requires Windows 10 version 1803 (build 17134) or later.", false);
+    }
+    if (!ApiInformation.IsTypePresent("Windows.Graphics.Capture.Direct3D11CaptureFramePool")
+        || !ApiInformation.IsMethodPresent("Windows.Graphics.Capture.Direct3D11CaptureFramePool", "CreateFreeThreaded", 4))
+    {
+        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D11CaptureFramePool.CreateFreeThreaded is not available on this Windows build; window capture requires Windows 10 version 1809 (build 17763) or later.", false);
+    }
+    if (!ApiInformation.IsMethodPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "StartCapture", 0))
+    {
+        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "GraphicsCaptureSession.StartCapture is not available on this Windows build.", false);
+    }
+
+    ID3D11Device d3dDevice;
+    try
+    {
+        D3D11.D3D11CreateDevice(
+            null,
+            DriverType.Hardware,
+            DeviceCreationFlags.BgraSupport,
+            new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
+            out d3dDevice).CheckError();
+        if (d3dDevice is null)
+        {
+            throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for Windows Graphics Capture.", false);
+        }
+    }
+    catch (CaptureException)
+    {
+        throw;
+    }
+    catch (Exception ex)
+    {
+        throw new CaptureException(
+            "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+            $"Windows Graphics Capture could not initialise Direct3D 11 for window \"{title}\" ({WindowId(hwnd)}) [stage:D3D11CreateDevice] {Describe(ex)}",
+            false);
     }
     using (d3dDevice)
     {
-        var winrtDevice = CreateWinRtDevice(d3dDevice);
-        var item = CreateCaptureItemForWindow(hwnd);
-        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-            winrtDevice,
-            DirectXPixelFormat.B8G8R8A8UIntNormalized,
-            2,
-            item.Size);
-        using var session = pool.CreateCaptureSession(item);
-        session.IsCursorCaptureEnabled = true;
+        IDirect3DDevice winrtDevice;
+        try
+        {
+            winrtDevice = CreateWinRtDevice(d3dDevice);
+        }
+        catch (CaptureException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new CaptureException(
+                "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+                $"Windows Graphics Capture could not create the WinRT Direct3D device for window \"{title}\" ({WindowId(hwnd)}) [stage:CreateWinRtDevice] {Describe(ex)}",
+                false);
+        }
+        GraphicsCaptureItem item;
+        try
+        {
+            item = CreateCaptureItemForWindow(hwnd);
+        }
+        catch (CaptureException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new CaptureException(
+                "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+                $"Windows Graphics Capture could not create the capture item for window \"{title}\" ({WindowId(hwnd)}) [stage:item-interop] {Describe(ex)}",
+                false);
+        }
+        using var pool = CreateFramePool(winrtDevice, item, title, hwnd);
+        using var session = CreateCaptureSession(pool, item, title, hwnd);
         var latest = new ConcurrentQueue<byte[]>();
         var closed = false;
-        item.Closed += (_, _) => closed = true;
-        // The handler's second parameter is named `args` (not `_`): a lambda parameter named `_`
-        // is an ordinary variable in scope (typed object here for TypedEventHandler<..., object>),
-        // so an `out _` argument in the body would pass that object variable to
-        // ConcurrentQueue<byte[]>.TryDequeue(out byte[]) instead of being a discard -> CS1503.
-        // With no `_` in scope, the `out _` below is a genuine discard that drops the oldest JPEG.
-        pool.FrameArrived += (sender, args) =>
+        try
         {
-            using var frame = sender.TryGetNextFrame();
-            if (frame is null)
+            item.Closed += (_, _) => closed = true;
+            // The handler's second parameter is named `args` (not `_`): a lambda parameter named `_`
+            // is an ordinary variable in scope (typed object here for TypedEventHandler<..., object>),
+            // so an `out _` argument in the body would pass that object variable to
+            // ConcurrentQueue<byte[]>.TryDequeue(out byte[]) instead of being a discard -> CS1503.
+            // With no `_` in scope, the `out _` below is a genuine discard that drops the oldest JPEG.
+            pool.FrameArrived += (sender, args) =>
             {
-                return;
-            }
-            try
-            {
-                var bytes = EncodeSoftwareBitmap(frame);
-                if (bytes.Length > 0)
+                using var frame = sender.TryGetNextFrame();
+                if (frame is null)
                 {
-                    latest.Enqueue(bytes);
-                    while (latest.Count > 2)
+                    return;
+                }
+                try
+                {
+                    var bytes = EncodeSoftwareBitmap(frame);
+                    if (bytes.Length > 0)
                     {
-                        latest.TryDequeue(out _);
+                        latest.Enqueue(bytes);
+                        while (latest.Count > 2)
+                        {
+                            latest.TryDequeue(out _);
+                        }
                     }
                 }
-            }
-            catch
-            {
-                // The next loop iteration reports stream failure if no frames arrive.
-            }
-        };
-        session.StartCapture();
+                catch
+                {
+                    // The next loop iteration reports stream failure if no frames arrive.
+                }
+            };
+            session.IsCursorCaptureEnabled = true;
+            session.StartCapture();
+        }
+        catch (Exception ex)
+        {
+            throw new CaptureException(
+                "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+                $"Windows Graphics Capture could not start capturing window \"{title}\" ({WindowId(hwnd)}) [stage:start-capture] {Describe(ex)}",
+                false);
+        }
         return RunFrameLoop(
             "WINDOW",
             WindowId(hwnd),
@@ -261,6 +331,40 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
                 }
                 return latest.TryDequeue(out var fallback) ? fallback : Array.Empty<byte>();
             });
+    }
+}
+
+static Direct3D11CaptureFramePool CreateFramePool(IDirect3DDevice winrtDevice, GraphicsCaptureItem item, string title, IntPtr hwnd)
+{
+    try
+    {
+        return Direct3D11CaptureFramePool.CreateFreeThreaded(
+            winrtDevice,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            2,
+            item.Size);
+    }
+    catch (Exception ex)
+    {
+        throw new CaptureException(
+            "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+            $"Windows Graphics Capture could not create the frame pool for window \"{title}\" ({WindowId(hwnd)}) [stage:frame-pool] {Describe(ex)}",
+            false);
+    }
+}
+
+static GraphicsCaptureSession CreateCaptureSession(Direct3D11CaptureFramePool pool, GraphicsCaptureItem item, string title, IntPtr hwnd)
+{
+    try
+    {
+        return pool.CreateCaptureSession(item);
+    }
+    catch (Exception ex)
+    {
+        throw new CaptureException(
+            "NATIVE_WINDOWS_API_INITIALIZATION_FAILED",
+            $"Windows Graphics Capture could not create the capture session for window \"{title}\" ({WindowId(hwnd)}) [stage:capture-session] {Describe(ex)}",
+            false);
     }
 }
 
@@ -473,7 +577,12 @@ static IDirect3DDevice CreateWinRtDevice(ID3D11Device device)
     }
     try
     {
-        return MarshalInspectable<IDirect3DDevice>.FromAbi(inspectable);
+        // Canonical C#/WinRT RCW creation for an interface pointer returned by the OS interop
+        // export CreateDirect3D11DeviceFromDXGIDevice: MarshalInterface<T>.FromAbi is the
+        // documented .NET 6+ replacement for the obsolete
+        // `Marshal.GetObjectForIUnknown(pUnknown) as IDirect3DDevice` pattern (CsWinRT interop
+        // docs). The interop reference is released only after the RCW owns the object.
+        return MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
     }
     finally
     {
@@ -488,11 +597,13 @@ static GraphicsCaptureItem CreateCaptureItemForWindow(IntPtr hwnd)
     // created item pointer as the method's result; the pointer is then wrapped with the projected
     // class's FromAbi and the interop reference is released.
     var interop = GraphicsCaptureItem.As<IGraphicsCaptureItemInterop>();
-    var guid = typeof(GraphicsCaptureItem).GUID;
+    // Canonical IID of Windows.Graphics.Capture.IGraphicsCaptureItem, used verbatim by the
+    // maintained C# WGC implementations (Starward, WindowsAppSDK interop samples).
+    var itemIid = new Guid("79C3F95B-31F7-4EC2-A464-632EF5D30760");
     IntPtr itemPointer;
     try
     {
-        itemPointer = interop.CreateForWindow(hwnd, ref guid);
+        itemPointer = interop.CreateForWindow(hwnd, ref itemIid);
     }
     catch (COMException ex)
     {
@@ -667,6 +778,40 @@ static int Fail(string code, string message, bool retryable, int exitCode)
     }));
     Console.Error.WriteLine($"{code}: {message}");
     return exitCode;
+}
+
+// Enriches an unexpected .NET exception with its type, HRESULT, inner exceptions, the first stack
+// frames and the OS build, so a failing stage can be identified from the error record alone when
+// CsWinRT reports bare failures (for example E_NOINTERFACE mapped to InvalidCastException with the
+// generic message "Specified cast is not valid.").
+static string Describe(Exception ex)
+{
+    var builder = new StringBuilder();
+    for (var current = ex; current is not null; current = current.InnerException)
+    {
+        if (builder.Length > 0)
+        {
+            builder.Append(" <-- ");
+        }
+        builder.Append(current.GetType().FullName);
+        builder.Append(" 0x");
+        builder.Append(current.HResult.ToString("X8"));
+        builder.Append(": ");
+        builder.Append(current.Message);
+        if (!string.IsNullOrWhiteSpace(current.StackTrace))
+        {
+            var frames = current.StackTrace.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var frame in frames.Take(2))
+            {
+                builder.Append(" | ");
+                builder.Append(frame);
+            }
+        }
+    }
+    builder.Append(" [os:");
+    builder.Append(Environment.OSVersion.Version);
+    builder.Append(']');
+    return builder.ToString();
 }
 
 internal sealed class CaptureException : Exception

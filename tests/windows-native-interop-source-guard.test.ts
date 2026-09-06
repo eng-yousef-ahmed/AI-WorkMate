@@ -35,3 +35,49 @@ test("WGC interop declaration uses ABI IntPtr signatures, never projected types 
   assert.ok(source.includes("GraphicsCaptureItem.FromAbi(itemPointer)"), "The returned pointer must be wrapped with GraphicsCaptureItem.FromAbi");
   assert.ok(source.includes("catch (COMException ex)"), "Interop failures must be mapped through COMException");
 });
+
+test("WGC device/API handling uses canonical CsWinRT conversions, API guards, and stage-tagged failures", async () => {
+  const source = await readFile(PROGRAM_CS_PATH, "utf8");
+  assert.ok(
+    source.includes("return MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);"),
+    "The WinRT D3D device must be created with the canonical CsWinRT MarshalInterface<T>.FromAbi conversion",
+  );
+  assert.ok(
+    !source.includes("MarshalInspectable<IDirect3DDevice>"),
+    "The WinRT D3D device must not be created through MarshalInspectable<IDirect3DDevice> (MarshalInterface<T>.FromAbi is the documented interop form)",
+  );
+  assert.ok(
+    source.includes('new Guid("79C3F95B-31F7-4EC2-A464-632EF5D30760")'),
+    "CreateForWindow must be called with the canonical IGraphicsCaptureItem IID constant",
+  );
+  assert.ok(
+    !source.includes("typeof(GraphicsCaptureItem).GUID"),
+    "The item IID must not be derived from typeof(GraphicsCaptureItem).GUID",
+  );
+  assert.ok(
+    source.includes('ApiInformation.IsTypePresent("Windows.Graphics.Capture.GraphicsCaptureItem")'),
+    "WGC availability must be pre-flighted with ApiInformation.IsTypePresent",
+  );
+  assert.ok(
+    source.includes('ApiInformation.IsMethodPresent("Windows.Graphics.Capture.Direct3D11CaptureFramePool", "CreateFreeThreaded", 4)'),
+    "CreateFreeThreaded availability must be pre-flighted (E_NOINTERFACE from a missing API surfaces as InvalidCastException)",
+  );
+  assert.ok(
+    source.includes('ApiInformation.IsMethodPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "StartCapture", 0)'),
+    "StartCapture availability must be pre-flighted",
+  );
+  assert.ok(
+    source.includes("static string Describe(Exception ex)"),
+    "Unexpected exceptions must be enriched with type/HRESULT/stack/OS so the failing stage is identifiable",
+  );
+  for (const stage of [
+    "[stage:D3D11CreateDevice]",
+    "[stage:CreateWinRtDevice]",
+    "[stage:item-interop]",
+    "[stage:frame-pool]",
+    "[stage:capture-session]",
+    "[stage:start-capture]",
+  ]) {
+    assert.ok(source.includes(stage), `WGC init failures must be tagged with ${stage}`);
+  }
+});
