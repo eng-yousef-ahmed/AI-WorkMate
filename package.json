@@ -24,7 +24,8 @@
     "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js",
     "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js",
     "install:local-llm-model": "npm run build && node dist/scripts/install-local-llm-model.js",
-    "verify:windows-local-analysis": "npm run build && node dist/scripts/verify-windows-local-analysis.js"
+    "verify:windows-local-analysis": "npm run build && node dist/scripts/verify-windows-local-analysis.js",
+    "verify:meeting-processing": "npm run build && node dist/scripts/verify-meeting-processing.js"
   },
   "repository": {
     "type": "git",

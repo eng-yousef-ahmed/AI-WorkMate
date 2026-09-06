@@ -1,5 +1,5 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 6;
+export const DATABASE_SCHEMA_VERSION = 7;
 
 export type CalendarProvider = "MICROSOFT_GRAPH";
 

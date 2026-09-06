@@ -39,6 +39,8 @@ export interface TranscriptRecord {
   createdAt: string;
   recordingId?: string;
   engineId?: string;
+  sourceCapability?: string;
+  sourceSha256?: string;
 }
 
 export interface AnalysisRecord {
@@ -47,6 +49,21 @@ export interface AnalysisRecord {
   kind: string;
   artifactId: string;
   createdAt: string;
+  sourceTranscriptIds?: string;
+  sourceTranscriptShas?: string;
+}
+
+export interface ProcessingJobRecord {
+  jobId: string;
+  meetingId: string;
+  jobType: string;
+  state: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "INCOMPLETE";
+  engineId?: string;
+  modelId?: string;
+  sourceRecordingId?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ParticipantRecord {
@@ -239,7 +256,9 @@ CREATE TABLE IF NOT EXISTS transcripts (
   language TEXT NOT NULL,
   created_at TEXT NOT NULL,
   recording_id TEXT REFERENCES recordings(recording_id) ON DELETE SET NULL,
-  engine_id TEXT
+  engine_id TEXT,
+  source_capability TEXT,
+  source_sha256 TEXT
 );
 CREATE INDEX IF NOT EXISTS transcripts_meeting_index ON transcripts(meeting_id);
 CREATE INDEX IF NOT EXISTS transcripts_recording_index ON transcripts(recording_id);
@@ -250,9 +269,25 @@ CREATE TABLE IF NOT EXISTS analysis_records (
   kind TEXT NOT NULL,
   artifact_id TEXT NOT NULL REFERENCES artifacts(file_id) ON DELETE RESTRICT,
   created_at TEXT NOT NULL,
+  source_transcript_ids TEXT,
+  source_transcript_shas TEXT,
   UNIQUE(meeting_id, kind)
 );
 CREATE INDEX IF NOT EXISTS analysis_meeting_index ON analysis_records(meeting_id);
+
+CREATE TABLE IF NOT EXISTS processing_jobs (
+  job_id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id) ON DELETE CASCADE,
+  job_type TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'INCOMPLETE')),
+  engine_id TEXT,
+  model_id TEXT,
+  source_recording_id TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS processing_jobs_meeting_index ON processing_jobs(meeting_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   project_id TEXT PRIMARY KEY,
@@ -798,10 +833,12 @@ export class LocalDatabase {
       .prepare(
         `INSERT INTO transcripts (
           transcript_id, meeting_id, json_artifact_id, text_artifact_id,
-          vtt_artifact_id, srt_artifact_id, language, created_at, recording_id, engine_id
+          vtt_artifact_id, srt_artifact_id, language, created_at, recording_id, engine_id,
+          source_capability, source_sha256
         ) VALUES (
           $transcriptId, $meetingId, $jsonArtifactId, $textArtifactId,
-          $vttArtifactId, $srtArtifactId, $language, $createdAt, $recordingId, $engineId
+          $vttArtifactId, $srtArtifactId, $language, $createdAt, $recordingId, $engineId,
+          $sourceCapability, $sourceSha256
         )`,
       )
       .run({
@@ -815,6 +852,8 @@ export class LocalDatabase {
         $createdAt: record.createdAt,
         $recordingId: record.recordingId ?? null,
         $engineId: record.engineId ?? null,
+        $sourceCapability: record.sourceCapability ?? null,
+        $sourceSha256: record.sourceSha256 ?? null,
       });
   }
 
@@ -836,6 +875,8 @@ export class LocalDatabase {
       addOptional(record, "srtArtifactId", optionalString(value.srt_artifact_id));
       addOptional(record, "recordingId", optionalString(value.recording_id));
       addOptional(record, "engineId", optionalString(value.engine_id));
+      addOptional(record, "sourceCapability", optionalString(value.source_capability));
+      addOptional(record, "sourceSha256", optionalString(value.source_sha256));
       return record;
     });
   }
@@ -843,9 +884,16 @@ export class LocalDatabase {
   public registerAnalysis(record: AnalysisRecord): void {
     this.database
       .prepare(
-        `INSERT INTO analysis_records (analysis_id, meeting_id, kind, artifact_id, created_at)
-         VALUES ($analysisId, $meetingId, $kind, $artifactId, $createdAt)
-         ON CONFLICT(meeting_id, kind) DO UPDATE SET artifact_id = excluded.artifact_id, created_at = excluded.created_at`,
+        `INSERT INTO analysis_records (
+          analysis_id, meeting_id, kind, artifact_id, created_at, source_transcript_ids, source_transcript_shas
+        ) VALUES (
+          $analysisId, $meetingId, $kind, $artifactId, $createdAt, $sourceTranscriptIds, $sourceTranscriptShas
+        )
+         ON CONFLICT(meeting_id, kind) DO UPDATE SET
+          artifact_id = excluded.artifact_id,
+          created_at = excluded.created_at,
+          source_transcript_ids = excluded.source_transcript_ids,
+          source_transcript_shas = excluded.source_transcript_shas`,
       )
       .run({
         $analysisId: record.analysisId,
@@ -853,6 +901,8 @@ export class LocalDatabase {
         $kind: record.kind,
         $artifactId: record.artifactId,
         $createdAt: record.createdAt,
+        $sourceTranscriptIds: record.sourceTranscriptIds ?? null,
+        $sourceTranscriptShas: record.sourceTranscriptShas ?? null,
       });
   }
 
@@ -862,14 +912,102 @@ export class LocalDatabase {
       .all({ $meetingId: meetingId });
     return rows.map((row) => {
       const value = row as SqlRow;
-      return {
+      const record: AnalysisRecord = {
         analysisId: stringValue(value.analysis_id),
         meetingId: stringValue(value.meeting_id),
         kind: stringValue(value.kind),
         artifactId: stringValue(value.artifact_id),
         createdAt: stringValue(value.created_at),
       };
+      addOptional(record, "sourceTranscriptIds", optionalString(value.source_transcript_ids));
+      addOptional(record, "sourceTranscriptShas", optionalString(value.source_transcript_shas));
+      return record;
     });
+  }
+
+  public registerProcessingJob(job: ProcessingJobRecord): void {
+    this.database
+      .prepare(
+        `INSERT INTO processing_jobs (
+          job_id, meeting_id, job_type, state, engine_id, model_id, source_recording_id, error, created_at, updated_at
+        ) VALUES (
+          $jobId, $meetingId, $jobType, $state, $engineId, $modelId, $sourceRecordingId, $error, $createdAt, $updatedAt
+        )`,
+      )
+      .run({
+        $jobId: job.jobId,
+        $meetingId: job.meetingId,
+        $jobType: job.jobType,
+        $state: job.state,
+        $engineId: job.engineId ?? null,
+        $modelId: job.modelId ?? null,
+        $sourceRecordingId: job.sourceRecordingId ?? null,
+        $error: job.error ?? null,
+        $createdAt: job.createdAt,
+        $updatedAt: job.updatedAt,
+      });
+  }
+
+  public updateProcessingJob(jobId: string, updates: Partial<ProcessingJobRecord>): void {
+    const sets: string[] = [];
+    const params: Record<string, any> = { $jobId: jobId };
+    if (updates.state !== undefined) {
+      sets.push("state = $state");
+      params.$state = updates.state;
+    }
+    if (updates.error !== undefined) {
+      sets.push("error = $error");
+      params.$error = updates.error;
+    }
+    if (updates.updatedAt !== undefined) {
+      sets.push("updated_at = $updatedAt");
+      params.$updatedAt = updates.updatedAt;
+    }
+    if (sets.length === 0) return;
+    this.database.prepare(`UPDATE processing_jobs SET ${sets.join(", ")} WHERE job_id = $jobId`).run(params);
+  }
+
+  public getProcessingJob(jobId: string): ProcessingJobRecord | undefined {
+    const row = this.database.prepare("SELECT * FROM processing_jobs WHERE job_id = $jobId").get({ $jobId: jobId }) as SqlRow | undefined;
+    if (row === undefined) return undefined;
+    const record: ProcessingJobRecord = {
+      jobId: stringValue(row.job_id),
+      meetingId: stringValue(row.meeting_id),
+      jobType: stringValue(row.job_type),
+      state: stringValue(row.state) as "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "INCOMPLETE",
+      createdAt: stringValue(row.created_at),
+      updatedAt: stringValue(row.updated_at),
+    };
+    addOptional(record, "engineId", optionalString(row.engine_id));
+    addOptional(record, "modelId", optionalString(row.model_id));
+    addOptional(record, "sourceRecordingId", optionalString(row.source_recording_id));
+    addOptional(record, "error", optionalString(row.error));
+    return record;
+  }
+
+  public listProcessingJobs(meetingId: string): ProcessingJobRecord[] {
+    const rows = this.database.prepare("SELECT * FROM processing_jobs WHERE meeting_id = $meetingId ORDER BY created_at").all({ $meetingId: meetingId }) as SqlRow[];
+    return rows.map((row) => {
+      const record: ProcessingJobRecord = {
+        jobId: stringValue(row.job_id),
+        meetingId: stringValue(row.meeting_id),
+        jobType: stringValue(row.job_type),
+        state: stringValue(row.state) as "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "INCOMPLETE",
+        createdAt: stringValue(row.created_at),
+        updatedAt: stringValue(row.updated_at),
+      };
+      addOptional(record, "engineId", optionalString(row.engine_id));
+      addOptional(record, "modelId", optionalString(row.model_id));
+      addOptional(record, "sourceRecordingId", optionalString(row.source_recording_id));
+      addOptional(record, "error", optionalString(row.error));
+      return record;
+    });
+  }
+
+  public invalidateStaleAnalysis(meetingId: string): void {
+    // Phase 9: Delete old analysis records that are stale.
+    // They will be re-analyzed if transcripts change.
+    this.database.prepare("DELETE FROM analysis_records WHERE meeting_id = $meetingId").run({ $meetingId: meetingId });
   }
 
   public upsertProject(project: ProjectRecord): void {

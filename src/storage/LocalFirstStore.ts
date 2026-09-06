@@ -3,6 +3,7 @@ import type {
   AnalysisArtifacts,
   AnalysisDocument,
   Artifact,
+  ArtifactType,
   CalendarEventAssociation,
   MeetingPlatform,
   ArtifactOperation,
@@ -77,6 +78,8 @@ export interface TranscriptSaveOptions {
   includeSrt?: boolean;
   recordingId?: string;
   engineId?: string;
+  sourceCapability?: string;
+  sourceSha256?: string;
 }
 
 export interface DeleteMeetingOptions {
@@ -902,24 +905,32 @@ export class LocalFirstStore {
     validateTranscript(document);
     const json = `${JSON.stringify(document, null, 2)}\n`;
     const text = transcriptToText(document);
+
+    let discriminator: string | undefined;
+    if (options.sourceCapability === "MICROPHONE_AUDIO") discriminator = "mic";
+    else if (options.sourceCapability === "SYSTEM_AUDIO") discriminator = "sys";
+
+    const getRelativePath = (type: ArtifactType, ext: string) =>
+      this.storage.buildArtifactRelativePath(meeting, type, ext, discriminator);
+
     const saved: Partial<TranscriptArtifacts> = {};
     saved.json = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "TRANSCRIPT_JSON", mimeType: "application/json", extension: "json", contents: json },
+      { meeting, relativePath: getRelativePath("TRANSCRIPT_JSON", "json"), artifactType: "TRANSCRIPT_JSON", mimeType: "application/json", extension: "json", contents: json },
       true,
     );
     saved.text = await this.saveAndIndexArtifact(
-      { meeting, artifactType: "TRANSCRIPT_TEXT", mimeType: "text/plain", extension: "txt", contents: text },
+      { meeting, relativePath: getRelativePath("TRANSCRIPT_TEXT", "txt"), artifactType: "TRANSCRIPT_TEXT", mimeType: "text/plain", extension: "txt", contents: text },
       true,
     );
     if (options.includeVtt === true) {
       saved.vtt = await this.saveAndIndexArtifact(
-        { meeting, artifactType: "TRANSCRIPT_VTT", mimeType: "text/vtt", extension: "vtt", contents: transcriptToVtt(document) },
+        { meeting, relativePath: getRelativePath("TRANSCRIPT_VTT", "vtt"), artifactType: "TRANSCRIPT_VTT", mimeType: "text/vtt", extension: "vtt", contents: transcriptToVtt(document) },
         true,
       );
     }
     if (options.includeSrt === true) {
       saved.srt = await this.saveAndIndexArtifact(
-        { meeting, artifactType: "TRANSCRIPT_SRT", mimeType: "application/x-subrip", extension: "srt", contents: transcriptToSrt(document) },
+        { meeting, relativePath: getRelativePath("TRANSCRIPT_SRT", "srt"), artifactType: "TRANSCRIPT_SRT", mimeType: "application/x-subrip", extension: "srt", contents: transcriptToSrt(document) },
         true,
       );
     }
@@ -936,12 +947,14 @@ export class LocalFirstStore {
     addOptional(record, "srtArtifactId", saved.srt?.fileId);
     addOptional(record, "recordingId", options.recordingId ?? document.recordingId);
     addOptional(record, "engineId", options.engineId ?? document.engine?.id);
+    addOptional(record, "sourceCapability", options.sourceCapability);
+    addOptional(record, "sourceSha256", options.sourceSha256);
     this.database.registerTranscript(record);
     this.database.appendAudit(this.audit("TRANSCRIPT_CREATED", meeting.meetingId, { transcriptId: record.transcriptId }));
     return saved as TranscriptArtifacts;
   }
 
-  public async saveAnalysis(document: AnalysisDocument): Promise<AnalysisArtifacts> {
+  public async saveAnalysis(document: AnalysisDocument, options?: { sourceTranscriptIds?: string, sourceTranscriptShas?: string }): Promise<AnalysisArtifacts> {
     const meeting = this.requireMeeting(document.meetingId);
     validateAnalysis(document);
     const persistable = assignPersistentAnalysisIdentities(document);
@@ -986,7 +999,15 @@ export class LocalFirstStore {
         ["FOLLOWUPS", savedFollowups],
       ] as const;
       for (const [kind, artifact] of records) {
-        this.database.registerAnalysis({ analysisId: randomUUID(), meetingId: meeting.meetingId, kind, artifactId: artifact.fileId, createdAt });
+        this.database.registerAnalysis({
+          analysisId: randomUUID(),
+          meetingId: meeting.meetingId,
+          kind,
+          artifactId: artifact.fileId,
+          createdAt,
+          sourceTranscriptIds: options?.sourceTranscriptIds,
+          sourceTranscriptShas: options?.sourceTranscriptShas,
+        });
       }
       for (const decision of persistable.decisions) {
         this.database.registerDecision({ ...decision, meetingId: meeting.meetingId, createdAt });

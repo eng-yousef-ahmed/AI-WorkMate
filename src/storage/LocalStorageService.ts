@@ -261,13 +261,13 @@ export class LocalStorageService {
       case "AUDIO":
         return `${folder}/Audio/audio_${id}.${normalizedExtension}`;
       case "TRANSCRIPT_JSON":
-        return `${folder}/Transcript/transcript_${id}.json`;
+        return `${folder}/Transcript/transcript_${discriminatedId}.json`;
       case "TRANSCRIPT_TEXT":
-        return `${folder}/Transcript/transcript_${id}.txt`;
+        return `${folder}/Transcript/transcript_${discriminatedId}.txt`;
       case "TRANSCRIPT_VTT":
-        return `${folder}/Transcript/transcript_${id}.vtt`;
+        return `${folder}/Transcript/transcript_${discriminatedId}.vtt`;
       case "TRANSCRIPT_SRT":
-        return `${folder}/Transcript/transcript_${id}.srt`;
+        return `${folder}/Transcript/transcript_${discriminatedId}.srt`;
       case "ANALYSIS_SUMMARY_JSON":
         return `${folder}/Analysis/summary.json`;
       case "ANALYSIS_SUMMARY_MARKDOWN":

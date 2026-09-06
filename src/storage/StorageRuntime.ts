@@ -50,6 +50,8 @@ export interface ChangeDataRootResult {
   result?: MigrationResult;
 }
 
+import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
+
 export interface StorageRuntimeIntegrations {
   microsoftCalendarProvider?: CalendarEventProvider;
   nativeCaptureAdapter?: NativeCaptureAdapter;
@@ -64,6 +66,8 @@ export class StorageRuntime {
   public nativeCapture: NativeCaptureCoordinator | undefined;
   /** Multi-source meeting capture orchestrator (Phase 8); created with the store. */
   public meetingCapture: MeetingCaptureOrchestrator | undefined;
+  /** Multi-source transcription and analysis orchestrator (Phase 9); created with the store. */
+  public meetingProcessing: MeetingTranscriptionOrchestrator | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -274,6 +278,13 @@ export class StorageRuntime {
     });
   }
 
+  public async processCompletedMeeting(meetingId: string, options: { userApprovedForThisRequest?: boolean } = {}): Promise<void> {
+    if (this.meetingProcessing === undefined || this.store === undefined) {
+      throw new StorageError("Choose a local data location before using meeting processing.");
+    }
+    return this.meetingProcessing.processCompletedMeeting(meetingId, options);
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -422,6 +433,12 @@ export class StorageRuntime {
       store,
       provider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
     });
+    this.meetingProcessing = new MeetingTranscriptionOrchestrator({
+      store,
+      transcriptionEngine: this.integrations.transcriptionEngine ?? new WindowsLocalWhisperEngine(),
+      analysisProvider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
+      clock: this.clock,
+    });
   }
 
   private async detachStore(reason: string): Promise<void> {
@@ -430,6 +447,7 @@ export class StorageRuntime {
     // RECORDING); the coordinator then covers any remaining single captures.
     await this.meetingCapture?.abortAllActive(reason);
     this.meetingCapture = undefined;
+    this.meetingProcessing = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;
