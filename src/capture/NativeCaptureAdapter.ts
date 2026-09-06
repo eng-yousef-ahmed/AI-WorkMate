@@ -128,6 +128,12 @@ export interface NativeMeetingCaptureStartRequest {
     criticalFreeBytes: number;
     intervalMs?: number;
   };
+  /**
+   * Opt-in multi-source capture-flow identifier (see CaptureStartRequest.flowId).
+   * Flow-managed sessions share one meeting with other sources while each keeps
+   * an independent native session and local capture pipeline.
+   */
+  flowId?: string;
 }
 
 export interface NativeMeetingCaptureStopRequest {

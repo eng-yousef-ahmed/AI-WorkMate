@@ -20,6 +20,7 @@
     "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js",
     "verify:windows-native-screen-capture": "npm run build && node dist/scripts/verify-windows-native-screen-capture.js",
     "verify:windows-native-window-capture": "npm run build && node dist/scripts/verify-windows-native-window-capture.js",
+    "verify:meeting-capture": "npm run build && node dist/scripts/verify-meeting-capture.js",
     "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js",
     "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js",
     "install:local-llm-model": "npm run build && node dist/scripts/install-local-llm-model.js",

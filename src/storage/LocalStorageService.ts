@@ -240,19 +240,24 @@ export class LocalStorageService {
     meeting: Pick<Meeting, "meetingId" | "folderName" | "meetingDate">,
     artifactType: ArtifactType,
     extension: string,
+    discriminator?: string,
   ): string {
     assertUuid(meeting.meetingId);
     const normalizedExtension = normalizeExtension(extension);
     const folder = this.meetingFolderRelativePath(meeting);
     const id = meeting.meetingId;
+    if (discriminator !== undefined) {
+      assertArtifactDiscriminator(discriminator);
+    }
+    const discriminatedId = discriminator === undefined ? id : `${id}_${discriminator}`;
 
     switch (artifactType) {
       case "MEETING_MANIFEST":
         return `${folder}/Meeting.json`;
       case "RECORDING_ORIGINAL":
-        return `${folder}/Recording/Original/meeting_${id}.${normalizedExtension}`;
+        return `${folder}/Recording/Original/meeting_${discriminatedId}.${normalizedExtension}`;
       case "RECORDING_NORMALIZED":
-        return `${folder}/Recording/Normalized/meeting_${id}.${normalizedExtension}`;
+        return `${folder}/Recording/Normalized/meeting_${discriminatedId}.${normalizedExtension}`;
       case "AUDIO":
         return `${folder}/Audio/audio_${id}.${normalizedExtension}`;
       case "TRANSCRIPT_JSON":
@@ -981,6 +986,12 @@ export function normalizeExtension(extension: string): string {
     throw new DataRootValidationError(`Invalid artifact extension: ${extension}`);
   }
   return normalized;
+}
+
+export function assertArtifactDiscriminator(value: string): void {
+  if (!/^[a-z0-9]{1,16}$/.test(value)) {
+    throw new DataRootValidationError("Artifact path discriminators must be safe short identifiers.");
+  }
 }
 
 export function assertUuid(value: string): void {

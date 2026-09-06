@@ -32,6 +32,8 @@ export * from "./integrations/microsoft/MicrosoftGraphClient";
 export * from "./integrations/microsoft/MicrosoftGraphCalendarProvider";
 export * from "./capture/CaptureEngine";
 export * from "./capture/LocalRecordingCaptureEngine";
+export * from "./capture/MeetingCaptureOrchestrator";
+export * from "./capture/MeetingCaptureVerification";
 export * from "./capture/NativeCaptureAdapter";
 export * from "./capture/NativeCaptureCoordinator";
 export * from "./capture/WindowsCaptureAdapter";

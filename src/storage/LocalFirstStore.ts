@@ -117,6 +117,13 @@ export interface RecordingCaptureStartInput {
   captureSource: string;
   startedAt?: string;
   recordingVariant?: RecordingVariant;
+  /**
+   * Flow-managed per-source capture (multi-source capture flow). The operation
+   * journal is fully maintained, but this source's begin/commit/fail does not
+   * drive the meeting status transition; the owning capture-flow coordinator
+   * drives meeting status once. Omit for today's single-capture semantics.
+   */
+  flowManaged?: boolean;
 }
 
 export interface RecordingCaptureOperation {
@@ -128,6 +135,7 @@ export interface RecordingCaptureOperation {
   captureSource: string;
   startedAt: string;
   recordingVariant: RecordingVariant;
+  flowManaged?: boolean;
 }
 
 export interface RecordingCaptureCommitInput extends RecordingCaptureOperation {
@@ -141,6 +149,7 @@ export interface RecordingCaptureFailureInput {
   operationId: string;
   reason: string;
   failed?: boolean;
+  flowManaged?: boolean;
 }
 
 /**
@@ -178,6 +187,7 @@ export class LocalFirstStore {
     this.database = new LocalDatabase(this.storage.databasePath, this.clock);
     this.database.setMetadata("storageVersion", String(STORAGE_VERSION));
     this.recoverInterruptedRecordings();
+    this.recoverInterruptedCaptureFlows();
     await this.recoverArtifactOperations();
     this.recoverInterruptedTranscriptions();
     this.recoverInterruptedAnalyses();
@@ -486,7 +496,11 @@ export class LocalFirstStore {
 
     const recordingVariant = input.recordingVariant ?? "ORIGINAL";
     const artifactType = recordingVariant === "ORIGINAL" ? "RECORDING_ORIGINAL" : "RECORDING_NORMALIZED";
-    const relativePath = this.storage.buildArtifactRelativePath(meeting, artifactType, input.extension);
+    // Multi-source capture flows give every source its own artifact path even
+    // when sources share a container extension (e.g. two aiwpcm audio sources
+    // in one meeting); single-capture flows keep the verified legacy path.
+    const flowDiscriminator = input.flowManaged === true ? randomUUID().slice(0, 8) : undefined;
+    const relativePath = this.storage.buildArtifactRelativePath(meeting, artifactType, input.extension, flowDiscriminator);
     const operation: ArtifactOperation = {
       operationId: randomUUID(),
       meetingId: meeting.meetingId,
@@ -498,12 +512,15 @@ export class LocalFirstStore {
     };
     const startedAt = input.startedAt ?? this.clock().toISOString();
     this.database.transaction(() => {
-      this.transitionMeetingForCaptureStart(meeting.meetingId);
+      if (input.flowManaged !== true) {
+        this.transitionMeetingForCaptureStart(meeting.meetingId);
+      }
       this.database.startArtifactOperation(operation);
       this.database.appendAudit(this.audit("CAPTURE_STARTED", meeting.meetingId, {
         operationId: operation.operationId,
         relativePath,
         captureSource: input.captureSource,
+        ...(input.flowManaged === true ? { flowManaged: true } : {}),
       }));
     });
     return {
@@ -515,6 +532,7 @@ export class LocalFirstStore {
       captureSource: input.captureSource,
       startedAt,
       recordingVariant,
+      ...(input.flowManaged === true ? { flowManaged: true } : {}),
     };
   }
 
@@ -554,7 +572,12 @@ export class LocalFirstStore {
       recordingVariant: input.recordingVariant,
     };
     this.database.transaction(() => {
-      this.database.updateMeetingStatus(meeting.meetingId, "FINALIZING");
+      if (input.flowManaged !== true) {
+        // Single-capture semantics: the first and only capture commit moves the
+        // meeting FINALIZING -> PROCESSING inside this transaction. Flow-managed
+        // sources leave the meeting status to the capture-flow coordinator.
+        this.database.updateMeetingStatus(meeting.meetingId, "FINALIZING");
+      }
       this.database.registerArtifact(artifact);
       this.database.registerRecording({
         recordingId: randomUUID(),
@@ -579,7 +602,9 @@ export class LocalFirstStore {
         size: artifact.size,
       });
       this.database.updateArtifactOperation(input.operationId, { state: "COMMITTED" });
-      this.database.updateMeetingStatus(meeting.meetingId, "PROCESSING");
+      if (input.flowManaged !== true) {
+        this.database.updateMeetingStatus(meeting.meetingId, "PROCESSING");
+      }
       this.database.appendAudit(this.audit("CAPTURE_COMMITTED", meeting.meetingId, {
         operationId: input.operationId,
         fileId: artifact.fileId,
@@ -603,12 +628,98 @@ export class LocalFirstStore {
         state: input.failed === true ? "FAILED" : "INCOMPLETE",
         error: input.reason,
       });
-      this.transitionCaptureFailure(input.meetingId, input.failed === true);
+      if (input.flowManaged !== true) {
+        this.transitionCaptureFailure(input.meetingId, input.failed === true);
+      }
       this.database.appendAudit(this.audit(input.failed === true ? "CAPTURE_FAILED" : "CAPTURE_INCOMPLETE", input.meetingId, {
         operationId: input.operationId,
         reason: input.reason,
+        ...(input.flowManaged === true ? { flowManaged: true } : {}),
       }));
     });
+  }
+
+  /**
+   * Multi-source capture-flow lifecycle (Phase 8). Per-source captures keep the
+   * ordinary artifact-operation journal; these methods own the meeting-level
+   * transitions for a whole flow so a meeting moves STARTING -> RECORDING ->
+   * STOPPING -> COMPLETED (storage vocabulary: PREPARING -> RECORDING ->
+   * FINALIZING -> COMPLETED) exactly once per flow, regardless of how many
+   * independent sources participate. Aborts/failures follow the existing
+   * INCOMPLETE/FAILED recovery semantics and never produce COMPLETED.
+   */
+  public startCaptureFlow(input: { meetingId: string; flowId?: string; requestedCapabilities?: readonly string[] }): Meeting {
+    const meeting = this.requireMeeting(input.meetingId);
+    const canStart =
+      meeting.status === "SCHEDULED" ||
+      meeting.status === "DETECTED" ||
+      meeting.status === "INCOMPLETE" ||
+      meeting.status === "FAILED" ||
+      (meeting.status === "PREPARING" && !this.hasOpenCaptureFlowAudit(meeting.meetingId));
+    if (!canStart) {
+      throw new StorageError(`Cannot start a capture flow while meeting ${input.meetingId} is ${meeting.status}.`);
+    }
+    this.transitionMeeting(meeting.meetingId, "PREPARING");
+    this.database.appendAudit(this.audit("CAPTURE_FLOW_STARTED", meeting.meetingId, {
+      ...(input.flowId === undefined ? {} : { flowId: input.flowId }),
+      ...(input.requestedCapabilities === undefined ? {} : { requestedCapabilities: [...input.requestedCapabilities] }),
+    }));
+    return this.requireMeeting(meeting.meetingId);
+  }
+
+  /** STARTING -> RECORDING for a capture flow; safe to call once sources are running. */
+  public markCaptureFlowRecording(meetingId: string): void {
+    const meeting = this.requireMeeting(meetingId);
+    if (meeting.status === "RECORDING") {
+      return;
+    }
+    if (meeting.status !== "PREPARING") {
+      throw new StorageError(`Cannot mark capture flow RECORDING while meeting ${meetingId} is ${meeting.status}.`);
+    }
+    this.transitionMeeting(meetingId, "RECORDING");
+    this.database.appendAudit(this.audit("CAPTURE_FLOW_RECORDING", meetingId));
+  }
+
+  /** RECORDING -> STOPPING for a capture flow; safe to call once per flow stop. */
+  public markCaptureFlowStopping(meetingId: string): void {
+    const meeting = this.requireMeeting(meetingId);
+    if (meeting.status === "FINALIZING") {
+      return;
+    }
+    if (meeting.status !== "RECORDING") {
+      throw new StorageError(`Cannot mark capture flow STOPPING while meeting ${meetingId} is ${meeting.status}.`);
+    }
+    this.transitionMeeting(meetingId, "FINALIZING");
+    this.database.appendAudit(this.audit("CAPTURE_FLOW_STOPPING", meetingId));
+  }
+
+  /** STOPPING -> COMPLETED for a capture flow; only valid after every required source committed. */
+  public completeCaptureFlow(meetingId: string, endedAt?: string): void {
+    const meeting = this.requireMeeting(meetingId);
+    if (meeting.status !== "FINALIZING") {
+      throw new StorageError(`Cannot complete capture flow while meeting ${meetingId} is ${meeting.status}.`);
+    }
+    this.database.updateMeetingStatus(meetingId, "COMPLETED", endedAt);
+    this.database.appendAudit(this.audit("CAPTURE_FLOW_COMPLETED", meetingId, {
+      ...(endedAt === undefined ? {} : { endedAt }),
+    }));
+  }
+
+  /** Abort/fail a capture flow. failed=true marks FAILED, otherwise INCOMPLETE (recoverable). */
+  public failCaptureFlow(meetingId: string, reason: string, failed: boolean): void {
+    const meeting = this.requireMeeting(meetingId);
+    this.transitionCaptureFailure(meeting.meetingId, failed);
+    this.database.appendAudit(this.audit(failed ? "CAPTURE_FLOW_FAILED" : "CAPTURE_FLOW_ABORTED", meeting.meetingId, { reason }));
+  }
+
+  /**
+   * Journals a capture-flow terminal outcome without changing the meeting
+   * status. Used when a flow ends while the meeting already holds a stronger
+   * terminal outcome (FAILED/CANCELLED) that must never be downgraded.
+   */
+  public journalCaptureFlowOutcome(meetingId: string, action: "CAPTURE_FLOW_ABORTED" | "CAPTURE_FLOW_FAILED", reason: string): void {
+    const meeting = this.requireMeeting(meetingId);
+    this.database.appendAudit(this.audit(action, meeting.meetingId, { reason }));
   }
 
   public createRecordingDiskMonitor(
@@ -1139,6 +1250,59 @@ export class LocalFirstStore {
         reason: "APPLICATION_RESTARTED_DURING_RECORDING",
       }));
     }
+  }
+
+  /**
+   * Phase 8 crash recovery for multi-source capture flows: a flow journals
+   * CAPTURE_FLOW_STARTED on entry and a terminal audit only when it finishes
+   * (COMPLETED/FAILED/ABORTED). If a restart interrupts the flow while the
+   * meeting is STARTING (PREPARING) or STOPPING (FINALIZING), the meeting is
+   * marked INCOMPLETE through the existing interrupted-recording semantics.
+   * Per-source artifact operations are recovered right afterwards by
+   * recoverArtifactOperations(). Single-capture meetings never carry the flow
+   * audit, so this sweep cannot change their behavior.
+   */
+  private recoverInterruptedCaptureFlows(): void {
+    for (const meeting of this.database.listMeetings()) {
+      if (meeting.status !== "PREPARING" && meeting.status !== "FINALIZING") {
+        continue;
+      }
+      if (!this.hasOpenCaptureFlowAudit(meeting.meetingId)) {
+        continue;
+      }
+      const phase = meeting.status;
+      this.interruptedRecordingMeetingIds.add(meeting.meetingId);
+      this.database.updateMeetingStatus(meeting.meetingId, "INCOMPLETE");
+      this.database.appendAudit(this.audit("RECORDING_RECOVERED_INCOMPLETE", meeting.meetingId, {
+        reason: "APPLICATION_RESTARTED_DURING_CAPTURE_FLOW",
+        phase,
+      }));
+    }
+  }
+
+  /**
+   * True when the meeting has a CAPTURE_FLOW_STARTED journal entry whose most
+   * recent flow-relevant entry is the start itself (no newer terminal audit).
+   * listAuditRecords() is newest-first; audit_log is a rowid table so equal
+   * timestamps preserve insertion order.
+   */
+  private hasOpenCaptureFlowAudit(meetingId: string): boolean {
+    for (const record of this.database.listAuditRecords(500)) {
+      if (record.meetingId !== meetingId) {
+        continue;
+      }
+      if (record.action === "CAPTURE_FLOW_STARTED") {
+        return true;
+      }
+      if (
+        record.action === "CAPTURE_FLOW_COMPLETED" ||
+        record.action === "CAPTURE_FLOW_FAILED" ||
+        record.action === "CAPTURE_FLOW_ABORTED"
+      ) {
+        return false;
+      }
+    }
+    return false;
   }
 
   private async recoverArtifactOperations(): Promise<void> {

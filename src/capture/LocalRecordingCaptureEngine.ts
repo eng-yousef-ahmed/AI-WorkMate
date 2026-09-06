@@ -35,6 +35,8 @@ interface ActiveCaptureSession {
   error?: CaptureErrorInfo;
   monitor?: RecordingDiskMonitor;
   pending: Promise<void>;
+  /** Present when the session belongs to a multi-source capture flow. */
+  flowId?: string;
 }
 
 /**
@@ -45,7 +47,10 @@ interface ActiveCaptureSession {
  */
 export class LocalRecordingCaptureEngine implements CaptureEngine {
   private readonly sessions = new Map<string, ActiveCaptureSession>();
+  /** Active single-capture guard: meetingId -> captureId (today's one-capture-per-meeting path). */
   private readonly activeMeetingIds = new Map<string, string>();
+  /** Active flow occupancy: meetingId -> flowId. A meeting hosts at most one capture flow, but one flow may start many independent sources on the same meeting. */
+  private readonly activeFlowMeetingIds = new Map<string, string>();
 
   public constructor(
     private readonly store: LocalFirstStore,
@@ -60,6 +65,10 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
     if (this.activeMeetingIds.has(request.meetingId)) {
       throw new StorageError(`A capture is already active for meeting ${request.meetingId}.`);
     }
+    const occupantFlowId = this.activeFlowMeetingIds.get(request.meetingId);
+    if (request.flowId === undefined ? occupantFlowId !== undefined : occupantFlowId !== undefined && occupantFlowId !== request.flowId) {
+      throw new StorageError(`A capture is already active for meeting ${request.meetingId}.`);
+    }
     const operation = await this.store.beginRecordingCapture({
       meetingId: request.meetingId,
       extension: format,
@@ -67,6 +76,7 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
       estimatedBytes: request.estimatedBytes,
       captureSource: request.captureSource ?? DEFAULT_CAPTURE_SOURCE,
       startedAt: request.startedAt,
+      ...(request.flowId === undefined ? {} : { flowManaged: true }),
     });
 
     let stage: StagedArtifactWrite;
@@ -79,6 +89,7 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
         operationId: operation.operationId,
         reason: errorMessage(error),
         failed: true,
+        ...(operation.flowManaged === true ? { flowManaged: true } : {}),
       });
       throw error;
     }
@@ -92,9 +103,14 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
       bytesWritten: 0,
       chunksWritten: 0,
       pending: Promise.resolve(),
+      ...(request.flowId === undefined ? {} : { flowId: request.flowId }),
     };
     this.sessions.set(session.captureId, session);
-    this.activeMeetingIds.set(operation.meetingId, session.captureId);
+    if (request.flowId === undefined) {
+      this.activeMeetingIds.set(request.meetingId, session.captureId);
+    } else {
+      this.activeFlowMeetingIds.set(request.meetingId, request.flowId);
+    }
 
     if (request.diskMonitor !== undefined) {
       session.monitor = this.store.createRecordingDiskMonitor(operation.meetingId, {
@@ -198,7 +214,7 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
           durationMs: session.durationMs,
         });
         session.state = "COMPLETED";
-        this.activeMeetingIds.delete(session.operation.meetingId);
+        this.clearActive(session);
         return snapshot(session);
       } catch (error: unknown) {
         await this.failSession(session, true, errorMessage(error));
@@ -261,13 +277,22 @@ export class LocalRecordingCaptureEngine implements CaptureEngine {
     await this.store.storage.discardStagedArtifact(session.stage);
     session.state = failed ? "FAILED" : "INCOMPLETE";
     session.error = { code: failed ? "CAPTURE_FAILED" : "CAPTURE_INCOMPLETE", message };
-    this.activeMeetingIds.delete(session.operation.meetingId);
+    this.clearActive(session);
     this.store.failRecordingCapture({
       meetingId: session.operation.meetingId,
       operationId: session.operation.operationId,
       reason: message,
       failed,
+      ...(session.operation.flowManaged === true ? { flowManaged: true } : {}),
     });
+  }
+
+  private clearActive(session: ActiveCaptureSession): void {
+    if (session.flowId === undefined) {
+      this.activeMeetingIds.delete(session.operation.meetingId);
+    } else {
+      this.activeFlowMeetingIds.delete(session.operation.meetingId);
+    }
   }
 
   private requireSession(captureId: string): ActiveCaptureSession {

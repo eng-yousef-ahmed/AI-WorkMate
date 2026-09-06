@@ -344,7 +344,13 @@ function inspectJsonl(text: string): { chunkCount?: number; firstSequence?: numb
   return { chunkCount, firstSequence, lastSequence, width, height, jpegFrames };
 }
 
-function defaultSourceId(capability: { sources?: Array<{ sourceId: string; isDefault?: boolean }> }): string | undefined {
+/**
+ * Deterministic default-source selection for SCREEN (and by extension the audio
+ * device kinds): the capability's isDefault source when present, else the first
+ * listed source. Shared so the meeting-capture orchestrator resolves SCREEN and
+ * audio sources through the same validated path used by Windows verification.
+ */
+export function defaultSourceId(capability: { sources?: Array<{ sourceId: string; isDefault?: boolean }> }): string | undefined {
   return capability.sources?.find((source) => source.isDefault === true)?.sourceId ?? capability.sources?.[0]?.sourceId;
 }
 

@@ -18,6 +18,15 @@ export interface CaptureStartRequest {
     criticalFreeBytes: number;
     intervalMs?: number;
   };
+  /**
+   * Opt-in multi-source capture-flow identifier. When present the capture is
+   * flow-managed: its storage operation does not drive the meeting status
+   * transition (PREPARING->RECORDING or FINALIZING->PROCESSING). The owning
+   * capture-flow orchestrator drives meeting status explicitly so multiple
+   * independent sources can run under one meeting. Without flowId the engine
+   * keeps today's single-capture-per-meeting semantics.
+   */
+  flowId?: string;
 }
 
 export interface CaptureChunkRequest {

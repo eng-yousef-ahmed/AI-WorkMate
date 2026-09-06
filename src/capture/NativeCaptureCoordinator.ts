@@ -25,10 +25,13 @@ interface ActiveNativeCapture {
   pump: Promise<void>;
   nextSequence: number;
   failed?: NativeCaptureError;
+  flowId?: string;
 }
 
 export interface NativeCaptureCoordinatorOptions {
   policy?: Partial<NativeCapturePolicy>;
+  /** Optional callback invoked when an active native session fails while streaming. */
+  onSourceFailed?: (info: { captureId: string; meetingId: string; capability: NativeCaptureKind; error: NativeCaptureError }) => void;
 }
 
 /**
@@ -39,7 +42,11 @@ export interface NativeCaptureCoordinatorOptions {
 export class NativeCaptureCoordinator {
   private readonly policy: NativeCapturePolicy;
   private readonly activeByCaptureId = new Map<string, ActiveNativeCapture>();
+  /** Active single-capture guard: meetingId -> local captureId (today's one-capture-per-meeting path). */
   private readonly activeByMeetingId = new Map<string, string>();
+  /** Active flow occupancy: meetingId -> flowId. One flow per meeting, many independent sources per flow. */
+  private readonly activeFlowMeetingIds = new Map<string, string>();
+  private readonly onSourceFailed: NativeCaptureCoordinatorOptions["onSourceFailed"];
 
   public constructor(
     private readonly nativeAdapter: NativeCaptureAdapter,
@@ -47,6 +54,7 @@ export class NativeCaptureCoordinator {
     options: NativeCaptureCoordinatorOptions = {},
   ) {
     this.policy = { ...DEFAULT_NATIVE_CAPTURE_POLICY, ...options.policy };
+    this.onSourceFailed = options.onSourceFailed;
   }
 
   public discoverCapabilities(): Promise<NativeCaptureCapabilities> {
@@ -56,6 +64,10 @@ export class NativeCaptureCoordinator {
   public async startCapture(request: NativeMeetingCaptureStartRequest): Promise<NativeCaptureStateSnapshot> {
     assertNoCallerPath(request);
     if (this.activeByMeetingId.has(request.meetingId)) {
+      throw new StorageError(`A native capture is already active for meeting ${request.meetingId}.`);
+    }
+    const occupantFlowId = this.activeFlowMeetingIds.get(request.meetingId);
+    if (request.flowId === undefined ? occupantFlowId !== undefined : occupantFlowId !== undefined && occupantFlowId !== request.flowId) {
       throw new StorageError(`A native capture is already active for meeting ${request.meetingId}.`);
     }
     this.assertPolicyAllows(request.capability);
@@ -97,6 +109,7 @@ export class NativeCaptureCoordinator {
         startedAt: nativeSession.startedAt,
         captureSource: `${this.nativeAdapter.adapterId}:${request.capability}`,
         diskMonitor: request.diskMonitor,
+        ...(request.flowId === undefined ? {} : { flowId: request.flowId }),
       });
       const active: ActiveNativeCapture = {
         localCaptureId: started.captureId,
@@ -105,6 +118,7 @@ export class NativeCaptureCoordinator {
         nativeAdapterId: this.nativeAdapter.adapterId,
         capability: request.capability,
         ...(nativeSession.sourceId === undefined ? {} : { sourceId: nativeSession.sourceId }),
+        ...(request.flowId === undefined ? {} : { flowId: request.flowId }),
         nextSequence: 0,
         pump: Promise.resolve(),
       };
@@ -115,7 +129,11 @@ export class NativeCaptureCoordinator {
       }
       active.pump = this.pumpNativeChunks(active);
       this.activeByCaptureId.set(started.captureId, active);
-      this.activeByMeetingId.set(request.meetingId, started.captureId);
+      if (request.flowId === undefined) {
+        this.activeByMeetingId.set(request.meetingId, started.captureId);
+      } else {
+        this.activeFlowMeetingIds.set(request.meetingId, request.flowId);
+      }
       localState = nativeSnapshot(started, active);
       return localState;
     } catch (error: unknown) {
@@ -228,6 +246,12 @@ export class NativeCaptureCoordinator {
         reason: nativeError.message,
       });
       await active.nativeSession.abort(nativeError.message).catch(() => undefined);
+      this.onSourceFailed?.({
+        captureId: active.localCaptureId,
+        meetingId: active.meetingId,
+        capability: active.capability,
+        error: nativeError,
+      });
     }
   }
 
@@ -262,7 +286,11 @@ export class NativeCaptureCoordinator {
 
   private clearActive(active: ActiveNativeCapture): void {
     this.activeByCaptureId.delete(active.localCaptureId);
-    this.activeByMeetingId.delete(active.meetingId);
+    if (active.flowId === undefined) {
+      this.activeByMeetingId.delete(active.meetingId);
+    } else {
+      this.activeFlowMeetingIds.delete(active.meetingId);
+    }
   }
 }
 

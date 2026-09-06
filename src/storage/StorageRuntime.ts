@@ -21,6 +21,7 @@ import {
   type NativeMeetingCaptureStopRequest,
 } from "../capture/NativeCaptureAdapter";
 import { LocalRecordingCaptureEngine } from "../capture/LocalRecordingCaptureEngine";
+import { MeetingCaptureOrchestrator } from "../capture/MeetingCaptureOrchestrator";
 import { NativeCaptureCoordinator } from "../capture/NativeCaptureCoordinator";
 import { createNativeCaptureAdapter } from "../capture/WindowsCaptureAdapter";
 import type { CredentialStore } from "../security/CredentialStore";
@@ -61,6 +62,8 @@ export interface StorageRuntimeIntegrations {
 export class StorageRuntime {
   public store: LocalFirstStore | undefined;
   public nativeCapture: NativeCaptureCoordinator | undefined;
+  /** Multi-source meeting capture orchestrator (Phase 8); created with the store. */
+  public meetingCapture: MeetingCaptureOrchestrator | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -399,11 +402,18 @@ export class StorageRuntime {
 
   private attachStore(store: LocalFirstStore): void {
     this.store = store;
+    const captureEngine = new LocalRecordingCaptureEngine(store, this.clock);
     this.nativeCapture = new NativeCaptureCoordinator(
       this.nativeAdapter,
-      new LocalRecordingCaptureEngine(store, this.clock),
+      captureEngine,
       { policy: productionNativeCapturePolicy(this.integrations.nativeCapturePolicy) },
     );
+    this.meetingCapture = new MeetingCaptureOrchestrator({
+      store,
+      coordinator: this.nativeCapture,
+      engine: captureEngine,
+      clock: this.clock,
+    });
     this.transcription = new LocalTranscriptionService({
       store,
       engine: this.integrations.transcriptionEngine ?? new WindowsLocalWhisperEngine(),
@@ -415,6 +425,11 @@ export class StorageRuntime {
   }
 
   private async detachStore(reason: string): Promise<void> {
+    // Meeting capture flows abort first so their per-source sessions are torn
+    // down through the orchestrator (meetings end INCOMPLETE, never dangling
+    // RECORDING); the coordinator then covers any remaining single captures.
+    await this.meetingCapture?.abortAllActive(reason);
+    this.meetingCapture = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;
