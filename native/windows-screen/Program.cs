@@ -60,13 +60,13 @@ static List<object> EnumerateDisplays()
 {
     using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
     var displays = new List<object>();
-    var adapterIndex = 0;
-    while (factory.EnumAdapters1(adapterIndex, out var adapter).Success)
+    uint adapterIndex = 0;
+    while (factory.EnumAdapters1(adapterIndex, out var adapter).Success && adapter is not null)
     {
         using (adapter)
         {
-            var outputIndex = 0;
-            while (adapter.EnumOutputs(outputIndex, out var output).Success)
+            uint outputIndex = 0;
+            while (adapter.EnumOutputs(outputIndex, out var output).Success && output is not null)
             {
                 using (output)
                 {
@@ -148,6 +148,10 @@ static int CaptureDisplay(string? sourceId)
             DeviceCreationFlags.BgraSupport,
             new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
             out var device).CheckError();
+        if (device is null)
+        {
+            throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for the requested Windows display.", false);
+        }
         using (device)
         {
             using var output1 = output.QueryInterface<IDXGIOutput1>();
@@ -186,6 +190,10 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
         DeviceCreationFlags.BgraSupport,
         new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
         out var d3dDevice).CheckError();
+    if (d3dDevice is null)
+    {
+        throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for Windows Graphics Capture.", false);
+    }
     using (d3dDevice)
     {
         var winrtDevice = CreateWinRtDevice(d3dDevice);
@@ -302,7 +310,9 @@ static int RunFrameLoop(
             {
                 throw;
             }
-            catch (SharpGen.Runtime.SharpGenException ex) when (ex.HResult == unchecked((int)0x887A0026) || ex.Descriptor.Native == unchecked((int)0x887A0026))
+            // SharpGenException.Descriptor is private in SharpGen.Runtime 2.2.0-beta (the version Vortice 3.6.2
+            // depends on); ResultCode is the public accessor for the failing HRESULT (DXGI_ERROR_ACCESS_LOST).
+            catch (SharpGen.Runtime.SharpGenException ex) when (ex.ResultCode == Vortice.DXGI.ResultCode.AccessLost)
             {
                 throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The captured display was lost or its mode changed.", true);
             }
@@ -339,30 +349,58 @@ static int RunFrameLoop(
 
 static byte[] AcquireDuplicationFrame(ID3D11Device device, IDXGIOutputDuplication duplication, int width, int height, int timeoutMs)
 {
-    var result = duplication.AcquireNextFrame(timeoutMs, out _, out var resource);
-    if (result.Failure)
+    // Vortice 3.6.2 maps C++ UINT to C# uint, so the DXGI timeout is a uint (AcquireNextFrame also returns
+    // a Result because IDXGIOutputDuplication methods are generated with check="false").
+    var result = duplication.AcquireNextFrame((uint)Math.Max(0, timeoutMs), out _, out var resource);
+    if (result == Vortice.DXGI.ResultCode.WaitTimeout)
     {
+        // No new desktop image yet: normal for Desktop Duplication, the caller retries.
         return Array.Empty<byte>();
     }
+    if (result.Failure)
+    {
+        if (result == Vortice.DXGI.ResultCode.AccessLost)
+        {
+            throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "The captured display was lost or its mode changed.", true);
+        }
+        return Array.Empty<byte>();
+    }
+    if (resource is null)
+    {
+        // No frame was handed over, so there is nothing to release on the duplication object.
+        return Array.Empty<byte>();
+    }
+
     try
     {
+        // A using(...) statement cannot host a `using var` declaration as its embedded statement (CS1023),
+        // so the desktop resource gets an explicit block and every COM texture is scoped inside it.
         using (resource)
-        using var texture = resource.QueryInterface<ID3D11Texture2D>();
-        var desc = texture.Description;
-        desc.Usage = ResourceUsage.Staging;
-        desc.BindFlags = BindFlags.None;
-        desc.CpuAccessFlags = CpuAccessFlags.Read;
-        desc.MiscFlags = ResourceOptionFlags.None;
-        using var staging = device.CreateTexture2D(desc);
-        device.ImmediateContext.CopyResource(staging, texture);
-        var mapped = device.ImmediateContext.Map(staging, 0, MapMode.Read);
-        try
         {
-            return EncodeBgraJpeg(mapped.DataPointer, mapped.RowPitch, (int)desc.Width, (int)desc.Height, width, height);
-        }
-        finally
-        {
-            device.ImmediateContext.Unmap(staging, 0);
+            using var texture = resource.QueryInterface<ID3D11Texture2D>();
+            if (texture is null)
+            {
+                return Array.Empty<byte>();
+            }
+            var desc = texture.Description;
+            desc.Usage = ResourceUsage.Staging;
+            desc.BindFlags = BindFlags.None;
+            desc.CPUAccessFlags = CpuAccessFlags.Read;
+            desc.MiscFlags = ResourceOptionFlags.None;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.SampleDescription = new SampleDescription(1, 0);
+            using var staging = device.CreateTexture2D(desc);
+            device.ImmediateContext.CopyResource(staging, texture);
+            var mapped = device.ImmediateContext.Map(staging, 0, MapMode.Read);
+            try
+            {
+                return EncodeBgraJpeg(mapped.DataPointer, (int)mapped.RowPitch, (int)desc.Width, (int)desc.Height, width, height);
+            }
+            finally
+            {
+                device.ImmediateContext.Unmap(staging, 0);
+            }
         }
     }
     finally
@@ -401,7 +439,7 @@ static unsafe byte[] EncodeBgraJpeg(IntPtr data, int rowPitch, int srcWidth, int
 
 static byte[] EncodeSoftwareBitmap(Direct3D11CaptureFrame frame)
 {
-    var bitmap = SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().GetAwaiter().GetResult();
+    using var bitmap = SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().GetAwaiter().GetResult();
     if (bitmap is null)
     {
         return Array.Empty<byte>();
@@ -456,12 +494,22 @@ static bool TryFindOutput(IDXGIFactory1 factory, string? sourceId, out IDXGIAdap
     output = null!;
     displayId = "";
     label = "";
-    var adapterIndex = 0;
+    uint adapterIndex = 0;
     while (factory.EnumAdapters1(adapterIndex, out var candidateAdapter).Success)
     {
-        var outputIndex = 0;
+        adapterIndex++;
+        if (candidateAdapter is null)
+        {
+            break;
+        }
+        uint outputIndex = 0;
         while (candidateAdapter.EnumOutputs(outputIndex, out var candidateOutput).Success)
         {
+            outputIndex++;
+            if (candidateOutput is null)
+            {
+                break;
+            }
             var id = DisplayId(candidateOutput.Description.DeviceName);
             if (string.IsNullOrWhiteSpace(sourceId) || string.Equals(sourceId, id, StringComparison.OrdinalIgnoreCase))
             {
@@ -472,10 +520,8 @@ static bool TryFindOutput(IDXGIFactory1 factory, string? sourceId, out IDXGIAdap
                 return true;
             }
             candidateOutput.Dispose();
-            outputIndex++;
         }
         candidateAdapter.Dispose();
-        adapterIndex++;
     }
     return false;
 }
