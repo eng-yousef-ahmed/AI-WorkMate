@@ -208,7 +208,12 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
         var latest = new ConcurrentQueue<byte[]>();
         var closed = false;
         item.Closed += (_, _) => closed = true;
-        pool.FrameArrived += (sender, _) =>
+        // The handler's second parameter is named `args` (not `_`): a lambda parameter named `_`
+        // is an ordinary variable in scope (typed object here for TypedEventHandler<..., object>),
+        // so an `out _` argument in the body would pass that object variable to
+        // ConcurrentQueue<byte[]>.TryDequeue(out byte[]) instead of being a discard -> CS1503.
+        // With no `_` in scope, the `out _` below is a genuine discard that drops the oldest JPEG.
+        pool.FrameArrived += (sender, args) =>
         {
             using var frame = sender.TryGetNextFrame();
             if (frame is null)
