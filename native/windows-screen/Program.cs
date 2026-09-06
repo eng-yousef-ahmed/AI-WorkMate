@@ -483,14 +483,33 @@ static IDirect3DDevice CreateWinRtDevice(ID3D11Device device)
 
 static GraphicsCaptureItem CreateCaptureItemForWindow(IntPtr hwnd)
 {
+    // CsWinRT interop rule: a ComImport interface must exchange ABI types (IntPtr), never projected
+    // WinRT types. The CLR maps the native HRESULT to a COMException on failure and returns the
+    // created item pointer as the method's result; the pointer is then wrapped with the projected
+    // class's FromAbi and the interop reference is released.
     var interop = GraphicsCaptureItem.As<IGraphicsCaptureItemInterop>();
     var guid = typeof(GraphicsCaptureItem).GUID;
-    var hr = interop.CreateForWindow(hwnd, ref guid, out var item);
-    if (hr < 0 || item is null)
+    IntPtr itemPointer;
+    try
     {
-        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "Windows Graphics Capture could not attach to the selected window.", true);
+        itemPointer = interop.CreateForWindow(hwnd, ref guid);
     }
-    return item;
+    catch (COMException ex)
+    {
+        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", $"Windows Graphics Capture could not attach to the selected window (0x{ex.HResult:X8}).", true);
+    }
+    if (itemPointer == IntPtr.Zero)
+    {
+        throw new CaptureException("NATIVE_DEVICE_UNAVAILABLE", "Windows Graphics Capture returned no item for the selected window.", true);
+    }
+    try
+    {
+        return GraphicsCaptureItem.FromAbi(itemPointer);
+    }
+    finally
+    {
+        Marshal.Release(itemPointer);
+    }
 }
 
 static bool TryFindOutput(IDXGIFactory1 factory, string? sourceId, out IDXGIAdapter1 adapter, out IDXGIOutput output, out string displayId, out string label)
@@ -667,11 +686,12 @@ internal sealed class CaptureException : Exception
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IGraphicsCaptureItemInterop
 {
-    [PreserveSig]
-    int CreateForWindow(IntPtr window, ref Guid iid, [MarshalAs(UnmanagedType.IInspectable)] out GraphicsCaptureItem result);
-
-    [PreserveSig]
-    int CreateForMonitor(IntPtr monitor, ref Guid iid, [MarshalAs(UnmanagedType.IInspectable)] out GraphicsCaptureItem result);
+    // ABI-only signatures: parameters and return values are IntPtr because the CLR cannot marshal
+    // projected WinRT types (or UnmanagedType.IInspectable directives) through a ComImport
+    // interface on .NET Core+ ("Marshaling directives are invalid."). The non-PreserveSig return
+    // value is the native [out, retval] item pointer; a failed HRESULT surfaces as COMException.
+    IntPtr CreateForWindow([In] IntPtr window, [In] ref Guid iid);
+    IntPtr CreateForMonitor([In] IntPtr monitor, [In] ref Guid iid);
 }
 
 internal static class NativeMethods
