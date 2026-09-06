@@ -1,0 +1,23 @@
+name: Windows native capture helpers
+
+on:
+  push:
+    branches: ["arena/01a0759c-ai-workmate"]
+  workflow_dispatch:
+
+jobs:
+  build-native-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish Windows audio helper
+        run: dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true
+
+      - name: Publish Windows screen helper
+        run: dotnet publish native/windows-screen/AIWorkMate.WindowsScreenCapture.csproj -c Release -r win-x64 --self-contained true
