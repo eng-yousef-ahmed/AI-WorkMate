@@ -827,7 +827,10 @@ internal sealed class CaptureException : Exception
 }
 
 [ComImport]
-[Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
+// Explicitly System.Runtime.InteropServices.GuidAttribute: the `using Windows.Foundation.Metadata;`
+// added for the ApiInformation pre-flight also imports Windows.Foundation.Metadata.GuidAttribute,
+// which would make an unqualified Guid attribute ambiguous (CS0104) and break ComImport (CS0596).
+[System.Runtime.InteropServices.Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IGraphicsCaptureItemInterop
 {

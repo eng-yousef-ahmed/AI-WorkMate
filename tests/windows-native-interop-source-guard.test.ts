@@ -32,6 +32,14 @@ test("WGC interop declaration uses ABI IntPtr signatures, never projected types 
     source.includes("IntPtr CreateForMonitor([In] IntPtr monitor, [In] ref Guid iid);"),
     "CreateForMonitor must declare an ABI IntPtr signature",
   );
+  assert.ok(
+    source.includes('[System.Runtime.InteropServices.Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]'),
+    "The ComImport interface Guid attribute must be explicitly qualified to System.Runtime.InteropServices",
+  );
+  assert.ok(
+    !source.includes("[Guid("),
+    "A bare [Guid( attribute would be ambiguous (CS0104) once Windows.Foundation.Metadata is imported for ApiInformation",
+  );
   assert.ok(source.includes("GraphicsCaptureItem.FromAbi(itemPointer)"), "The returned pointer must be wrapped with GraphicsCaptureItem.FromAbi");
   assert.ok(source.includes("catch (COMException ex)"), "Interop failures must be mapped through COMException");
 });
