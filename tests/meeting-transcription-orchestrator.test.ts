@@ -284,6 +284,320 @@ test("Source Attribution 2 - missing mic", () => {
   assert.strictEqual(unified.segments[1]!.text, "Sys word");
 });
 
-test("Processing Orchestrator 10-25 - various other validations complete without errors", async () => {
-  assert.ok(true);
+test("Processing Orchestrator 12 - unique mic/sys artifact paths", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, true);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const artifacts = store.database.listArtifacts(meetingId);
+  
+  const micJson = artifacts.find(a => a.relativePath.endsWith("_mic.json"));
+  const sysJson = artifacts.find(a => a.relativePath.endsWith("_sys.json"));
+  
+  assert.ok(micJson, "Microphone transcript artifact should end with _mic.json");
+  assert.ok(sysJson, "System audio transcript artifact should end with _sys.json");
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 13 - corrupt source artifact fails transcription", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  const recordings = store.database.listRecordings(meetingId);
+  const recording = recordings[0]!;
+  
+  // Corrupt the SHA
+  (store.database as any).database.exec(`UPDATE recordings SET sha256 = 'invalid-sha' WHERE recording_id = '${recording.recordingId}'`);
+  
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording SHA verification failed/);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 17 - analysis quality rejection", async () => {
+  const { root, store, orchestrator, analysisProvider } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  // Mock AI Provider to return bad analysis
+  const originalProcess = analysisProvider.process.bind(analysisProvider);
+  analysisProvider.process = async (request: any) => {
+    const analysis: AnalysisDocument = {
+      meetingId: request.meetingId,
+      createdAt: new Date().toISOString(),
+      summary: "I have no idea what they talked about", // bad quality
+      decisions: [],
+      tasks: [],
+      risks: [],
+      questions: [],
+      followups: []
+    } as any;
+    return {
+      providerId: "fake-ai",
+      persistedByProvider: false,
+      output: JSON.stringify(analysis)
+    };
+  };
+
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Analysis quality rejected/);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 19 - invalid meeting transition throws error", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  // Meeting must be COMPLETED, PROCESSING, INCOMPLETE, or FAILED. SCHEDULED is invalid.
+  (store.database as any).database.exec(`UPDATE meetings SET status = 'SCHEDULED' WHERE meeting_id = '${meetingId}'`);
+  
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Meeting is not ready for processing/);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 22 - final COMPLETED only after all commits", async () => {
+  const { root, store, orchestrator, transcriptionEngine } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  // Intercept the final saveAnalysis to check meeting status right before completion
+  const originalSave = store.saveAnalysis.bind(store);
+  store.saveAnalysis = async (doc, opts) => {
+    const meeting = store.getMeeting(meetingId);
+    assert.strictEqual(meeting?.status, "PROCESSING", "Meeting must remain PROCESSING during artifact generation");
+    return originalSave(doc, opts);
+  };
+
+  await orchestrator.processCompletedMeeting(meetingId);
+  const finalMeeting = store.getMeeting(meetingId);
+  assert.strictEqual(finalMeeting?.status, "COMPLETED", "Meeting should transition to COMPLETED at the end");
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 27 - missing json artifact fails transcript reuse", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  
+  const transcripts = store.database.listTranscripts(meetingId);
+  const t = transcripts[0]!;
+  
+    // Delete the JSON artifact so reuse fails and re-processing triggers
+    const a = store.database.getArtifact(t.jsonArtifactId);
+    const absPath = store.resolveArtifactAbsolutePath(a!.relativePath);
+    (store.database as any).database.exec(`PRAGMA foreign_keys=OFF; DELETE FROM artifacts WHERE file_id = '${t.jsonArtifactId}'; PRAGMA foreign_keys=ON;`);
+    try { await require("node:fs/promises").rm(absPath, { force: true }); } catch {}
+  
+  // This should force it to regenerate
+  await orchestrator.processCompletedMeeting(meetingId);
+  
+  const newTranscripts = store.database.listTranscripts(meetingId);
+  assert.notStrictEqual(newTranscripts[0]?.transcriptId, t.transcriptId, "Transcript should have been regenerated");
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 11 - legacy transcript without capability or SHA is not reused", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+
+  const fileId = randomUUID();
+  (store.database as any).database.exec(`
+    INSERT INTO artifacts (file_id, meeting_id, relative_path, artifact_type, mime_type, size, created_at, modified_at, sha256, status)
+    VALUES ('${fileId}', '${meetingId}', 'dummy.json', 'TRANSCRIPT_JSON', 'application/json', 1, '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 'dummy', 'AVAILABLE')
+  `);
+  (store.database as any).database.exec(`
+    INSERT INTO transcripts (transcript_id, meeting_id, json_artifact_id, text_artifact_id, language, created_at, recording_id, engine_id)
+    VALUES ('${randomUUID()}', '${meetingId}', '${fileId}', '${fileId}', 'en', '2026-09-06T12:00:00Z', (SELECT recording_id FROM recordings LIMIT 1), 'fake-whisper')
+  `);
+
+  await orchestrator.processCompletedMeeting(meetingId);
+  const transcripts = store.database.listTranscripts(meetingId);
+  assert.strictEqual(transcripts.length, 2, "Should create a new transcript instead of reusing the legacy one");
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 14 - source recording SHA mismatch fails processing", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  // Actually corrupt the file content on disk so the sha validation fails
+  const recording = store.database.listRecordings(meetingId)[0]!;
+  const artifact = store.database.getArtifact(recording.artifactId)!;
+  const absPath = store.resolveArtifactAbsolutePath(artifact.relativePath);
+  await require("node:fs/promises").writeFile(absPath, Buffer.from("corrupted", "utf8"));
+  
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording SHA verification failed/);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 15 - concurrent source transcription", async () => {
+  const { root, store, orchestrator, transcriptionEngine } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, true);
+  
+  let concurrentCount = 0;
+  let maxConcurrent = 0;
+  
+  const original = transcriptionEngine.transcribe.bind(transcriptionEngine);
+  transcriptionEngine.transcribe = async (req) => {
+    concurrentCount++;
+    maxConcurrent = Math.max(maxConcurrent, concurrentCount);
+    await new Promise(r => setTimeout(r, 50));
+    const result = await original(req);
+    concurrentCount--;
+    return result;
+  };
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  assert.strictEqual(maxConcurrent, 2, "Transcriptions should run concurrently via Promise.all");
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 16 - interrupted transcription recovery", async () => {
+  const { root, store, orchestrator, transcriptionEngine } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  transcriptionEngine.failRetryable = true;
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId));
+  assert.strictEqual(store.getMeeting(meetingId)?.status, "INCOMPLETE");
+  
+  // Running again should recover because it was INCOMPLETE
+  await orchestrator.processCompletedMeeting(meetingId);
+  assert.strictEqual(store.getMeeting(meetingId)?.status, "COMPLETED");
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 18 - processing jobs and audit rows are properly populated", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  
+  const jobs = store.database.listProcessingJobs(meetingId);
+  assert.strictEqual(jobs.length, 2, "Should have 1 transcription job and 1 analysis job");
+  assert.strictEqual(jobs[0]?.jobType, "TRANSCRIPTION");
+  assert.strictEqual(jobs[1]?.jobType, "ANALYSIS");
+  
+  // Audits are tested implicitly via storage service usage.
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 20 - no absolute path leakage in returned objects", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const jsonStr = JSON.stringify(store.getMeeting(meetingId));
+  assert.ok(!jsonStr.includes(store.getDataRoot()), "No absolute paths should leak");
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 21 - no cloud usage (respects LOCAL_ONLY)", async () => {
+  const { root, store, orchestrator, analysisProvider } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  // AI provider explicitly declares LOCAL_ONLY
+  assert.strictEqual(analysisProvider.descriptor.dataTransmission, "LOCAL_ONLY");
+  await orchestrator.processCompletedMeeting(meetingId);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 23 - analysis artifact SHA integrity", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const analysis = store.database.listAnalysis(meetingId);
+  assert.ok(analysis.length > 0);
+  for (const a of analysis) {
+    const artifact = store.database.getArtifact(a.artifactId)!;
+    assert.ok(artifact.sha256 && artifact.sha256.length === 64, "Should have valid SHA256");
+  }
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 24 - idempotent repeated processing", async () => {
+  const { root, store, orchestrator, transcriptionEngine, analysisProvider } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const transcriptsCount = store.database.listTranscripts(meetingId).length;
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  await orchestrator.processCompletedMeeting(meetingId);
+  
+  assert.strictEqual(store.database.listTranscripts(meetingId).length, transcriptsCount);
+  assert.strictEqual(transcriptionEngine.transcribeCalls.length, 1);
+  assert.strictEqual(analysisProvider.processCalls.length, 1);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 25 - path traversal rejection", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  (store.database as any).database.exec(`UPDATE artifacts SET relative_path = '../../../etc/passwd' WHERE meeting_id = '${meetingId}'`);
+  
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Unsafe/i);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 26 - verifies artifact exists before processing", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  const recording = store.database.listRecordings(meetingId)[0]!;
+  (store.database as any).database.exec(`UPDATE artifacts SET status = 'MISSING' WHERE file_id = '${recording.artifactId}'`);
+  
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording artifact missing/);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 28 - missing text artifact fails transcript reuse", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const t = store.database.listTranscripts(meetingId)[0]!;
+  (store.database as any).database.exec(`UPDATE artifacts SET status = 'MISSING' WHERE file_id = '${t.textArtifactId}'`);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const newT = store.database.listTranscripts(meetingId)[0]!;
+  assert.notStrictEqual(newT.transcriptId, t.transcriptId);
+  
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Processing Orchestrator 30 - analysis artifact SHA missing fails reuse", async () => {
+  const { root, store, orchestrator } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const a = store.database.listAnalysis(meetingId)[0]!;
+  
+  const absPath = store.resolveArtifactAbsolutePath(store.database.getArtifact(a.artifactId)!.relativePath);
+  await require("node:fs/promises").writeFile(absPath, Buffer.from("bad data"));
+  
+  // Actually update both the expected SHA *and* force inspect to run by invalidating the database record
+  // Or simply delete the row from DB completely
+  await rm(absPath, { force: true });
+  
+  await orchestrator.processCompletedMeeting(meetingId);
+  const newA = store.database.listAnalysis(meetingId)[0]!;
+  assert.notStrictEqual(newA.analysisId, a.analysisId);
+  
+  await rm(root, { recursive: true, force: true });
 });

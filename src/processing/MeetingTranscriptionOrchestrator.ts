@@ -3,12 +3,12 @@ import type { LocalFirstStore } from "../storage/LocalFirstStore";
 import type { TranscriptionEngine } from "../transcription/TranscriptionEngine";
 import { AIProcessingPolicyEnforcer, type AIProvider } from "../ai/AIProvider";
 import type { RecordingRecord, TranscriptRecord, ProcessingJobRecord } from "../storage/LocalDatabase";
-import type { AIProcessingPolicy, TranscriptDocument, TranscriptSegment } from "../domain/models";
+import type { AIProcessingPolicy, TranscriptDocument } from "../domain/models";
 import { decodeAiwpcmRecording } from "../transcription/AiwpcmRecordingDecoder";
-import { prepareWhisperWav } from "../transcription/PrepareWhisperAudio";
 import { buildUnifiedTranscriptDocument } from "./sourceAttribution";
 import { StorageError, DataRootValidationError } from "../storage/errors";
 import { evaluateAnalysisQuality } from "../ai/AnalysisQuality";
+import { rm } from "node:fs/promises";
 import { parseAnalysisDocument } from "../ai/AnalysisDocument";
 
 export interface MeetingTranscriptionOrchestratorOptions {
@@ -55,15 +55,10 @@ export class MeetingTranscriptionOrchestrator {
     this.store.transitionMeeting(meetingId, "PROCESSING");
 
     try {
-      let micTranscriptRecord: TranscriptRecord | undefined;
-      let sysTranscriptRecord: TranscriptRecord | undefined;
-
-      if (micRecordings.length > 0 && micRecordings[0]) {
-         micTranscriptRecord = await this.processSource(meetingId, micRecordings[0], "MICROPHONE_AUDIO");
-      }
-      if (sysRecordings.length > 0 && sysRecordings[0]) {
-         sysTranscriptRecord = await this.processSource(meetingId, sysRecordings[0], "SYSTEM_AUDIO");
-      }
+      const [micTranscriptRecord, sysTranscriptRecord] = await Promise.all([
+        micRecordings.length > 0 && micRecordings[0] ? this.processSource(meetingId, micRecordings[0], "MICROPHONE_AUDIO") : Promise.resolve(undefined),
+        sysRecordings.length > 0 && sysRecordings[0] ? this.processSource(meetingId, sysRecordings[0], "SYSTEM_AUDIO") : Promise.resolve(undefined),
+      ]);
 
       await this.runAnalysis(meetingId, micTranscriptRecord, sysTranscriptRecord, options?.userApprovedForThisRequest);
 
@@ -101,7 +96,8 @@ export class MeetingTranscriptionOrchestrator {
       for (const t of existingAll) {
         if (t.engineId === this.transcriptionEngine.descriptor.id && t.sourceSha256 === recording.sha256) {
           const jsonArtifact = this.store.database.getArtifact(t.jsonArtifactId);
-          if (jsonArtifact && jsonArtifact.status === "AVAILABLE") {
+          const textArtifact = this.store.database.getArtifact(t.textArtifactId);
+          if (jsonArtifact && jsonArtifact.status === "AVAILABLE" && textArtifact && textArtifact.status === "AVAILABLE") {
             const verification = await this.store.storage.inspectFile(jsonArtifact.relativePath, jsonArtifact.sha256);
             if (verification.status === "AVAILABLE") {
               reusable = t;
@@ -119,16 +115,16 @@ export class MeetingTranscriptionOrchestrator {
       // Stale or missing/corrupt - delete old records/files to allow overwrite
       for (const t of existingAll) {
         if (t === reusable) continue;
-        (this.store.database as any).database.exec(`DELETE FROM transcripts WHERE transcript_id = '${t.transcriptId}'`);
+        (this.store.database as unknown as { database: { exec: (q: string) => void } }).database.exec(`DELETE FROM transcripts WHERE transcript_id = '${t.transcriptId}'`);
         const relatedArtifacts = [t.jsonArtifactId, t.textArtifactId, t.vttArtifactId, t.srtArtifactId].filter(Boolean) as string[];
         for (const fileId of relatedArtifacts) {
           const a = this.store.database.getArtifact(fileId);
           if (a) {
              try {
                const absPath = this.store.resolveArtifactAbsolutePath(a.relativePath);
-               await require("node:fs/promises").rm(absPath, { force: true });
+               await rm(absPath, { force: true });
              } catch { /* ignore */ }
-             (this.store.database as any).database.exec(`DELETE FROM artifacts WHERE file_id = '${fileId}'`);
+             (this.store.database as unknown as { database: { exec: (q: string) => void } }).database.exec(`DELETE FROM artifacts WHERE file_id = '${fileId}'`);
           }
         }
       }
@@ -227,16 +223,37 @@ export class MeetingTranscriptionOrchestrator {
       const existingAnalysis = this.store.database.listAnalysis(meetingId);
       const summary = existingAnalysis.find(a => a.kind === "SUMMARY");
       if (summary) {
+        let isStale = true;
         if (summary.sourceTranscriptIds === sourceTranscriptIds && summary.sourceTranscriptShas === sourceTranscriptShas) {
           const artifact = this.store.database.getArtifact(summary.artifactId);
-          if (artifact && artifact.status === "AVAILABLE") {
+          if (artifact && artifact.status === "AVAILABLE" && artifact.sha256) {
             const verification = await this.store.storage.inspectFile(artifact.relativePath, artifact.sha256);
             if (verification.status === "AVAILABLE") {
-              this.store.database.updateProcessingJob(jobId, { state: "COMPLETED", updatedAt: this.clock().toISOString() });
-              return;
+              const allRelatedArtifacts = existingAnalysis.map(a => this.store.database.getArtifact(a.artifactId));
+              let allGood = true;
+              for (const a of allRelatedArtifacts) {
+                if (!a || a.status !== "AVAILABLE" || !a.sha256) {
+                  allGood = false;
+                  break;
+                }
+                const v = await this.store.storage.inspectFile(a.relativePath, a.sha256);
+                if (v.status !== "AVAILABLE") {
+                  allGood = false;
+                  break;
+                }
+              }
+              if (allGood) {
+                isStale = false;
+              }
             }
           }
         }
+        
+        if (!isStale) {
+          this.store.database.updateProcessingJob(jobId, { state: "COMPLETED", updatedAt: this.clock().toISOString() });
+          return;
+        }
+
         // Stale
         const records = this.store.database.listAnalysis(meetingId);
         this.store.database.invalidateStaleAnalysis(meetingId);
@@ -245,9 +262,9 @@ export class MeetingTranscriptionOrchestrator {
           if (a) {
              try {
                const absPath = this.store.resolveArtifactAbsolutePath(a.relativePath);
-               await require("node:fs/promises").rm(absPath, { force: true });
+               await rm(absPath, { force: true });
              } catch { /* ignore */ }
-             (this.store.database as any).database.exec(`DELETE FROM artifacts WHERE file_id = '${r.artifactId}'`);
+             (this.store.database as unknown as { database: { exec: (q: string) => void } }).database.exec(`DELETE FROM artifacts WHERE file_id = '${r.artifactId}'`);
           }
         }
       }
@@ -261,7 +278,7 @@ export class MeetingTranscriptionOrchestrator {
       purpose: "SUMMARY",
       content: JSON.stringify(unifiedDoc),
       language: unifiedDoc.language
-    } as any);
+    });
 
       if (result.persistedByProvider !== false) {
         throw new StorageError("AI provider must not persist meeting data.");
