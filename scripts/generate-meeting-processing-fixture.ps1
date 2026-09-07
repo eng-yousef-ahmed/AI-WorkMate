@@ -173,15 +173,16 @@ $summaryMarkers = @("ai workmate", "data root", "llama cpp")
 $nameMarkers = @("omar", "nadia", "samir")
 $dateMarkers = @("12 september 2026", "10 september 2026")
 
-function Find-Markers([string[]]$Markers) {
-  return @($Markers | Where-Object { $normalized.Contains($_) })
-}
-
-$decisionsFound = Find-Markers $decisionMarkers
-$tasksFound = Find-Markers $taskMarkers
-$summaryFound = Find-Markers $summaryMarkers
-$namesFound = Find-Markers $nameMarkers
-$dateFound = Find-Markers $dateMarkers
+# Match results MUST be wrapped in a call-site array subexpression: a function
+# returning @(pipeline) unrolls its elements on the way out, so 0 matches
+# become $null and 1 match becomes a scalar String - both make .Count throw
+# under Set-StrictMode -Version 2.0. @(pipeline) at the assignment always
+# yields a true Object[] for 0, 1, or N matches.
+$decisionsFound = @($decisionMarkers | Where-Object { $normalized.Contains($_) })
+$tasksFound = @($taskMarkers | Where-Object { $normalized.Contains($_) })
+$summaryFound = @($summaryMarkers | Where-Object { $normalized.Contains($_) })
+$namesFound = @($nameMarkers | Where-Object { $normalized.Contains($_) })
+$dateFound = @($dateMarkers | Where-Object { $normalized.Contains($_) })
 
 Write-Output ("Decisions matched: {0} ({1})" -f $decisionsFound.Count, ($decisionsFound -join ", "))
 Write-Output ("Tasks matched: {0} ({1})" -f $tasksFound.Count, ($tasksFound -join ", "))
