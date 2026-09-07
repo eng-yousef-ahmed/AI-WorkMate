@@ -63,7 +63,9 @@ $speak = $speak -creplace "fail-closed", "fail closed"
 # --- 3. Natural SAPI5 speech -> committed WAV (22 kHz 16-bit mono PCM). ---
 Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$voiceName = $synth.VoiceName
+# SpeechSynthesizer has no VoiceName property; the current voice is exposed
+# via the Voice property (System.Speech.Synthesis.VoiceInfo). Diagnostic only.
+try { $voiceName = $synth.Voice.Name } catch { $voiceName = "unknown" }
 try {
   $synth.Rate = 0
   $synth.Volume = 100
