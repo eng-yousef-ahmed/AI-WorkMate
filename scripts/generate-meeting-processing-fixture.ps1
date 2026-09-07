@@ -114,12 +114,54 @@ if ($LASTEXITCODE -ne 0) {
 }
 $whisperJsonPath = "$tempBase.json"
 $parsed = Get-Content -Raw -LiteralPath $whisperJsonPath | ConvertFrom-Json
-$recognized = ""
-if ($parsed.segments) {
-  $recognized = ($parsed.segments | ForEach-Object { $_.text }) -join " "
-} elseif ($parsed.transcription) {
-  $recognized = ($parsed.transcription | ForEach-Object { $_.text }) -join " "
+
+# whisper-cli -oj writes:
+#   { systeminfo, model, params, result: { language }, transcription: [ { timestamps, offsets, text } ] }
+# There is no top-level "segments" member, and Set-StrictMode makes a direct
+# $parsed.segments access throw PropertyNotFoundStrict. Probe PSObject
+# properties instead of touching possibly-missing members directly.
+function Get-JsonProperty($Object, [string]$Name) {
+  if ($null -eq $Object) { return $null }
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) { return $null }
+  return $property.Value
 }
+
+Write-Output ("whisper-cli JSON top-level properties: " + (($parsed.PSObject.Properties.Name | Select-Object -First 12) -join ", "))
+
+$segmentItems = $null
+foreach ($container in @($parsed, (Get-JsonProperty $parsed "result"))) {
+  if ($null -eq $container) { continue }
+  foreach ($listName in @("transcription", "segments")) {
+    $candidate = Get-JsonProperty $container $listName
+    if ($candidate -is [System.Array] -and $candidate.Length -gt 0) {
+      $segmentItems = $candidate
+      break
+    }
+  }
+  if ($null -ne $segmentItems) { break }
+}
+
+$recognizedParts = @()
+if ($null -ne $segmentItems) {
+  foreach ($item in $segmentItems) {
+    $itemText = Get-JsonProperty $item "text"
+    if ($null -ne $itemText -and "$itemText".Trim().Length -gt 0) {
+      $recognizedParts += "$itemText".Trim()
+    }
+  }
+}
+if ($recognizedParts.Count -eq 0) {
+  # Diagnostics-only fallback: some builds emit an aggregate text field.
+  foreach ($container in @((Get-JsonProperty $parsed "result"), $parsed)) {
+    $aggregate = Get-JsonProperty $container "text"
+    if ($null -ne $aggregate -and "$aggregate".Trim().Length -gt 0) {
+      $recognizedParts += "$aggregate".Trim()
+      break
+    }
+  }
+}
+$recognized = $recognizedParts -join " "
 Remove-Item -LiteralPath $whisperJsonPath -Force -ErrorAction SilentlyContinue
 
 $normalized = Normalize-CorpusText $recognized
