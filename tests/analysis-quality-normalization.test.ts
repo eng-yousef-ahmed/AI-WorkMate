@@ -6,6 +6,7 @@ import {
   evaluateAnalysisQuality,
   isPlaceholderAnalysis,
   normalizeAnalysisMarkerText,
+  transcriptSegmentsContainMarker,
 } from "../src/ai/AnalysisQuality";
 import { buildAnalysisPrompt } from "../src/ai/LocalLlmProvider";
 import { buildUnifiedTranscriptDocument } from "../src/processing/sourceAttribution";
@@ -251,4 +252,111 @@ test("quality markers use the Whisper-robust scenario vocabulary", () => {
   assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.tasks], ["encryption of transcripts", "fail-closed tests", "install guide"]);
   assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.assignees], ["Omar", "Nadia", "Samir"]);
   assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.dates], ["12 September 2026", "10 September 2026"]);
+});
+
+// ---------------------------------------------------------------------------
+// Transcript-side bounded-gap ordered-word matching (STT interloper tolerance)
+// ---------------------------------------------------------------------------
+
+test("transcript-side matching: exact contiguous marker phrases match", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Ship Windows verification of the real AI first."]).segments, "Windows verification"),
+    true,
+  );
+});
+
+test("transcript-side matching: one interloper word between marker words still matches", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Windows relay verification ships first."]).segments, "Windows verification"),
+    true,
+  );
+});
+
+test("transcript-side matching: two interloper words between marker words still match", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Windows real AI verification ships first."]).segments, "Windows verification"),
+    true,
+  );
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["He will fail very slowly closed tests today."]).segments, "fail-closed tests"),
+    true,
+  );
+});
+
+test("transcript-side matching: three interloper words fail", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Windows one two three verification ships first."]).segments, "Windows verification"),
+    false,
+  );
+});
+
+test("transcript-side matching: reversed order fails", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Verification relay windows ships first."]).segments, "Windows verification"),
+    false,
+  );
+});
+
+test("transcript-side matching: missing marker word fails", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Windows ships first."]).segments, "Windows verification"),
+    false,
+  );
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["Meeting never leave the data route."]).segments, "meeting files"),
+    false,
+  );
+});
+
+test("transcript-side matching: words split across segments fail", () => {
+  assert.equal(
+    transcriptSegmentsContainMarker(spokenTranscript(["We ship Windows today.", "Verification ships first."]).segments, "Windows verification"),
+    false,
+  );
+});
+
+test("end-to-end: interloper-bearing transcript still grounds two decisions and passes unchanged thresholds", () => {
+  const transcript = spokenTranscript([
+    "Decision one. We keep analysis local only on Windows.",
+    "Decision three. Windows relay verification ships before we add a larger instruct model.",
+    "Omar will write the install guide under LocalAppData by 12 September 2026.",
+    "Nadia will review encryption of transcripts before 12 September 2026.",
+    "Samir will add fail closed tests that reject invented tasks by 10 September 2026.",
+  ]);
+  const analysis: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [
+      { decisionId: "d1", text: "Keep analysis local only with no cloud provider." },
+      { decisionId: "d3", text: "Ship Windows verification before adding a larger instruct model." },
+    ],
+  };
+  const quality = evaluateAnalysisQuality(analysis, transcript);
+  assert.equal(quality.matchedDecisions, 2);
+  assert.equal(quality.matchedTasks, 3);
+  assert.equal(quality.summaryMentionsMeeting, true);
+  assert.equal(quality.hallucinatedNames.length, 0);
+  assert.equal(quality.acceptable, true);
+});
+
+test("analysis-side matching stays contiguous: interloper words inside analysis rows do not count", () => {
+  const transcript = spokenTranscript(["Ship Windows verification of the real AI first."]);
+  const interloperRow: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [{ decisionId: "d3", text: "Ship windows relay verification before adding a larger instruct model." }],
+    tasks: [],
+  };
+  const cleanRow: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [{ decisionId: "d3", text: "Ship Windows verification before adding a larger instruct model." }],
+    tasks: [],
+  };
+  assert.equal(evaluateAnalysisQuality(interloperRow, transcript).matchedDecisions, 0);
+  assert.equal(evaluateAnalysisQuality(cleanRow, transcript).matchedDecisions, 1);
+});
+
+test("bounded-gap transcript matching does not leak into name grounding", () => {
+  const transcript = spokenTranscript(["o m a r will write the install guide"]);
+  const quality = evaluateAnalysisQuality(SPOKEN_ANALYSIS, transcript);
+  assert.equal(quality.hallucinatedNames.includes("Omar"), true);
+  assert.equal(quality.acceptable, false);
 });

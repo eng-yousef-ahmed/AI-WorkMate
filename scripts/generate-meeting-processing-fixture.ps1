@@ -167,20 +167,59 @@ Remove-Item -LiteralPath $whisperJsonPath -Force -ErrorAction SilentlyContinue
 $normalized = Normalize-CorpusText $recognized
 Write-Output "Whisper recognized (normalized): $normalized"
 
+# Bounded-gap ordered-word marker matching, mirroring the production
+# transcript-side grounding in src/ai/AnalysisQuality.ts exactly: a marker
+# matches only when its words appear IN ORDER within ONE transcript segment
+# (one recognizedParts entry), with at most 2 non-marker words between
+# consecutive marker words. No cross-segment, reversed, or partial matches.
+$markerMatchMaxGap = 2
+
+function Get-NormalizedWords([string]$Text) {
+  $lower = $Text.ToLowerInvariant()
+  $spaced = $lower -creplace "[^a-z0-9]+", " "
+  $collapsed = ($spaced.Trim() -creplace "\s+", " ")
+  if ($collapsed.Length -eq 0) { return @() }
+  return @($collapsed.Split(" "))
+}
+
+function Test-OrderedMarkerWords([string[]]$Words, [string[]]$MarkerWords, [int]$MarkerIndex, [int]$PrevPos, [int]$MaxGap) {
+  if ($MarkerIndex -ge $MarkerWords.Count) { return $true }
+  $lower = 0
+  $upper = $Words.Count - 1
+  if ($MarkerIndex -gt 0) {
+    $lower = $PrevPos + 1
+    $upper = [Math]::Min($upper, $PrevPos + 1 + $MaxGap)
+  }
+  for ($pos = $lower; $pos -le $upper; $pos++) {
+    if ($Words[$pos] -eq $MarkerWords[$MarkerIndex] -and (Test-OrderedMarkerWords $Words $MarkerWords ($MarkerIndex + 1) $pos $MaxGap)) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Test-MarkerInTranscriptSegments([string[]]$SegmentTexts, [string]$Marker) {
+  $markerWords = @(Get-NormalizedWords $Marker)
+  if ($markerWords.Count -eq 0) { return $false }
+  foreach ($text in $SegmentTexts) {
+    $words = @(Get-NormalizedWords $text)
+    if ($words.Count -gt 0 -and (Test-OrderedMarkerWords $words $markerWords 0 -1 $markerMatchMaxGap)) { return $true }
+  }
+  return $false
+}
+
 $decisionMarkers = @("local only", "meeting files", "windows verification")
 $taskMarkers = @("encryption of transcripts", "fail closed tests", "install guide")
 $summaryMarkers = @("local only", "meeting files", "windows verification")
 $nameMarkers = @("omar", "nadia", "samir")
 $dateMarkers = @("12 september 2026", "10 september 2026")
 
-# Match results MUST be wrapped in a call-site array subexpression: a function
-# returning @(pipeline) unrolls its elements on the way out, so 0 matches
-# become $null and 1 match becomes a scalar String - both make .Count throw
-# under Set-StrictMode -Version 2.0. @(pipeline) at the assignment always
-# yields a true Object[] for 0, 1, or N matches.
-$decisionsFound = @($decisionMarkers | Where-Object { $normalized.Contains($_) })
-$tasksFound = @($taskMarkers | Where-Object { $normalized.Contains($_) })
-$summaryFound = @($summaryMarkers | Where-Object { $normalized.Contains($_) })
+# Match results MUST stay wrapped in call-site array subexpressions: without
+# them 0 matches become $null and 1 match becomes a scalar String, and .Count
+# throws under Set-StrictMode -Version 2.0.
+$decisionsFound = @($decisionMarkers | Where-Object { Test-MarkerInTranscriptSegments $recognizedParts $_ })
+$tasksFound = @($taskMarkers | Where-Object { Test-MarkerInTranscriptSegments $recognizedParts $_ })
+$summaryFound = @($summaryMarkers | Where-Object { Test-MarkerInTranscriptSegments $recognizedParts $_ })
 $namesFound = @($nameMarkers | Where-Object { $normalized.Contains($_) })
 $dateFound = @($dateMarkers | Where-Object { $normalized.Contains($_) })
 

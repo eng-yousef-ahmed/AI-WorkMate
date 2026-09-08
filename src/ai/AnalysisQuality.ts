@@ -38,6 +38,12 @@ export const ANALYSIS_QUALITY_MARKERS = {
 /** Summary must echo the meeting's core decision vocabulary (any one). */
 const SUMMARY_MEETING_MARKERS = ["local only", "meeting files", "Windows verification"] as const;
 
+/**
+ * Maximum non-marker words allowed between consecutive marker words inside a
+ * single transcript segment (transcript-side grounding only).
+ */
+export const ANALYSIS_MARKER_TRANSCRIPT_MAX_GAP = 2;
+
 export interface AnalysisQualityReport {
   acceptable: boolean;
   placeholder: boolean;
@@ -72,6 +78,58 @@ export function transcriptCorpus(document: TranscriptDocument): string {
   return document.segments.map((segment) => segment.text).join(" ");
 }
 
+function normalizedWords(text: string): string[] {
+  const normalized = normalizeAnalysisMarkerText(text);
+  return normalized.length === 0 ? [] : normalized.split(" ");
+}
+
+/**
+ * Transcript-side marker grounding: the marker's words must appear IN ORDER
+ * within ONE transcript segment, with at most ANALYSIS_MARKER_TRANSCRIPT_MAX_GAP
+ * non-marker words between consecutive marker words. Real STT inserts
+ * interloper words ("windows relay verification"), which is faithful
+ * recognition of the concept; scattered, reversed, cross-segment, or
+ * partial-word matches still fail. The analysis side keeps contiguous
+ * substring matching (Qwen output is not STT-corrupted).
+ */
+export function transcriptSegmentsContainMarker(
+  segments: TranscriptDocument["segments"],
+  marker: string,
+  maxGap = ANALYSIS_MARKER_TRANSCRIPT_MAX_GAP,
+): boolean {
+  const markerWords = normalizedWords(marker);
+  if (markerWords.length === 0) {
+    return false;
+  }
+  return segments.some((segment) => {
+    const words = normalizedWords(segment.text);
+    return orderedWordsMatchFrom(words, markerWords, 0, -1, maxGap);
+  });
+}
+
+function orderedWordsMatchFrom(
+  words: string[],
+  markerWords: string[],
+  markerIndex: number,
+  previousPosition: number,
+  maxGap: number,
+): boolean {
+  if (markerIndex === markerWords.length) {
+    return true;
+  }
+  const lowerBound = markerIndex === 0 ? 0 : previousPosition + 1;
+  const upperBound = markerIndex === 0
+    ? words.length - 1
+    : Math.min(words.length - 1, previousPosition + 1 + maxGap);
+  for (let position = lowerBound; position <= upperBound; position += 1) {
+    if (words[position] === markerWords[markerIndex] &&
+      orderedWordsMatchFrom(words, markerWords, markerIndex + 1, position, maxGap)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function isPlaceholderAnalysis(document: AnalysisDocument): boolean {
   const blob = [document.summary, ...document.decisions.map((row) => row.text), ...document.tasks.map((row) => row.text)].join("\n");
   return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(blob));
@@ -89,12 +147,12 @@ export function evaluateAnalysisQuality(analysis: AnalysisDocument, transcript: 
   const matchedDecisions = ANALYSIS_QUALITY_MARKERS.decisions.filter((marker) => {
     const normalizedMarker = normalizeAnalysisMarkerText(marker);
     return analysis.decisions.some((row) => normalizeAnalysisMarkerText(row.text).includes(normalizedMarker)) &&
-      normalizedCorpus.includes(normalizedMarker);
+      transcriptSegmentsContainMarker(transcript.segments, marker);
   }).length;
   const matchedTasks = ANALYSIS_QUALITY_MARKERS.tasks.filter((marker) => {
     const normalizedMarker = normalizeAnalysisMarkerText(marker);
     return analysis.tasks.some((row) => normalizeAnalysisMarkerText(row.text).includes(normalizedMarker)) &&
-      normalizedCorpus.includes(normalizedMarker);
+      transcriptSegmentsContainMarker(transcript.segments, marker);
   }).length;
   const matchedAssignees = ANALYSIS_QUALITY_MARKERS.assignees.filter((name) =>
     analysis.tasks.some((row) => (row.assignee ?? "").includes(name)),
