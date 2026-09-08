@@ -416,3 +416,98 @@ test("Qwen 7B replay shape: combined owner string is not three valid owners", ()
   assert.equal(singleOwner.hallucinatedNames.length, 0);
   assert.equal(singleOwner.acceptable, true);
 });
+
+// ---------------------------------------------------------------------------
+// Latest real Windows Phase 9 failure: Qwen 7B still merged the numbered
+// decisions ("Only 1 transcript decisions were recovered.") and emitted "N/A"
+// as an owner/assignee ("Invented assignee/owner names: N/A."). Prompt-only
+// strengthening; quality thresholds and grounding mechanics are unchanged.
+// ---------------------------------------------------------------------------
+
+const NUMBERED_CORPUS = [
+  "Decision 1. We keep analysis local only on Windows, and no transcript content goes to a cloud provider.",
+  "Decision 2. We will not move meeting files to a remote store.",
+  "Decision 3. Windows verification of the real AI ships before we add a larger instruct model.",
+  "Omar will write the install guide under LocalAppData by 12 September 2026.",
+  "Nadia will review encryption of transcripts before 12 September 2026.",
+  "Samir will add fail closed tests that reject invented tasks by 10 September 2026.",
+];
+
+test("analysis prompt requires one decisions[] object per numbered decision and bans placeholder owners", () => {
+  const prompt = buildAnalysisPrompt(spokenTranscript(NUMBERED_CORPUS), "2026-09-12T11:00:00.000Z");
+  assert.match(prompt, /one separate decisions\[\] object for EACH numbered decision/i);
+  assert.match(prompt, /never combine two numbered decisions into one object/i);
+  assert.match(prompt, /number of decision objects must match the numbered decisions/i);
+  assert.match(prompt, /preserve each numbered decision's important wording/i);
+  assert.match(prompt, /owner and assignee are optional/i);
+  assert.match(prompt, /NEVER output "N\/A", "NA", "n\/a", "unknown", "none", "null", "not specified"/);
+  assert.match(prompt, /a comma-separated list of people is invalid for owner\/assignee/i);
+  assert.match(prompt, /single assignee only when the transcript clearly assigns that task to one person/i);
+});
+
+test("Decision 1/2/3 transcript: three separate decision objects pass", () => {
+  const transcript = spokenTranscript(NUMBERED_CORPUS);
+  const analysis: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [
+      { decisionId: "d1", text: "Decision 1: keep analysis local only with no cloud provider." },
+      { decisionId: "d2", text: "Decision 2: do not move meeting files to a remote store." },
+      { decisionId: "d3", text: "Decision 3: Windows verification ships before adding a larger instruct model." },
+    ],
+  };
+  assert.equal(analysis.decisions.length, 3);
+  const quality = evaluateAnalysisQuality(analysis, transcript);
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 3);
+  assert.equal(quality.hallucinatedNames.length, 0);
+  assert.equal(quality.acceptable, true);
+});
+
+test("Decision 1/2/3 transcript: merging numbered decisions into one object is not acceptable", () => {
+  const transcript = spokenTranscript(NUMBERED_CORPUS);
+  const merged: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [{ decisionId: "d1", text: "Keep analysis local only with no cloud provider." }],
+  };
+  assert.equal(merged.decisions.length, 1);
+  const quality = evaluateAnalysisQuality(merged, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+  assert.equal(quality.acceptable, false);
+  assert.equal(quality.reasons.some((reason) => reason.includes("Only 1 transcript decisions")), true);
+});
+
+test("placeholder owners are rejected: N/A, unknown, and none cannot be owner or assignee", () => {
+  const transcript = spokenTranscript(NUMBERED_CORPUS);
+  for (const placeholder of ["N/A", "unknown", "none"]) {
+    const analysis: AnalysisDocument = {
+      ...SPOKEN_ANALYSIS,
+      decisions: SPOKEN_ANALYSIS.decisions.map((row) => ({ ...row, owner: placeholder })),
+      tasks: SPOKEN_ANALYSIS.tasks.map((row) => ({ ...row, assignee: placeholder })),
+    };
+    const quality = evaluateAnalysisQuality(analysis, transcript);
+    assert.equal(quality.matchedDecisions, 3);
+    assert.equal(quality.matchedTasks, 3);
+    assert.equal(quality.hallucinatedNames.includes(placeholder), true);
+    assert.equal(quality.acceptable, false);
+    assert.equal(quality.reasons.some((reason) => reason.includes("Invented assignee/owner names")), true);
+  }
+});
+
+test("omitted owner/assignee passes when no single person is clearly assigned", () => {
+  const transcript = spokenTranscript(NUMBERED_CORPUS);
+  const unassigned: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    tasks: [
+      { taskId: "t1", text: "Write the install guide", status: "OPEN" },
+      { taskId: "t2", text: "Review encryption of transcripts", status: "OPEN" },
+      { taskId: "t3", text: "Add fail closed tests that reject invented tasks", status: "OPEN" },
+    ],
+  };
+  assert.equal(unassigned.decisions.every((row) => row.owner === undefined), true);
+  assert.equal(unassigned.tasks.every((row) => row.assignee === undefined), true);
+  const quality = evaluateAnalysisQuality(unassigned, transcript);
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 3);
+  assert.equal(quality.hallucinatedNames.length, 0);
+  assert.equal(quality.acceptable, true);
+});
