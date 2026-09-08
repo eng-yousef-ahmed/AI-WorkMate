@@ -360,3 +360,59 @@ test("bounded-gap transcript matching does not leak into name grounding", () => 
   assert.equal(quality.hallucinatedNames.includes("Omar"), true);
   assert.equal(quality.acceptable, false);
 });
+
+// ---------------------------------------------------------------------------
+// Qwen 7B production replay regression (Phase 9 Windows verification failure:
+// Decisions 1-3 merged into one decision; owner "Omar, Nadia, Samir" emitted
+// as one combined string). Thresholds and grounding mechanics are unchanged.
+// ---------------------------------------------------------------------------
+
+test("analysis prompt requires separate decision objects and single-person owners", () => {
+  const prompt = buildAnalysisPrompt(spokenTranscript(SPOKEN_CORPUS), "2026-09-12T11:00:00.000Z");
+  assert.match(prompt, /every numbered decision .* separate decision object/i);
+  assert.match(prompt, /never merge multiple decisions into one decision/i);
+  assert.match(prompt, /at most one person/i);
+  assert.match(prompt, /if no single owner is clearly stated, omit the owner\/assignee field/i);
+  assert.match(prompt, /preserve important decision and task wording/i);
+});
+
+test("Qwen 7B replay shape: three separate decisions and three single-owner tasks pass", () => {
+  assert.equal(SPOKEN_ANALYSIS.decisions.length, 3);
+  assert.equal(SPOKEN_ANALYSIS.tasks.length, 3);
+  const quality = evaluateAnalysisQuality(SPOKEN_ANALYSIS, spokenTranscript(SPOKEN_CORPUS));
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 3);
+  assert.equal(quality.matchedAssignees, 3);
+  assert.equal(quality.hallucinatedNames.length, 0);
+  assert.equal(quality.acceptable, true);
+});
+
+test("Qwen 7B replay shape: merged decisions that drop wording still fail unchanged thresholds", () => {
+  const merged: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [{ decisionId: "d1", text: "Keep analysis local only with no cloud provider." }],
+  };
+  const quality = evaluateAnalysisQuality(merged, spokenTranscript(SPOKEN_CORPUS));
+  assert.equal(quality.matchedDecisions, 1);
+  assert.equal(quality.acceptable, false);
+  assert.equal(quality.reasons.some((reason) => reason.includes("Only 1 transcript decisions")), true);
+});
+
+test("Qwen 7B replay shape: combined owner string is not three valid owners", () => {
+  const transcript = spokenTranscript(SPOKEN_CORPUS);
+  const combined: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: SPOKEN_ANALYSIS.decisions.map((row) => ({ ...row, owner: "Omar, Nadia, Samir" })),
+    tasks: [
+      { taskId: "t1", text: "Write the install guide", assignee: "Omar, Nadia, Samir", dueDate: "2026-09-12", status: "OPEN" },
+      ...SPOKEN_ANALYSIS.tasks.slice(1),
+    ],
+  };
+  const quality = evaluateAnalysisQuality(combined, transcript);
+  assert.equal(quality.hallucinatedNames.includes("Omar, Nadia, Samir"), true);
+  assert.equal(quality.acceptable, false);
+  const singleOwner = evaluateAnalysisQuality(SPOKEN_ANALYSIS, transcript);
+  assert.equal(singleOwner.matchedAssignees, 3);
+  assert.equal(singleOwner.hallucinatedNames.length, 0);
+  assert.equal(singleOwner.acceptable, true);
+});
