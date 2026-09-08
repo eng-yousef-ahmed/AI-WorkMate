@@ -443,7 +443,7 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
     "Do not invent people, dates, decisions, or tasks. Do not paste the full transcript into any field.",
     "Lines without a name prefix have no speaker label; never treat a line prefix or a bracketed source tag such as [Microphone] or [System Audio] as a person.",
     "Use an owner or assignee only when that name is actually spoken/present in the transcript; otherwise omit the owner/assignee field.",
-    "Summary: one sentence that names this meeting using the product and system names the speakers used.",
+    "Summary: one sentence that names this meeting, states its main decision, and mentions the product or system the meeting is about, using the names as they appear in the transcript.",
     "Short ids d1/t1. One short sentence per decision and task, using the speakers' words for systems, owners, and dates.",
     "Questions are not decisions. Omit optional keys or use [] when unstated.",
     `meetingId=${transcript.meetingId}`,

@@ -660,7 +660,7 @@ test("extraction quality accepts transcript facts and rejects placeholders and i
   const prompt = buildAnalysisPrompt(fixture, "2026-09-02T12:00:00.000Z");
   assert.equal(prompt.includes("Review the local analysis artifacts"), false);
   assert.match(prompt, /minified JSON/);
-  assert.match(prompt, /product and system names the speakers used/);
+  assert.match(prompt, /states its main decision, and mentions the product or system/);
   assert.equal(/Do not copy the transcript/i.test(prompt), false);
   assert.equal(prompt.includes("AI WorkMate"), true);
   assert.equal(prompt.includes("The summary must include AI WorkMate"), false);
