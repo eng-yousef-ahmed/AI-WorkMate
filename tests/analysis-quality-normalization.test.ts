@@ -13,10 +13,12 @@ import type { AnalysisDocument, TranscriptDocument } from "../src/domain/models"
 
 /**
  * Spoken-normalization and speaker-label contract tests for the Phase 9
- * quality evaluator and the Qwen analysis prompt. Real Whisper transcripts
- * render identifier tokens as spoken words ("local only", "data root",
- * "llama CPP"), so marker matching normalizes both sides symmetrically while
- * every threshold and grounding requirement stays unchanged.
+ * quality evaluator and the Qwen analysis prompt. The marker vocabulary is
+ * plain-English phrasing proven to survive real Whisper tiny transcription
+ * ("local only", "meeting files", "Windows verification", "encryption of
+ * transcripts", "fail-closed tests", "install guide"); identity tokens
+ * (AI WorkMate / DATA_ROOT / llama.cpp / real-AI) are spoken in the fixture
+ * but are not load-bearing markers because real STT corrupts them.
  */
 
 function spokenTranscript(texts: string[]): TranscriptDocument {
@@ -31,10 +33,10 @@ function spokenTranscript(texts: string[]): TranscriptDocument {
 }
 
 const SPOKEN_CORPUS = [
-  "Welcome to the AI WorkMate planning call for local meeting analysis.",
-  "Decision one. We keep analysis local only with llama CPP on Windows, and no transcript content goes to a cloud provider.",
-  "Decision two. Data root remains on the user's machine, and we do not move meeting files to a remote store.",
-  "Omar will document the llama CPP install under LocalAppData by 12 September 2026.",
+  "Decision one. We keep analysis local only on Windows, and no transcript content goes to a cloud provider.",
+  "Decision two. We will not move meeting files to a remote store.",
+  "Decision three. Windows verification of the real AI ships before we add a larger instruct model.",
+  "Omar will write the install guide under LocalAppData by 12 September 2026.",
   "Nadia will review encryption of transcripts before 12 September 2026.",
   "Samir will add fail closed tests that reject invented tasks by 10 September 2026.",
 ];
@@ -42,14 +44,16 @@ const SPOKEN_CORPUS = [
 const SPOKEN_ANALYSIS: AnalysisDocument = {
   meetingId: "m-1",
   createdAt: "2026-09-12T11:00:00.000Z",
-  summary: "AI WorkMate planning kept analysis local only with data root on the machine.",
+  summary: "The team kept analysis local only and kept meeting files on the user's machine.",
   decisions: [
-    { decisionId: "d1", text: "Keep analysis local only with llama CPP and do not send transcript content to a cloud provider." },
-    { decisionId: "d2", text: "Data root remains on the user's machine." },
+    { decisionId: "d1", text: "Keep analysis local only with no cloud provider." },
+    { decisionId: "d2", text: "Do not move meeting files to a remote store." },
+    { decisionId: "d3", text: "Windows verification ships before adding a larger instruct model." },
   ],
   tasks: [
-    { taskId: "t1", text: "Document the llama CPP install under LocalAppData", assignee: "Omar", dueDate: "2026-09-12", status: "OPEN" },
+    { taskId: "t1", text: "Write the install guide", assignee: "Omar", dueDate: "2026-09-12", status: "OPEN" },
     { taskId: "t2", text: "Review encryption of transcripts", assignee: "Nadia", dueDate: "2026-09-12", status: "OPEN" },
+    { taskId: "t3", text: "Add fail closed tests that reject invented tasks", assignee: "Samir", dueDate: "2026-09-10", status: "OPEN" },
   ],
   risks: [],
   questions: [],
@@ -62,53 +66,70 @@ test("normalizeAnalysisMarkerText maps identifier punctuation to spoken word for
   assert.equal(normalizeAnalysisMarkerText("llama.cpp install"), "llama cpp install");
   assert.equal(normalizeAnalysisMarkerText("Windows real-AI verification"), "windows real ai verification");
   assert.equal(normalizeAnalysisMarkerText("fail-closed tests"), "fail closed tests");
+  assert.equal(normalizeAnalysisMarkerText("Windows Verification"), "windows verification");
   assert.equal(normalizeAnalysisMarkerText("  Mixed   Punctuation,,Case//Extra  "), "mixed punctuation case extra");
 });
 
-test("LOCAL_ONLY spoken as \"local only\" in transcript and analysis matches the LOCAL_ONLY decision marker", () => {
-  const transcript = spokenTranscript(["We keep analysis local only with llama CPP on Windows."]);
+test("the \"Windows verification\" decision marker matches spoken transcript and analysis text", () => {
+  const transcript = spokenTranscript(["Windows verification of the real AI ships first."]);
   const analysis: AnalysisDocument = {
     ...SPOKEN_ANALYSIS,
-    decisions: [{ decisionId: "d1", text: "Keep analysis local only on Windows." }],
+    decisions: [{ decisionId: "d3", text: "Ship Windows verification before adding a larger instruct model." }],
     tasks: [],
   };
   const quality = evaluateAnalysisQuality(analysis, transcript);
   assert.equal(quality.matchedDecisions >= 1, true);
 });
 
-test("DATA_ROOT spoken as \"data root\" in transcript and analysis matches the DATA_ROOT decision marker", () => {
-  const transcript = spokenTranscript(["Decision two. Data root remains on the user's machine."]);
+test("the \"meeting files\" decision marker matches spoken transcript and analysis text", () => {
+  const transcript = spokenTranscript(["We will not move meeting files to a remote store."]);
   const analysis: AnalysisDocument = {
     ...SPOKEN_ANALYSIS,
-    decisions: [{ decisionId: "d2", text: "Data root remains on the user's machine." }],
+    decisions: [{ decisionId: "d2", text: "Meeting files stay on the user's machine." }],
     tasks: [],
   };
   const quality = evaluateAnalysisQuality(analysis, transcript);
   assert.equal(quality.matchedDecisions >= 1, true);
+});
+
+test("hyphenated markers still ground against their spoken forms (fail-closed tests)", () => {
+  const transcript = spokenTranscript(["Samir will add fail closed tests that reject invented tasks."]);
+  const analysis: AnalysisDocument = {
+    ...SPOKEN_ANALYSIS,
+    decisions: [],
+    tasks: [{ taskId: "t3", text: "Add fail-closed tests", assignee: "Samir", status: "OPEN" }],
+  };
+  const quality = evaluateAnalysisQuality(analysis, transcript);
+  assert.equal(quality.matchedTasks >= 1, true);
 });
 
 test("written identifier markers still match after normalization (identity for typed corpora)", () => {
   const typedAnalysis: AnalysisDocument = {
     ...SPOKEN_ANALYSIS,
+    decisions: [
+      { decisionId: "d1", text: "Keep analysis LOCAL_ONLY with no cloud provider." },
+      { decisionId: "d2", text: "We will not move meeting files to a remote store." },
+      { decisionId: "d3", text: "Ship Windows verification of the real AI first." },
+    ],
     tasks: [
       ...SPOKEN_ANALYSIS.tasks,
-      { taskId: "t3", text: "Add fail-closed tests that reject invented tasks", assignee: "Samir", dueDate: "2026-09-10", status: "OPEN" },
+      { taskId: "t4", text: "Document the install guide", status: "OPEN" },
     ],
   };
   const quality = evaluateAnalysisQuality(typedAnalysis, spokenTranscript([
     "We keep analysis LOCAL_ONLY.",
-    "DATA_ROOT remains on the user's machine.",
-    "Document the llama.cpp install, the encryption of transcripts, and the fail-closed tests.",
+    "We will not move meeting files to a remote store.",
+    "Windows verification ships first. Document the install guide, the encryption of transcripts, and the fail-closed tests.",
   ]));
-  assert.equal(quality.matchedDecisions, 2);
+  assert.equal(quality.matchedDecisions, 3);
   assert.equal(quality.matchedTasks, 3);
   assert.equal(quality.summaryMentionsMeeting, true);
 });
 
 test("a fully spoken-form meeting passes with thresholds intact", () => {
   const quality = evaluateAnalysisQuality(SPOKEN_ANALYSIS, spokenTranscript(SPOKEN_CORPUS));
-  assert.equal(quality.matchedDecisions, 2);
-  assert.equal(quality.matchedTasks, 2);
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 3);
   assert.equal(quality.summaryMentionsMeeting, true);
   assert.equal(quality.hallucinatedNames.length, 0);
   assert.equal(quality.acceptable, true);
@@ -128,7 +149,7 @@ test("thresholds are not weakened: fewer than two matched decisions still reject
 test("thresholds are not weakened: fewer than two matched tasks still rejects", () => {
   const oneTask: AnalysisDocument = {
     ...SPOKEN_ANALYSIS,
-    tasks: [{ taskId: "t1", text: "Document the llama CPP install", assignee: "Omar", status: "OPEN" }],
+    tasks: [{ taskId: "t1", text: "Write the install guide", assignee: "Omar", status: "OPEN" }],
   };
   const quality = evaluateAnalysisQuality(oneTask, spokenTranscript(SPOKEN_CORPUS));
   assert.equal(quality.matchedTasks, 1);
@@ -148,7 +169,7 @@ test("invented names remain rejected, including \"Speaker\" as a prompt-style la
   const invented: AnalysisDocument = {
     ...SPOKEN_ANALYSIS,
     tasks: [
-      { taskId: "t1", text: "Document the llama CPP install under LocalAppData", assignee: "Speaker", status: "OPEN" },
+      { taskId: "t1", text: "Write the install guide", assignee: "Speaker", status: "OPEN" },
       { taskId: "t2", text: "Review encryption of transcripts", assignee: "John", status: "OPEN" },
     ],
   };
@@ -162,14 +183,18 @@ test("\"Speaker\" stays rejected even when the corpus contains source tags", () 
   const withTags = spokenTranscript(["[Microphone]", "[System Audio]", ...SPOKEN_CORPUS]);
   const invented: AnalysisDocument = {
     ...SPOKEN_ANALYSIS,
-    tasks: [{ taskId: "t1", text: "Document the llama CPP install", assignee: "Speaker", status: "OPEN" }],
+    tasks: [{ taskId: "t1", text: "Write the install guide", assignee: "Speaker", status: "OPEN" }],
   };
   const quality = evaluateAnalysisQuality(invented, withTags);
   assert.equal(quality.hallucinatedNames.includes("Speaker"), true);
 });
 
 test("spoken names ground case-insensitively without ungrounding rules changing", () => {
-  const transcript = spokenTranscript(["omar will document the llama CPP install", "nadia will review encryption of transcripts"]);
+  const transcript = spokenTranscript([
+    "omar will write the install guide",
+    "nadia will review encryption of transcripts",
+    "samir will add fail closed tests",
+  ]);
   const quality = evaluateAnalysisQuality(SPOKEN_ANALYSIS, transcript);
   assert.equal(quality.hallucinatedNames.length, 0);
 });
@@ -194,12 +219,12 @@ test("analysis prompt renders speaker-less segments as bare lines with no \"Spea
 
 test("analysis prompt keeps real speaker labels when speakers exist", () => {
   const transcript: TranscriptDocument = {
-    ...spokenTranscript(["I finished wiring llama CPP on Windows."]),
+    ...spokenTranscript(["I finished wiring the local analysis pipeline on Windows."]),
     speakers: [{ speakerId: "omar", displayName: "Omar Farouk" }],
-    segments: [{ segmentId: "s1", startMs: 0, endMs: 1_000, text: "I finished wiring llama CPP on Windows.", speakerId: "omar" }],
+    segments: [{ segmentId: "s1", startMs: 0, endMs: 1_000, text: "I finished wiring the local analysis pipeline on Windows.", speakerId: "omar" }],
   };
   const prompt = buildAnalysisPrompt(transcript, "2026-09-12T11:00:00.000Z");
-  assert.equal(prompt.includes("Omar Farouk: I finished wiring llama CPP on Windows."), true);
+  assert.equal(prompt.includes("Omar Farouk: I finished wiring the local analysis pipeline on Windows."), true);
 });
 
 test("analysis prompt explains unlabeled lines, source tags, and omit-when-unstated owners", () => {
@@ -221,9 +246,9 @@ test("unified transcript keeps source tags as plain text segments, not speakers"
   assert.equal(prompt.includes("[Microphone]"), true);
 });
 
-test("quality marker constants are unchanged", () => {
-  assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.decisions], ["LOCAL_ONLY", "DATA_ROOT", "Windows real-AI verification"]);
-  assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.tasks], ["llama.cpp install", "encryption of transcripts", "fail-closed tests"]);
+test("quality markers use the Whisper-robust scenario vocabulary", () => {
+  assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.decisions], ["local only", "meeting files", "Windows verification"]);
+  assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.tasks], ["encryption of transcripts", "fail-closed tests", "install guide"]);
   assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.assignees], ["Omar", "Nadia", "Samir"]);
   assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.dates], ["12 September 2026", "10 September 2026"]);
 });

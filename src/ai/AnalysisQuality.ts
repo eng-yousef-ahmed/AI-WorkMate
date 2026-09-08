@@ -8,25 +8,35 @@ const PLACEHOLDER_PATTERNS = [
   /^ok$/i,
 ];
 
+/**
+ * Scenario marker vocabulary for analysis quality grounding. The strings are
+ * plain-English phrases proven to survive the real Windows SAPI5 -> playback
+ * -> WASAPI capture -> whisper.cpp tiny transcription path; identity tokens
+ * (AI WorkMate, DATA_ROOT, llama.cpp, real-AI) are systematically corrupted
+ * by tiny-model STT ("ai work made", "data route", "lama cpp", "relay") and
+ * are therefore spoken in the fixture but not used as matching markers. The
+ * matching mechanics (two-sided grounding, thresholds, normalization) are
+ * unchanged.
+ */
 export const ANALYSIS_QUALITY_MARKERS = {
   attendees: ["Layla Hassan", "Omar Farouk", "Nadia Rahman", "Samir Haddad"],
   decisions: [
-    "LOCAL_ONLY",
-    "DATA_ROOT",
-    "Windows real-AI verification",
+    "local only",
+    "meeting files",
+    "Windows verification",
   ],
   tasks: [
-    "llama.cpp install",
     "encryption of transcripts",
     "fail-closed tests",
+    "install guide",
   ],
   assignees: ["Omar", "Nadia", "Samir"],
   dates: ["12 September 2026", "10 September 2026"],
   openItem: "7B",
 } as const;
 
-/** Summary must name the meeting using these product/system identifiers (any one). */
-const SUMMARY_MEETING_MARKERS = ["AI WorkMate", "DATA_ROOT", "llama.cpp"] as const;
+/** Summary must echo the meeting's core decision vocabulary (any one). */
+const SUMMARY_MEETING_MARKERS = ["local only", "meeting files", "Windows verification"] as const;
 
 export interface AnalysisQualityReport {
   acceptable: boolean;

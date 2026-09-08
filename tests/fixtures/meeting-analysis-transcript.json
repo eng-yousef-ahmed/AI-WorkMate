@@ -2,10 +2,22 @@
   "meetingId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "recordingId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   "speakers": [
-    { "speakerId": "layla", "displayName": "Layla Hassan" },
-    { "speakerId": "omar", "displayName": "Omar Farouk" },
-    { "speakerId": "nadia", "displayName": "Nadia Rahman" },
-    { "speakerId": "samir", "displayName": "Samir Haddad" }
+    {
+      "speakerId": "layla",
+      "displayName": "Layla Hassan"
+    },
+    {
+      "speakerId": "omar",
+      "displayName": "Omar Farouk"
+    },
+    {
+      "speakerId": "nadia",
+      "displayName": "Nadia Rahman"
+    },
+    {
+      "speakerId": "samir",
+      "displayName": "Samir Haddad"
+    }
   ],
   "timestamps": true,
   "language": "en",
@@ -51,7 +63,7 @@
       "speakerId": "samir",
       "startMs": 42000,
       "endMs": 52000,
-      "text": "Decision three: we ship Windows real-AI verification before we add a larger instruct model."
+      "text": "Decision three: we ship Windows verification of the real AI before we add a larger instruct model."
     },
     {
       "segmentId": "seg-7",

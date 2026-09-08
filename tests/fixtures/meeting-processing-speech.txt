@@ -1,13 +1,13 @@
 Welcome to the AI WorkMate planning call for local meeting analysis.
 The product name is AI WorkMate.
 Decision one. We keep analysis LOCAL_ONLY on Windows. Local only means no cloud provider, and no transcript content leaves this machine.
-Decision two. DATA_ROOT remains on the user's machine. The data root directory stays on the local disk. Meeting files never leave the data root directory.
+Decision two. All meeting data stays in DATA_ROOT on the user's machine. Think of tree roots. Like the roots of a tree, the data root keeps our storage grounded on the local disk. The data root, root like tree roots and not like a road route, is never copied to the cloud.
 Decision three. We ship Windows real-AI verification before we add a larger instruct model.
 Omar, please document the llama.cpp install under LocalAppData by Friday, 12 September 2026.
 Nadia, review encryption of transcripts under DATA_ROOT before 12 September 2026.
 Samir, add fail-closed tests that reject invented tasks by 10 September 2026.
 Open item. The 7B local model budget is not decided today.
-Let me repeat the plan. Analysis stays local only. The data root directory stays on the user's machine, and the data root folder is never copied to the cloud.
-Omar owns the llama.cpp install guide. Nadia owns the encryption of transcripts. Samir owns the fail-closed tests.
-Once more. AI WorkMate keeps meeting analysis LOCAL_ONLY. DATA_ROOT is the data root directory on the user's machine. Windows real-AI verification ships first.
+Let me say that again. Like a square root anchors a number, the data root anchors our meeting storage. The data root folder stays on the user's machine, and meeting files never leave the data root.
+Omar, Nadia, and Samir are the owners. Omar owns the llama.cpp install guide. Nadia owns the encryption of transcripts. Samir owns the fail-closed tests.
+Analysis stays local only. Meeting files stay in the data root. Windows verification ships first.
 That is the plan for AI WorkMate.

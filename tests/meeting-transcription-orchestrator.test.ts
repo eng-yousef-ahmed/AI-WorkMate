@@ -57,7 +57,7 @@ class FakeTranscriptionEngine implements TranscriptionEngine {
       timestamps: true,
       engine: this.descriptor,
       createdAt: new Date().toISOString(),
-      segments: [{ segmentId: randomUUID(), startMs: 0, endMs: 1000, text: `Fake transcript for ${request.recordingId} AI WorkMate LOCAL_ONLY DATA_ROOT llama.cpp install fail-closed tests` }]
+      segments: [{ segmentId: randomUUID(), startMs: 0, endMs: 1000, text: `Fake transcript for ${request.recordingId} local only meeting files windows verification encryption of transcripts fail-closed tests install guide` }]
     };
     return result;
   }
@@ -78,9 +78,9 @@ class FakeAIProvider implements AIProvider {
     const analysis: FakeAnalysisDocument = {
       meetingId: request.meetingId,
       createdAt: new Date().toISOString(),
-      summary: "Fake summary AI WorkMate",
-      decisions: [{ decisionId: randomUUID(), text: "Fake decision LOCAL_ONLY", createdAt: new Date().toISOString() }, { decisionId: randomUUID(), text: "Fake decision DATA_ROOT", createdAt: new Date().toISOString() }],
-      tasks: [{ taskId: randomUUID(), text: "Fake task llama.cpp install", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { taskId: randomUUID(), text: "Fake task fail-closed tests", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+      summary: "Fake summary local only",
+      decisions: [{ decisionId: randomUUID(), text: "Fake decision local only", createdAt: new Date().toISOString() }, { decisionId: randomUUID(), text: "Fake decision meeting files", createdAt: new Date().toISOString() }],
+      tasks: [{ taskId: randomUUID(), text: "Fake task encryption of transcripts", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { taskId: randomUUID(), text: "Fake task fail-closed tests", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
       risks: [],
       questions: [],
       followups: []

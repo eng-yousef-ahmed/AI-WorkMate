@@ -671,8 +671,8 @@ test("extraction quality accepts transcript facts and rejects placeholders and i
     summary: "AI WorkMate planning kept llama.cpp analysis LOCAL_ONLY and DATA_ROOT on the machine.",
     decisions: [
       { decisionId: "d1", text: "Keep analysis LOCAL_ONLY with llama.cpp and do not send transcript content to a cloud provider." },
-      { decisionId: "d2", text: "DATA_ROOT remains on the user's machine." },
-      { decisionId: "d3", text: "Ship Windows real-AI verification before adding a larger instruct model." },
+      { decisionId: "d2", text: "Meeting files stay in DATA_ROOT on the user's machine." },
+      { decisionId: "d3", text: "Ship Windows verification of the real AI before adding a larger instruct model." },
     ],
     tasks: [
       { taskId: "t1", text: "Document the llama.cpp install under LocalAppData", assignee: "Omar Farouk", dueDate: "2026-09-12", status: "OPEN" },

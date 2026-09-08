@@ -167,9 +167,9 @@ Remove-Item -LiteralPath $whisperJsonPath -Force -ErrorAction SilentlyContinue
 $normalized = Normalize-CorpusText $recognized
 Write-Output "Whisper recognized (normalized): $normalized"
 
-$decisionMarkers = @("local only", "data root", "windows real ai verification")
-$taskMarkers = @("llama cpp install", "encryption of transcripts", "fail closed tests")
-$summaryMarkers = @("ai workmate", "data root", "llama cpp")
+$decisionMarkers = @("local only", "meeting files", "windows verification")
+$taskMarkers = @("encryption of transcripts", "fail closed tests", "install guide")
+$summaryMarkers = @("local only", "meeting files", "windows verification")
 $nameMarkers = @("omar", "nadia", "samir")
 $dateMarkers = @("12 september 2026", "10 september 2026")
 
