@@ -511,3 +511,111 @@ test("omitted owner/assignee passes when no single person is clearly assigned", 
   assert.equal(quality.hallucinatedNames.length, 0);
   assert.equal(quality.acceptable, true);
 });
+
+// ---------------------------------------------------------------------------
+// Latest real Windows Phase 9 failure after the digit-form patch: the actual
+// spoken fixture numbers decisions as WORDS ("Decision one", "Decision two",
+// "Decision three"), Qwen still merged them ("Only 1 transcript decisions
+// were recovered."), and the summary missed the quality contract ("Summary
+// does not mention ..."). Prompt-only strengthening; the N/A owner fix stays
+// in force and the quality gate is unchanged.
+// ---------------------------------------------------------------------------
+
+const SPOKEN_WORD_CORPUS = [
+  "Decision one. We keep analysis local only on Windows, and no transcript content goes to a cloud provider.",
+  "Decision two. All meeting data stays in DATA_ROOT on the user's machine, and meeting files never leave the data root.",
+  "Decision three. We ship Windows verification of the real AI before we add a larger instruct model.",
+  "Omar will write the install guide under LocalAppData by 12 September 2026.",
+  "Nadia will review encryption of transcripts before 12 September 2026.",
+  "Samir will add fail closed tests that reject invented tasks by 10 September 2026.",
+];
+
+const WORD_NUMBERED_ANALYSIS: AnalysisDocument = {
+  meetingId: "m-1",
+  createdAt: "2026-09-12T11:00:00.000Z",
+  summary: "The team kept analysis local only during this AI WorkMate planning call.",
+  decisions: [
+    { decisionId: "d1", text: "Decision one: keep analysis local only with no cloud provider." },
+    { decisionId: "d2", text: "Decision two: meeting files stay in the data root on the machine." },
+    { decisionId: "d3", text: "Decision three: ship Windows verification before adding a larger instruct model." },
+  ],
+  tasks: [
+    { taskId: "t1", text: "Write the install guide", assignee: "Omar", status: "OPEN" },
+    { taskId: "t2", text: "Review encryption of transcripts", assignee: "Nadia", status: "OPEN" },
+    { taskId: "t3", text: "Add fail closed tests that reject invented tasks", assignee: "Samir", status: "OPEN" },
+  ],
+  risks: [],
+  questions: [],
+  followups: [],
+};
+
+test("analysis prompt handles spoken word-form numbered decisions, not only digits", () => {
+  const prompt = buildAnalysisPrompt(spokenTranscript(SPOKEN_WORD_CORPUS), "2026-09-12T11:00:00.000Z");
+  assert.match(prompt, /as digits \(Decision 1, Decision 2, Decision 3\)/);
+  assert.match(prompt, /as spoken words \(Decision one, Decision two, Decision three\)/);
+  assert.match(prompt, /any equivalent numbered-decision wording in the transcript/i);
+  assert.match(prompt, /never merge them into one object/i);
+});
+
+test("analysis prompt states the summary quality contract with the core decision phrases", () => {
+  const prompt = buildAnalysisPrompt(spokenTranscript(SPOKEN_WORD_CORPUS), "2026-09-12T11:00:00.000Z");
+  assert.match(prompt, /at least one exact core decision phrase copied from the transcript/i);
+  assert.match(prompt, /"local only", "meeting files", or "Windows verification"/);
+  assert.match(prompt, /do not invent the phrase, copy the wording actually spoken/i);
+});
+
+test("word-form Decision one/two/three: three separate decision objects pass", () => {
+  const transcript = spokenTranscript(SPOKEN_WORD_CORPUS);
+  assert.equal(WORD_NUMBERED_ANALYSIS.decisions.length, 3);
+  const quality = evaluateAnalysisQuality(WORD_NUMBERED_ANALYSIS, transcript);
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 3);
+  assert.equal(quality.summaryMentionsMeeting, true);
+  assert.equal(quality.hallucinatedNames.length, 0);
+  assert.equal(quality.acceptable, true);
+});
+
+test("word-form transcript: merged numbered decisions still fail unchanged thresholds", () => {
+  const transcript = spokenTranscript(SPOKEN_WORD_CORPUS);
+  const merged: AnalysisDocument = {
+    ...WORD_NUMBERED_ANALYSIS,
+    decisions: [{ decisionId: "d1", text: "Keep analysis local only with no cloud provider." }],
+  };
+  assert.equal(merged.decisions.length, 1);
+  const quality = evaluateAnalysisQuality(merged, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+  assert.equal(quality.acceptable, false);
+  assert.equal(quality.reasons.some((reason) => reason.includes("Only 1 transcript decisions")), true);
+});
+
+test("summary with one valid core decision phrase passes, summary without the phrases fails", () => {
+  const transcript = spokenTranscript(SPOKEN_WORD_CORPUS);
+  const passing = evaluateAnalysisQuality(WORD_NUMBERED_ANALYSIS, transcript);
+  assert.equal(passing.summaryMentionsMeeting, true);
+  assert.equal(passing.acceptable, true);
+  const missingPhrase: AnalysisDocument = {
+    ...WORD_NUMBERED_ANALYSIS,
+    summary: "The team had a productive planning discussion about next steps.",
+  };
+  const failing = evaluateAnalysisQuality(missingPhrase, transcript);
+  assert.equal(failing.matchedDecisions, 3);
+  assert.equal(failing.matchedTasks, 3);
+  assert.equal(failing.summaryMentionsMeeting, false);
+  assert.equal(failing.acceptable, false);
+  assert.equal(failing.reasons.some((reason) => reason.includes("Summary does not mention")), true);
+});
+
+test("N/A owner remains rejected on the spoken word-form transcript", () => {
+  const transcript = spokenTranscript(SPOKEN_WORD_CORPUS);
+  const placeholder: AnalysisDocument = {
+    ...WORD_NUMBERED_ANALYSIS,
+    decisions: WORD_NUMBERED_ANALYSIS.decisions.map((row) => ({ ...row, owner: "N/A" })),
+    tasks: WORD_NUMBERED_ANALYSIS.tasks.map((row) => ({ ...row, assignee: "N/A" })),
+  };
+  const quality = evaluateAnalysisQuality(placeholder, transcript);
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 3);
+  assert.equal(quality.hallucinatedNames.includes("N/A"), true);
+  assert.equal(quality.acceptable, false);
+  assert.equal(quality.reasons.some((reason) => reason.includes("Invented assignee/owner names")), true);
+});
