@@ -259,9 +259,9 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
     "-t",
     args[args.indexOf("-t") + 1],
   ]);
-  assert.equal(Number(args[args.indexOf("-n") + 1]), 480);
-  assert.equal(LOCAL_LLM_MAX_PREDICT_TOKENS > 320, true);
-  assert.equal(LOCAL_LLM_MAX_PREDICT_TOKENS < 768, true);
+  assert.equal(Number(args[args.indexOf("-n") + 1]), 1024);
+  assert.equal(LOCAL_LLM_MAX_PREDICT_TOKENS > 480, true);
+  assert.equal(LOCAL_LLM_MAX_PREDICT_TOKENS <= 1024, true);
   const completionArgs = buildLlamaCliArgs("injected-llama-model.gguf", "prompt-text", "llama-completion.exe");
   assert.equal(completionArgs.includes("--single-turn"), true);
   assert.equal(completionArgs.includes("--json-schema"), true);
@@ -306,7 +306,7 @@ test("llama.cpp stdout extracts one complete JSON object and rejects truncated o
   );
   const twoObjects = `${json}{"meetingId":"other"}`;
   assert.equal(extractJsonObject(twoObjects), json);
-  assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /nPredict=480/);
+  assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /nPredict=1024/);
   assert.match(describeLlamaStdout(truncated, "n_remain = 0"), /hit-n-limit/);
   assert.match(describeJsonCursor(truncated), /\$\.summary/);
   assert.match(describeLlamaStdout(truncated), /cursor=/);
@@ -332,12 +332,12 @@ test("truncated llama.cpp structured output fails closed without inventing analy
       error instanceof LocalLlmError &&
       error.code === "ANALYSIS_ENGINE_INVALID_OUTPUT" &&
       error.message.includes("truncated") &&
-      error.message.includes("nPredict=480") &&
+      error.message.includes("nPredict=1024") &&
       error.message.includes("hit-n-limit"),
   );
 });
 
-test("generation schema bounds string fields so a quality document fits in 480 tokens", () => {
+test("generation schema bounds string fields so a quality document fits in 1024 tokens", () => {
   assert.equal(ANALYSIS_DOCUMENT_JSON_SCHEMA.properties.summary.maxLength, 220);
   assert.equal(ANALYSIS_DOCUMENT_JSON_SCHEMA.properties.decisions.items.properties.text.maxLength, 160);
   assert.equal(ANALYSIS_DOCUMENT_JSON_SCHEMA.properties.tasks.items.properties.text.maxLength, 140);

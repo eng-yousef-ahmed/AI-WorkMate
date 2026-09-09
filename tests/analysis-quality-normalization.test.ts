@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert";
 
 import {
+  ANALYSIS_QUALITY_DECISION_ANCHOR_ALTERNATES,
   ANALYSIS_QUALITY_MARKERS,
   evaluateAnalysisQuality,
   isPlaceholderAnalysis,
@@ -618,4 +619,133 @@ test("N/A owner remains rejected on the spoken word-form transcript", () => {
   assert.equal(quality.hallucinatedNames.includes("N/A"), true);
   assert.equal(quality.acceptable, false);
   assert.equal(quality.reasons.some((reason) => reason.includes("Invented assignee/owner names")), true);
+});
+
+// ---------------------------------------------------------------------------
+// Real Windows meeting-processing replay: the verified system transcript
+// states Decision 2 with "data route" and Decision 3 with "Windows relay
+// verification", and Qwen faithfully preserves that wording. The decision
+// slots therefore accept those verified STT alternate anchors, each still
+// requiring strict two-sided grounding. Canonical markers, slots (3),
+// thresholds (>= 2), tasks, names, placeholders, and summary checks are
+// unchanged.
+// ---------------------------------------------------------------------------
+
+const REPLAY_SYSTEM_TRANSCRIPT = [
+  "Decision 1. We keep analysis local only on Windows.",
+  "Decision 2. All meeting data stays in data route on the user's machine.",
+  "Decision 3. We ship Windows relay verification before we add a larger instruct model.",
+  "Omar will write the install guide under LocalAppData by 12 September 2026.",
+  "Nadia will review encryption of transcripts before 12 September 2026.",
+  "Samir will add fail tests that reject invented tasks by 10 September 2026.",
+];
+
+const REPLAY_QWEN_ANALYSIS: AnalysisDocument = {
+  meetingId: "m-1",
+  createdAt: "2026-09-12T11:00:00.000Z",
+  summary: "The team kept analysis local only on Windows for this meeting.",
+  decisions: [
+    { decisionId: "d1", text: "Keep analysis local only on Windows with no cloud provider." },
+    { decisionId: "d2", text: "All meeting data stays in data route on the user's machine." },
+    { decisionId: "d3", text: "Ship Windows relay verification before adding a larger instruct model." },
+  ],
+  tasks: [
+    { taskId: "t1", text: "Write the install guide", assignee: "Omar", status: "OPEN" },
+    { taskId: "t2", text: "Review encryption of transcripts", assignee: "Nadia", status: "OPEN" },
+    { taskId: "t3", text: "Add fail tests that reject invented tasks", assignee: "Samir", status: "OPEN" },
+  ],
+  risks: [],
+  questions: [],
+  followups: [],
+};
+
+test("decision anchor alternates are exactly the verified STT forms; canonical markers unchanged", () => {
+  assert.deepEqual(ANALYSIS_QUALITY_DECISION_ANCHOR_ALTERNATES, {
+    "meeting files": ["data route"],
+    "Windows verification": ["Windows relay verification"],
+  });
+  assert.deepEqual([...ANALYSIS_QUALITY_MARKERS.decisions], ["local only", "meeting files", "Windows verification"]);
+});
+
+test("replay Decision 2: 'data route' grounds the slot without requiring 'meeting files'", () => {
+  const decisionText = "All meeting data stays in data route on the user's machine.";
+  assert.equal(normalizeAnalysisMarkerText(decisionText).includes("meeting files"), false);
+  const transcript = spokenTranscript(["Decision 2. All meeting data stays in data route on the user's machine."]);
+  const analysis: AnalysisDocument = {
+    ...REPLAY_QWEN_ANALYSIS,
+    decisions: [{ decisionId: "d2", text: decisionText }],
+    tasks: [],
+  };
+  const quality = evaluateAnalysisQuality(analysis, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+});
+
+test("replay Decision 3: 'Windows relay verification' grounds the slot", () => {
+  const decisionText = "Ship Windows relay verification before adding a larger instruct model.";
+  assert.equal(normalizeAnalysisMarkerText(decisionText).includes("windows verification"), false);
+  const transcript = spokenTranscript(["Decision 3. We ship Windows relay verification before we add a larger instruct model."]);
+  const analysis: AnalysisDocument = {
+    ...REPLAY_QWEN_ANALYSIS,
+    decisions: [{ decisionId: "d3", text: decisionText }],
+    tasks: [],
+  };
+  const quality = evaluateAnalysisQuality(analysis, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+});
+
+test("full replay shape passes with the exact replay numbers", () => {
+  const transcript = spokenTranscript(REPLAY_SYSTEM_TRANSCRIPT);
+  assert.equal(REPLAY_QWEN_ANALYSIS.decisions.length, 3);
+  assert.equal(REPLAY_QWEN_ANALYSIS.tasks.length, 3);
+  const quality = evaluateAnalysisQuality(REPLAY_QWEN_ANALYSIS, transcript);
+  assert.equal(quality.matchedDecisions, 3);
+  assert.equal(quality.matchedTasks, 2);
+  assert.equal(quality.matchedAssignees, 3);
+  assert.deepEqual(quality.hallucinatedNames, []);
+  assert.equal(quality.summaryMentionsMeeting, true);
+  assert.equal(quality.acceptable, true);
+  assert.deepEqual(quality.reasons, []);
+});
+
+test("alternates still require transcript grounding: ungrounded 'data route' does not match", () => {
+  const transcript = spokenTranscript(["The team discussed the weather and nothing else today."]);
+  const analysis: AnalysisDocument = {
+    ...REPLAY_QWEN_ANALYSIS,
+    decisions: [
+      { decisionId: "d2", text: "All meeting data stays in data route on the user's machine." },
+      { decisionId: "d3", text: "Ship Windows relay verification before adding a larger instruct model." },
+    ],
+    tasks: [],
+  };
+  const quality = evaluateAnalysisQuality(analysis, transcript);
+  assert.equal(quality.matchedDecisions, 0);
+  assert.equal(quality.acceptable, false);
+});
+
+test("invented decisions are still rejected on the replay transcript", () => {
+  const transcript = spokenTranscript(REPLAY_SYSTEM_TRANSCRIPT);
+  const invented: AnalysisDocument = {
+    ...REPLAY_QWEN_ANALYSIS,
+    decisions: [
+      { decisionId: "d1", text: "Approve the quarterly marketing budget for Dubai." },
+      { decisionId: "d2", text: "Hire five external contractors next month." },
+    ],
+  };
+  const quality = evaluateAnalysisQuality(invented, transcript);
+  assert.equal(quality.matchedDecisions, 0);
+  assert.equal(quality.matchedTasks, 2);
+  assert.equal(quality.acceptable, false);
+  assert.equal(quality.reasons.some((reason) => reason.includes("Only 0 transcript decisions")), true);
+});
+
+test("replay transcript: a single grounded decision still fails the unchanged >= 2 threshold", () => {
+  const transcript = spokenTranscript(REPLAY_SYSTEM_TRANSCRIPT);
+  const single: AnalysisDocument = {
+    ...REPLAY_QWEN_ANALYSIS,
+    decisions: [{ decisionId: "d1", text: "Keep analysis local only on Windows with no cloud provider." }],
+  };
+  const quality = evaluateAnalysisQuality(single, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+  assert.equal(quality.acceptable, false);
+  assert.equal(quality.reasons.some((reason) => reason.includes("Only 1 transcript decisions")), true);
 });
