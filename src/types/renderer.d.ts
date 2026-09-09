@@ -1,4 +1,5 @@
 import type { CalendarRendererAPI } from "../desktop/storage-api";
+import type { MeetingsRendererAPI } from "../desktop/storage-api";
 import type { StorageRendererAPI } from "../desktop/storage-api";
 
 declare global {
@@ -6,6 +7,7 @@ declare global {
     aiWorkMate: {
       storage: StorageRendererAPI;
       calendar: CalendarRendererAPI;
+      meetings: MeetingsRendererAPI;
     };
   }
 }

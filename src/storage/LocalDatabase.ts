@@ -932,24 +932,13 @@ export class LocalDatabase {
     const rows = this.database
       .prepare("SELECT * FROM transcripts WHERE meeting_id = $meetingId ORDER BY created_at")
       .all({ $meetingId: meetingId });
-    return rows.map((row) => {
-      const value = row as SqlRow;
-      const record: TranscriptRecord = {
-        transcriptId: stringValue(value.transcript_id),
-        meetingId: stringValue(value.meeting_id),
-        jsonArtifactId: stringValue(value.json_artifact_id),
-        textArtifactId: stringValue(value.text_artifact_id),
-        language: stringValue(value.language),
-        createdAt: stringValue(value.created_at),
-      };
-      addOptional(record, "vttArtifactId", optionalString(value.vtt_artifact_id));
-      addOptional(record, "srtArtifactId", optionalString(value.srt_artifact_id));
-      addOptional(record, "recordingId", optionalString(value.recording_id));
-      addOptional(record, "engineId", optionalString(value.engine_id));
-      addOptional(record, "sourceCapability", optionalString(value.source_capability));
-      addOptional(record, "sourceSha256", optionalString(value.source_sha256));
-      return record;
-    });
+    return rows.map((row) => mapTranscriptRecord(row as SqlRow));
+  }
+
+  /** Every transcript across all meetings (ordered by creation time). */
+  public listAllTranscripts(): TranscriptRecord[] {
+    const rows = this.database.prepare("SELECT * FROM transcripts ORDER BY created_at").all();
+    return rows.map((row) => mapTranscriptRecord(row as SqlRow));
   }
 
   public registerAnalysis(record: AnalysisRecord): void {
@@ -1500,6 +1489,24 @@ function mapMeeting(row: SqlRow): Meeting {
   addOptional(meeting, "providerMeetingId", optionalString(row.provider_meeting_id));
   addOptional(meeting, "calendarEventId", optionalString(row.calendar_event_id));
   return meeting;
+}
+
+function mapTranscriptRecord(value: SqlRow): TranscriptRecord {
+  const record: TranscriptRecord = {
+    transcriptId: stringValue(value.transcript_id),
+    meetingId: stringValue(value.meeting_id),
+    jsonArtifactId: stringValue(value.json_artifact_id),
+    textArtifactId: stringValue(value.text_artifact_id),
+    language: stringValue(value.language),
+    createdAt: stringValue(value.created_at),
+  };
+  addOptional(record, "vttArtifactId", optionalString(value.vtt_artifact_id));
+  addOptional(record, "srtArtifactId", optionalString(value.srt_artifact_id));
+  addOptional(record, "recordingId", optionalString(value.recording_id));
+  addOptional(record, "engineId", optionalString(value.engine_id));
+  addOptional(record, "sourceCapability", optionalString(value.source_capability));
+  addOptional(record, "sourceSha256", optionalString(value.source_sha256));
+  return record;
 }
 
 function mapArtifact(row: SqlRow): Artifact {

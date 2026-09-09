@@ -51,6 +51,7 @@ export interface ChangeDataRootResult {
 }
 
 import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
+import { MeetingHubService } from "../meetings/MeetingHubService";
 import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
 import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
 import type { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
@@ -77,6 +78,8 @@ export class StorageRuntime {
   public meetingCapture: MeetingCaptureOrchestrator | undefined;
   /** Multi-source transcription and analysis orchestrator (Phase 9); created with the store. */
   public meetingProcessing: MeetingTranscriptionOrchestrator | undefined;
+  /** Meeting Hub (dashboard/calendar linkage/capture controls); created with the store. */
+  public meetingHub: MeetingHubService | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -471,6 +474,15 @@ export class StorageRuntime {
     return this.meetingProcessing.processCompletedMeeting(meetingId, options);
   }
 
+  /** Meeting Hub service bound to the active store (throws before first-run setup). */
+  public requireMeetingHub(): MeetingHubService {
+    const hub = this.meetingHub;
+    if (hub === undefined) {
+      throw new StorageError("Choose a local data location before using the meeting hub.");
+    }
+    return hub;
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -625,6 +637,11 @@ export class StorageRuntime {
       analysisProvider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
       clock: this.clock,
     });
+    this.meetingHub = new MeetingHubService({
+      store,
+      orchestrator: this.meetingCapture,
+      clock: this.clock,
+    });
   }
 
   private async detachStore(reason: string): Promise<void> {
@@ -634,6 +651,7 @@ export class StorageRuntime {
     await this.meetingCapture?.abortAllActive(reason);
     this.meetingCapture = undefined;
     this.meetingProcessing = undefined;
+    this.meetingHub = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;

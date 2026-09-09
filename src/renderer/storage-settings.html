@@ -38,6 +38,54 @@
           <div class="topbar-actions"><span id="sync-status" class="sync-status"><span class="status-dot"></span> Local-first</span><button id="refresh-button" class="icon-button" title="Refresh storage statistics">↻</button></div>
         </header>
 
+        <section id="meetings" class="meetings-hub" aria-label="Meeting hub">
+          <div class="section-heading">
+            <div><h2>Meeting hub</h2><p id="hub-day-label">Your meetings and recordings, stored on this device.</p></div>
+            <div class="hub-heading-actions">
+              <span id="hub-capture-status" class="calendar-badge neutral">Capture status…</span>
+              <button id="hub-refresh-button" class="button secondary" title="Refresh meeting hub">↻ Refresh</button>
+            </div>
+          </div>
+
+          <div class="hub-grid">
+            <div class="hub-column">
+              <div class="panel">
+                <div class="panel-heading">
+                  <div class="panel-icon">◷</div>
+                  <div><h3>Today</h3><p>Synced meetings happening today</p></div>
+                  <span id="hub-today-count" class="count-badge">0</span>
+                </div>
+                <div id="hub-today" class="meeting-list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-heading">
+                  <div class="panel-icon">⌁</div>
+                  <div><h3>Upcoming</h3><p>Synced meetings in the coming days</p></div>
+                  <span id="hub-upcoming-count" class="count-badge">0</span>
+                </div>
+                <div id="hub-upcoming" class="meeting-list"></div>
+              </div>
+            </div>
+            <div class="hub-column">
+              <div class="panel">
+                <div class="panel-heading">
+                  <div class="panel-icon">▤</div>
+                  <div><h3>History</h3><p>Recorded meetings, transcripts and analysis</p></div>
+                  <span id="hub-history-count" class="count-badge">0</span>
+                </div>
+                <label class="hub-search-label" for="hub-search-input">SEARCH TRANSCRIPTS</label>
+                <input id="hub-search-input" type="search" spellcheck="false" placeholder="Search your local transcripts…" autocomplete="off" />
+                <div id="hub-search-status" class="calendar-line" hidden></div>
+                <div id="hub-search-results" class="meeting-list" hidden></div>
+                <div id="hub-recent" class="meeting-list"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="hub-detail" class="hub-detail" hidden></div>
+          <div id="hub-notice" class="notice" role="status" aria-live="polite"></div>
+        </section>
+
         <section class="hero-card">
           <div class="hero-icon">⌂</div>
           <div class="hero-copy"><div class="section-kicker">DATA STORAGE</div><h2>Local by default</h2><p>Recordings, transcripts, analysis, tasks, and your local database are stored on your computer. Nothing is uploaded as a primary data store.</p></div>
@@ -166,5 +214,6 @@
       </main>
     </div>
     <script src="./storage-settings.js"></script>
+    <script src="./meetings-hub.js"></script>
   </body>
 </html>

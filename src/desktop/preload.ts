@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
-import { CALENDAR_IPC_CHANNELS, STORAGE_IPC_CHANNELS, type CalendarRendererAPI, type StorageRendererAPI } from "./storage-api";
+import { CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, type CalendarRendererAPI, type MeetingsRendererAPI, type StorageRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {
   getSnapshot: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getSnapshot),
@@ -38,4 +38,21 @@ const calendarApi: CalendarRendererAPI = {
   saveGoogleOAuthConfig: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.saveGoogleOAuthConfig, input),
 };
 
-contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi });
+const meetingsApi: MeetingsRendererAPI = {
+  getOverview: () => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getOverview),
+  getDetail: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getDetail, meetingId),
+  getTranscriptContent: (meetingId, transcriptId) =>
+    ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getTranscriptContent, meetingId, transcriptId),
+  searchTranscripts: (query, limit) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.searchTranscripts, query, limit),
+  getAnalysis: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getAnalysis, meetingId),
+  getCaptureCapabilities: () => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getCaptureCapabilities),
+  startCapture: (request) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.startCapture, request),
+  stopCapture: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.stopCapture, meetingId),
+  abortCapture: (meetingId, reason) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.abortCapture, meetingId, reason),
+  listActiveCaptures: () => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.listActiveCaptures),
+  processMeeting: (meetingId, userApprovedForThisRequest) =>
+    ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.processMeeting, meetingId, userApprovedForThisRequest === true),
+  openLinkedUrl: (meetingId, kind) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.openLinkedUrl, meetingId, kind),
+};
+
+contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi });

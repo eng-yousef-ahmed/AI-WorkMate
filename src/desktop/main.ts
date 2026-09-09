@@ -20,6 +20,7 @@ import { ElectronSafeStorageCredentialStore } from "../security/CredentialStore"
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
 import { registerCalendarIpc, type GoogleOAuthConfigInput, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
+import { registerMeetingsIpc } from "./meetings-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
 
@@ -101,6 +102,15 @@ async function bootstrap(): Promise<void> {
       },
       saveGoogleOAuthApplicationConfig: async (input: GoogleOAuthConfigInput) => {
         await saveGoogleConfig(input);
+      },
+    });
+    registerMeetingsIpc({
+      ipcMain: ipcMain as unknown as IpcMainLike,
+      runtime,
+      getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
+      getAuthorizedRendererUrl: () => rendererUrl,
+      openExternal: async (url: string) => {
+        await shell.openExternal(url);
       },
     });
     ipcRegistered = true;

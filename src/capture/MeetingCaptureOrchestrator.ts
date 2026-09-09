@@ -212,6 +212,21 @@ export class MeetingCaptureOrchestrator {
   }
 
   /**
+   * Sanitized live snapshots of every active capture flow. Used by the meeting
+   * hub to render recording controls from the real orchestrator state; flows
+   * started in this process are the only ones reported (crash recovery of
+   * interrupted flows is handled by persisted meeting status recovery).
+   */
+  public getActiveFlowSnapshots(): MeetingCaptureFlowSnapshot[] {
+    return [...this.activeByMeetingId.values()].map((flow) => this.snapshot(flow));
+  }
+
+  /** Native capture capability discovery (delegates to the coordinator). */
+  public discoverCapabilities(): Promise<NativeCaptureCapabilities> {
+    return this.coordinator.discoverCapabilities();
+  }
+
+  /**
    * Transactional flow start: create/reuse the meeting in STARTING (PREPARING),
    * validate requested capabilities, resolve SCREEN/WINDOW/audio sources through
    * the existing deterministic selection paths, then start each requested source

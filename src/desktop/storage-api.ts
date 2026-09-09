@@ -9,6 +9,16 @@ import type {
   CalendarConnectionStatus,
   CompleteCalendarSignInInput,
 } from "../calendar/CalendarConnection";
+import type {
+  HubAnalysisDocument,
+  HubCaptureCapabilities,
+  HubCaptureRequest,
+  HubCaptureSnapshot,
+  HubTranscriptContent,
+  MeetingDetail,
+  MeetingHubOverview,
+  TranscriptSearchResults,
+} from "../domain/hub";
 
 export interface LocationChangeResult {
   migrated: boolean;
@@ -30,6 +40,21 @@ export const STORAGE_IPC_CHANNELS = {
   exportMeeting: "storage:export-meeting",
   setAiProcessingPolicy: "storage:set-ai-processing-policy",
   syncMicrosoftCalendar: "calendar:sync-microsoft",
+} as const;
+
+export const MEETINGS_IPC_CHANNELS = {
+  getOverview: "meetings:overview",
+  getDetail: "meetings:detail",
+  getTranscriptContent: "meetings:transcript-content",
+  searchTranscripts: "meetings:search-transcripts",
+  getAnalysis: "meetings:analysis",
+  getCaptureCapabilities: "meetings:capture-capabilities",
+  startCapture: "meetings:capture-start",
+  stopCapture: "meetings:capture-stop",
+  abortCapture: "meetings:capture-abort",
+  listActiveCaptures: "meetings:capture-active",
+  processMeeting: "meetings:process",
+  openLinkedUrl: "meetings:open-linked-url",
 } as const;
 
 export const CALENDAR_IPC_CHANNELS = {
@@ -95,6 +120,28 @@ export interface StorageRendererAPI {
 }
 
 /**
+ * Meeting Hub surface. Every payload is renderer-safe DTO materialized in the
+ * main process: meeting/artifact/transcript metadata and transcript text.
+ * Absolute filesystem paths, DATA_ROOT, credentials, and provider cursors
+ * never cross this boundary.
+ */
+export interface MeetingsRendererAPI {
+  getOverview(): Promise<MeetingHubOverview>;
+  getDetail(meetingId: string): Promise<MeetingDetail>;
+  getTranscriptContent(meetingId: string, transcriptId: string): Promise<HubTranscriptContent>;
+  searchTranscripts(query: string, limit?: number): Promise<TranscriptSearchResults>;
+  getAnalysis(meetingId: string): Promise<HubAnalysisDocument | undefined>;
+  getCaptureCapabilities(): Promise<HubCaptureCapabilities>;
+  startCapture(request: HubCaptureRequest): Promise<HubCaptureSnapshot>;
+  stopCapture(meetingId: string): Promise<HubCaptureSnapshot>;
+  abortCapture(meetingId: string, reason?: string): Promise<HubCaptureSnapshot>;
+  listActiveCaptures(): Promise<HubCaptureSnapshot[]>;
+  processMeeting(meetingId: string, userApprovedForThisRequest?: boolean): Promise<void>;
+  /** Opens the persisted join/web URL of a linked calendar event in the browser. */
+  openLinkedUrl(meetingId: string, kind: "JOIN" | "WEB"): Promise<void>;
+}
+
+/**
  * Calendar connection surface. Every payload is sanitized in the main
  * process: no tokens, verifiers, state values, cursor URLs, or provider
  * error bodies cross this boundary.
@@ -122,7 +169,15 @@ export type {
   BeginCalendarSignInResult,
   CalendarConnectionStatus,
   CompleteCalendarSignInInput,
+  HubAnalysisDocument,
+  HubCaptureCapabilities,
+  HubCaptureRequest,
+  HubCaptureSnapshot,
+  HubTranscriptContent,
   IntegrityReport,
+  MeetingDetail,
+  MeetingHubOverview,
   RendererCalendarSyncResult,
   StorageSnapshot,
+  TranscriptSearchResults,
 };
