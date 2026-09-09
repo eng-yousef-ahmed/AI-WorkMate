@@ -291,3 +291,82 @@ export interface HubFollowupSuggestion {
 
 export const HUB_MAX_TRANSCRIPT_READ_BYTES = 24 * 1024 * 1024;
 export const HUB_MAX_ANALYSIS_READ_BYTES = 8 * 1024 * 1024;
+
+/** User-controlled automations. All notification kinds default OFF except meeting detection lifecycle. */
+export interface HubAutomationPreferences {
+  /** Advance SCHEDULED calendar meetings to DETECTED near start time (local lifecycle, no external side effects). */
+  meetingDetection: boolean;
+  meetingPreparation: boolean;
+  meetingPreparationMinutes: number;
+  meetingSummaries: boolean;
+  assignedTaskNotifications: boolean;
+  overdueReminders: boolean;
+  dailyMeetingReports: boolean;
+  unresolvedFollowupReminders: boolean;
+  captureMicrophone: boolean;
+  captureSystemLoopback: boolean;
+  captureScreen: boolean;
+}
+
+export type HubNotificationKind =
+  | "MEETING_DETECTED"
+  | "MEETING_PREPARATION"
+  | "MEETING_SUMMARY_READY"
+  | "TASK_ASSIGNED"
+  | "TASK_OVERDUE"
+  | "DAILY_MEETING_REPORT"
+  | "UNRESOLVED_FOLLOWUPS";
+
+/** Renderer-safe local notification (never contains paths, tokens, or credentials). */
+export interface HubNotificationItem {
+  notificationId: string;
+  kind: HubNotificationKind;
+  title: string;
+  body: string;
+  createdAt: string;
+  read: boolean;
+  meetingId?: string;
+  taskId?: string;
+}
+
+export interface HubAutomationTickResult {
+  detectedMeetings: number;
+  createdNotifications: number;
+  skippedDuplicates: number;
+}
+
+export type HubJoinPlatform = "TEAMS" | "ZOOM" | "GOOGLE_MEET" | "OTHER_ONLINE" | "NONE";
+
+export type HubAssistedJoinNextAction = "OPEN_JOIN_URL" | "RECORD_ONLY" | "UNAVAILABLE";
+
+/**
+ * Assisted meeting-join plan. The join URL itself is never accepted from the
+ * renderer; this DTO describes what the user should do. Opening still uses
+ * the persisted calendar association in the main process.
+ */
+export interface HubAssistedJoinPlan {
+  meetingId: string;
+  meetingTitle: string;
+  platform: HubJoinPlatform;
+  platformLabel: string;
+  hasJoinUrl: boolean;
+  nextAction: HubAssistedJoinNextAction;
+  steps: string[];
+  warnings: string[];
+}
+
+export type HubOfficeExportKind = "WORD_SUMMARY" | "EXCEL_TASKS" | "POWERPOINT_BRIEFING";
+
+export interface HubOfficeExportResult {
+  kind: HubOfficeExportKind;
+  filename: string;
+  size: number;
+  mimeType: string;
+}
+
+export interface HubHistoryFilter {
+  status?: MeetingStatus;
+  provider?: CalendarProvider;
+  query?: string;
+  limit?: number;
+}

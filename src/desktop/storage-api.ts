@@ -11,11 +11,19 @@ import type {
 } from "../calendar/CalendarConnection";
 import type {
   HubAnalysisDocument,
+  HubAssistedJoinPlan,
+  HubAutomationPreferences,
+  HubAutomationTickResult,
   HubCaptureCapabilities,
   HubCaptureRequest,
   HubCaptureSnapshot,
   HubChatAnswer,
   HubFollowupSuggestion,
+  HubHistoryFilter,
+  HubMeetingSummary,
+  HubNotificationItem,
+  HubOfficeExportKind,
+  HubOfficeExportResult,
   HubTaskCreateInput,
   HubTaskItem,
   HubTaskStatus,
@@ -44,6 +52,7 @@ export const STORAGE_IPC_CHANNELS = {
   createBackup: "storage:create-backup",
   restoreBackup: "storage:restore-backup",
   exportMeeting: "storage:export-meeting",
+  exportOfficeDocument: "storage:export-office",
   setAiProcessingPolicy: "storage:set-ai-processing-policy",
   syncMicrosoftCalendar: "calendar:sync-microsoft",
 } as const;
@@ -62,6 +71,17 @@ export const MEETINGS_IPC_CHANNELS = {
   processMeeting: "meetings:process",
   openLinkedUrl: "meetings:open-linked-url",
   askMeetingHistory: "meetings:chat-ask",
+  listHistory: "meetings:history",
+  getAssistedJoinPlan: "meetings:assisted-join-plan",
+  beginAssistedJoin: "meetings:assisted-join-begin",
+} as const;
+
+export const AUTOMATION_IPC_CHANNELS = {
+  getPreferences: "automation:get-preferences",
+  setPreferences: "automation:set-preferences",
+  listNotifications: "automation:list-notifications",
+  markRead: "automation:mark-read",
+  runTick: "automation:run-tick",
 } as const;
 
 export const TASKS_IPC_CHANNELS = {
@@ -132,6 +152,7 @@ export interface StorageRendererAPI {
   createBackup(): Promise<{ size: number } | null>;
   restoreBackup(): Promise<{ verified: boolean; restoredFiles: number } | null>;
   exportMeeting(meetingId: string): Promise<{ size: number } | null>;
+  exportOfficeDocument(meetingId: string, kind: HubOfficeExportKind): Promise<HubOfficeExportResult | null>;
   setAiProcessingPolicy(policy: AIProcessingPolicy): Promise<void>;
   syncMicrosoftCalendar(request: MicrosoftCalendarSyncRequest): Promise<RendererCalendarSyncResult>;
 }
@@ -162,6 +183,17 @@ export interface MeetingsRendererAPI {
    * meeting content is processed only by the local model in this process.
    */
   askMeetingHistory(question: string, meetingIds?: string[]): Promise<HubChatAnswer>;
+  listHistory(filter?: HubHistoryFilter): Promise<HubMeetingSummary[]>;
+  getAssistedJoinPlan(meetingId: string): Promise<HubAssistedJoinPlan>;
+  beginAssistedJoin(meetingId: string): Promise<HubAssistedJoinPlan>;
+}
+
+export interface AutomationRendererAPI {
+  getPreferences(): Promise<HubAutomationPreferences>;
+  setPreferences(patch: Partial<HubAutomationPreferences>): Promise<HubAutomationPreferences>;
+  listNotifications(query?: { unreadOnly?: boolean; limit?: number }): Promise<HubNotificationItem[]>;
+  markRead(notificationId: string): Promise<HubNotificationItem | undefined>;
+  runTick(): Promise<HubAutomationTickResult>;
 }
 
 export interface TaskListQuery {

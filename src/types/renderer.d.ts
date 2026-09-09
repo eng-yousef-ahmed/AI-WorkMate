@@ -1,3 +1,4 @@
+import type { AutomationRendererAPI } from "../desktop/storage-api";
 import type { CalendarRendererAPI } from "../desktop/storage-api";
 import type { MeetingsRendererAPI } from "../desktop/storage-api";
 import type { StorageRendererAPI } from "../desktop/storage-api";
@@ -10,6 +11,7 @@ declare global {
       calendar: CalendarRendererAPI;
       meetings: MeetingsRendererAPI;
       tasks: TasksRendererAPI;
+      automation: AutomationRendererAPI;
     };
   }
 }

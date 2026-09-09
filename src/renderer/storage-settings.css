@@ -100,6 +100,10 @@ input[type="text"]:focus { border-color: rgba(139,123,255,.6); }
 input[type="search"] { width: 100%; padding: 10px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
 input[type="date"] { width: 100%; padding: 9px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
 input[type="search"]:focus, input[type="date"]:focus { border-color: rgba(139,123,255,.6); }
+input[type="number"] { width: 120px; padding: 9px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
+input[type="number"]:focus { border-color: rgba(139,123,255,.6); }
+.notifications-section { border-top: 1px solid var(--line); padding-top: 26px; }
+#capture .chat-scope-toggle { display: flex; margin: 8px 0; }
 .button:disabled { opacity: .45; cursor: default; transform: none; }
 .calendar-card { padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
 .calendar-main { display: flex; align-items: center; gap: 16px; }

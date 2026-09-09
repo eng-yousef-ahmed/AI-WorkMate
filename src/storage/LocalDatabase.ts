@@ -110,6 +110,27 @@ export interface DecisionRecord extends Decision {
   createdAt: string;
 }
 
+export type NotificationKindValue =
+  | "MEETING_DETECTED"
+  | "MEETING_PREPARATION"
+  | "MEETING_SUMMARY_READY"
+  | "TASK_ASSIGNED"
+  | "TASK_OVERDUE"
+  | "DAILY_MEETING_REPORT"
+  | "UNRESOLVED_FOLLOWUPS";
+
+export interface NotificationRecord {
+  notificationId: string;
+  kind: NotificationKindValue;
+  title: string;
+  body: string;
+  fingerprint: string;
+  createdAt: string;
+  readAt?: string;
+  meetingId?: string;
+  taskId?: string;
+}
+
 export interface AuditRecord {
   auditId: string;
   action: string;
@@ -350,6 +371,23 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS tasks_meeting_index ON tasks(meeting_id);
 CREATE INDEX IF NOT EXISTS tasks_project_index ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS tasks_status_index ON tasks(status);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  notification_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'MEETING_DETECTED', 'MEETING_PREPARATION', 'MEETING_SUMMARY_READY',
+    'TASK_ASSIGNED', 'TASK_OVERDUE', 'DAILY_MEETING_REPORT', 'UNRESOLVED_FOLLOWUPS'
+  )),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  fingerprint TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  read_at TEXT,
+  meeting_id TEXT REFERENCES meetings(meeting_id) ON DELETE SET NULL,
+  task_id TEXT
+);
+CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS notifications_unread_index ON notifications(read_at);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   audit_id TEXT PRIMARY KEY,
@@ -1182,6 +1220,58 @@ export class LocalDatabase {
     return rows.map((row) => mapTaskRecord(row as SqlRow));
   }
 
+  /**
+   * Inserts a local notification. Duplicate fingerprints are ignored so a tick
+   * can be re-run after a crash without repeating the same reminder.
+   */
+  public registerNotification(record: NotificationRecord): boolean {
+    this.ensureOpen();
+    const result = this.database
+      .prepare(
+        `INSERT OR IGNORE INTO notifications (
+          notification_id, kind, title, body, fingerprint, created_at, read_at, meeting_id, task_id
+        ) VALUES (
+          $notificationId, $kind, $title, $body, $fingerprint, $createdAt, $readAt, $meetingId, $taskId
+        )`,
+      )
+      .run({
+        $notificationId: record.notificationId,
+        $kind: record.kind,
+        $title: record.title,
+        $body: record.body,
+        $fingerprint: record.fingerprint,
+        $createdAt: record.createdAt,
+        $readAt: record.readAt ?? null,
+        $meetingId: record.meetingId ?? null,
+        $taskId: record.taskId ?? null,
+      });
+    return result.changes > 0;
+  }
+
+  public listNotifications(options: { unreadOnly?: boolean; limit?: number } = {}): NotificationRecord[] {
+    this.ensureOpen();
+    const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 100)), 500);
+    const rows = options.unreadOnly === true
+      ? this.database
+          .prepare("SELECT * FROM notifications WHERE read_at IS NULL ORDER BY created_at DESC LIMIT $limit")
+          .all({ $limit: limit })
+      : this.database
+          .prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT $limit")
+          .all({ $limit: limit });
+    return rows.map((row) => mapNotificationRecord(row as SqlRow));
+  }
+
+  public markNotificationRead(notificationId: string, readAt: string): NotificationRecord | undefined {
+    this.ensureOpen();
+    this.database
+      .prepare("UPDATE notifications SET read_at = COALESCE(read_at, $readAt) WHERE notification_id = $notificationId")
+      .run({ $notificationId: notificationId, $readAt: readAt });
+    const row = this.database
+      .prepare("SELECT * FROM notifications WHERE notification_id = $notificationId")
+      .get({ $notificationId: notificationId });
+    return row === undefined ? undefined : mapNotificationRecord(row as SqlRow);
+  }
+
   public updateTask(taskId: string, fields: TaskUpdateFields): TaskRecord | undefined {
     const assignments: string[] = [];
     const parameters: Record<string, string | number | bigint | Uint8Array | null> = { $taskId: taskId };
@@ -1282,6 +1372,7 @@ export class LocalDatabase {
       "projects",
       "decisions",
       "tasks",
+      "notifications",
     ];
     return JSON.stringify(
       tables.map((table) => {
@@ -1327,10 +1418,35 @@ export class LocalDatabase {
       if (currentVersion > 0 && currentVersion < 9) {
         this.applyTaskSourceArtifactMigration();
       }
+      if (currentVersion > 0 && currentVersion < 10) {
+        this.applyNotificationsMigration();
+      }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
         .run({ $version: DATABASE_SCHEMA_VERSION, $appliedAt: this.clock().toISOString() });
     }
+  }
+
+  /** Schema v10: local notification history (no tokens, no paths). */
+  private applyNotificationsMigration(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        notification_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN (
+          'MEETING_DETECTED', 'MEETING_PREPARATION', 'MEETING_SUMMARY_READY',
+          'TASK_ASSIGNED', 'TASK_OVERDUE', 'DAILY_MEETING_REPORT', 'UNRESOLVED_FOLLOWUPS'
+        )),
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        fingerprint TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        read_at TEXT,
+        meeting_id TEXT REFERENCES meetings(meeting_id) ON DELETE SET NULL,
+        task_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);
+      CREATE INDEX IF NOT EXISTS notifications_unread_index ON notifications(read_at);
+    `);
   }
 
   /** Schema v9: tasks gain optional source_artifact_id for analysis provenance. */
@@ -1623,6 +1739,21 @@ function mapTaskRecord(value: SqlRow): TaskRecord {
   addOptional(task, "dueDate", optionalString(value.due_date));
   addOptional(task, "sourceArtifactId", optionalString(value.source_artifact_id));
   return task;
+}
+
+function mapNotificationRecord(row: SqlRow): NotificationRecord {
+  const record: NotificationRecord = {
+    notificationId: stringValue(row.notification_id),
+    kind: stringValue(row.kind) as NotificationKindValue,
+    title: stringValue(row.title),
+    body: stringValue(row.body),
+    fingerprint: stringValue(row.fingerprint),
+    createdAt: stringValue(row.created_at),
+  };
+  addOptional(record, "readAt", optionalString(row.read_at));
+  addOptional(record, "meetingId", optionalString(row.meeting_id));
+  addOptional(record, "taskId", optionalString(row.task_id));
+  return record;
 }
 
 function addOptional<T extends object, K extends keyof T>(object: T, key: K, value: T[K] | undefined): void {

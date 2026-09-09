@@ -19,12 +19,14 @@
           <a href="#overview"><span class="nav-icon">◈</span> Overview</a>
           <a href="#meetings"><span class="nav-icon">◷</span> Meetings</a>
           <a href="#tasks"><span class="nav-icon">✓</span> Tasks</a>
+          <a href="#notifications"><span class="nav-icon">⚑</span> Notifications</a>
           <a href="#projects"><span class="nav-icon">▦</span> Projects</a>
         </nav>
         <div class="workspace-label settings-label">SETTINGS</div>
         <nav aria-label="Settings">
           <a class="active" href="#storage"><span class="nav-icon">◫</span> Storage <span class="active-dot"></span></a>
           <a href="#privacy"><span class="nav-icon">◉</span> Privacy</a>
+          <a href="#capture"><span class="nav-icon">●</span> Capture</a>
           <a href="#integrations"><span class="nav-icon">⌁</span> Integrations</a>
         </nav>
         <div class="sidebar-footer">
@@ -78,6 +80,13 @@
                 <input id="hub-search-input" type="search" spellcheck="false" placeholder="Search your local transcripts…" autocomplete="off" />
                 <div id="hub-search-status" class="calendar-line" hidden></div>
                 <div id="hub-search-results" class="meeting-list" hidden></div>
+                <div id="hub-history-filters" class="tasks-filters" role="group" aria-label="Filter history">
+                  <button type="button" class="tasks-filter active" data-history="ALL">All</button>
+                  <button type="button" class="tasks-filter" data-history="COMPLETED">Completed</button>
+                  <button type="button" class="tasks-filter" data-history="INCOMPLETE">Incomplete</button>
+                  <button type="button" class="tasks-filter" data-history="MICROSOFT_GRAPH">Microsoft 365</button>
+                  <button type="button" class="tasks-filter" data-history="GOOGLE_CALENDAR">Google</button>
+                </div>
                 <div id="hub-recent" class="meeting-list"></div>
               </div>
             </div>
@@ -167,6 +176,17 @@
             <p class="helper">Follow-ups noted by analysis are suggestions — convert the ones you want to track into tasks above. They stay local.</p>
             <div id="tasks-followups-list" class="meeting-list"></div>
           </details>
+        </section>
+
+        <section id="notifications" class="section-block notifications-section" aria-label="Notifications">
+          <div class="section-heading">
+            <div><h2>Notifications</h2><p>Local reminders only. Nothing is emailed or sent to the cloud unless you explicitly connect a calendar.</p></div>
+            <div class="hub-heading-actions">
+              <span id="notifications-badge" class="calendar-badge neutral">Loading…</span>
+              <button id="notifications-refresh-button" class="button secondary" title="Refresh notifications">↻ Refresh</button>
+            </div>
+          </div>
+          <div id="notifications-list" class="meeting-list"></div>
         </section>
 
         <section class="hero-card">
@@ -299,5 +319,6 @@
     <script src="./storage-settings.js"></script>
     <script src="./meetings-hub.js"></script>
     <script src="./tasks.js"></script>
+    <script src="./automation.js"></script>
   </body>
 </html>

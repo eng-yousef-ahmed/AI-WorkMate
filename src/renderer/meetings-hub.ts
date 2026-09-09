@@ -1,9 +1,12 @@
 import type {
   HubAnalysisDocument,
+  HubAssistedJoinPlan,
   HubCaptureCapabilities,
   HubChatAnswer,
   HubChatEvidenceSource,
+  HubHistoryFilter,
   HubMeetingSummary,
+  HubOfficeExportKind,
   HubTranscriptContent,
   MeetingDetail,
   MeetingHubOverview,
@@ -11,6 +14,8 @@ import type {
 } from "../domain/hub";
 
 const meetings = window.aiWorkMate.meetings;
+const storage = window.aiWorkMate.storage;
+const automation = window.aiWorkMate.automation;
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
@@ -137,11 +142,7 @@ function renderMeetingRow(summary: HubMeetingSummary, list: HTMLElement): void {
 
   const actions = el("div", "meeting-actions");
   if (summary.calendar?.joinUrl !== undefined && summary.status !== "CANCELLED") {
-    actions.append(button("Join", "button mini", () => {
-      void meetings.openLinkedUrl(summary.meetingId, "JOIN")
-        .then(() => showNoticeMessage("Opening the meeting link in your browser."))
-        .catch((error: unknown) => showErrorMessage(error));
-    }));
+    actions.append(button("Join", "button mini", () => void beginAssistedJoin(summary.meetingId)));
   }
   const captureSupported = capabilities?.supported === true;
   if (summary.isActive && (summary.status === "RECORDING" || summary.status === "PREPARING" || summary.status === "FINALIZING")) {
@@ -175,7 +176,11 @@ function renderOverview(next: MeetingHubOverview): void {
   $("hub-history-count").textContent = String(next.historyTotal);
   renderList(next.today, todayList, "No synced meetings today.");
   renderList(next.upcoming, upcomingList, "No upcoming synced meetings.");
-  renderList(next.recent, recentList, "No meeting history yet — record your first meeting to begin.");
+  if (historyFilter === "ALL") {
+    renderList(next.recent, recentList, "No meeting history yet — record your first meeting to begin.");
+  } else {
+    void refreshHistory();
+  }
 }
 
 function renderCaptureStatus(): void {
@@ -218,9 +223,24 @@ async function refreshHub(): Promise<void> {
 
 // --- Capture controls --------------------------------------------------------
 
+async function captureRequest(meetingId: string): Promise<{ meetingId: string; microphone: boolean; systemLoopback: boolean; screen: boolean }> {
+  try {
+    const prefs = await automation.getPreferences();
+    const microphone = prefs.captureMicrophone;
+    const systemLoopback = prefs.captureSystemLoopback;
+    const screen = prefs.captureScreen;
+    if (!microphone && !systemLoopback && !screen) {
+      return { meetingId, microphone: true, systemLoopback: true, screen: false };
+    }
+    return { meetingId, microphone, systemLoopback, screen };
+  } catch {
+    return { meetingId, microphone: true, systemLoopback: true, screen: false };
+  }
+}
+
 async function startCapture(meetingId: string): Promise<void> {
   try {
-    await meetings.startCapture({ meetingId, microphone: true, systemLoopback: true, screen: false });
+    await meetings.startCapture(await captureRequest(meetingId));
     showNoticeMessage("Recording started. Meeting audio stays on this device.");
   } catch (error: unknown) {
     showErrorMessage(error);
@@ -411,9 +431,17 @@ function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument |
     actions.append(button("Record meeting", "button mini primary", () => void startCapture(summary.meetingId)));
   }
   if (summary.calendar?.joinUrl !== undefined && summary.status !== "CANCELLED") {
-    actions.append(button("Join meeting", "button mini", () => {
-      void meetings.openLinkedUrl(summary.meetingId, "JOIN")
-        .then(() => showNoticeMessage("Opening the meeting link in your browser."))
+    actions.append(button("Assisted join", "button mini", () => void beginAssistedJoin(summary.meetingId)));
+  }
+  if (!summary.isActive) {
+    actions.append(button("Word", "button mini ghost", () => void exportOffice(summary.meetingId, "WORD_SUMMARY")));
+    actions.append(button("Excel", "button mini ghost", () => void exportOffice(summary.meetingId, "EXCEL_TASKS")));
+    actions.append(button("Briefing", "button mini ghost", () => void exportOffice(summary.meetingId, "POWERPOINT_BRIEFING")));
+    actions.append(button("Export package", "button mini ghost", () => {
+      void storage.exportMeeting(summary.meetingId)
+        .then((result) => {
+          if (result !== null) showNoticeMessage(`Meeting package exported (${formatBytes(result.size)}).`);
+        })
         .catch((error: unknown) => showErrorMessage(error));
     }));
   }
@@ -695,11 +723,67 @@ function bindMeetingChat(): void {
   });
 }
 
+async function beginAssistedJoin(meetingId: string): Promise<void> {
+  try {
+    const plan: HubAssistedJoinPlan = await meetings.beginAssistedJoin(meetingId);
+    const steps = plan.steps.map((step, index) => `${index + 1}. ${step}`).join(" ");
+    if (plan.nextAction === "OPEN_JOIN_URL") {
+      showNoticeMessage(`${plan.platformLabel}: ${steps}`);
+    } else {
+      showNoticeMessage(steps, plan.nextAction === "UNAVAILABLE");
+    }
+  } catch (error: unknown) {
+    showErrorMessage(error);
+  }
+}
+
+async function exportOffice(meetingId: string, kind: HubOfficeExportKind): Promise<void> {
+  try {
+    const result = await storage.exportOfficeDocument(meetingId, kind);
+    if (result === null) return;
+    showNoticeMessage(`Saved ${result.filename} (${formatBytes(result.size)}).`);
+  } catch (error: unknown) {
+    showErrorMessage(error);
+  }
+}
+
+let historyFilter: string = "ALL";
+
+function bindHistoryFilters(): void {
+  const filters = document.getElementById("hub-history-filters");
+  if (filters === null) return;
+  filters.querySelectorAll<HTMLButtonElement>("[data-history]").forEach((node) => {
+    node.addEventListener("click", () => {
+      historyFilter = node.dataset.history ?? "ALL";
+      filters.querySelectorAll(".tasks-filter").forEach((item) => item.classList.remove("active"));
+      node.classList.add("active");
+      void refreshHistory();
+    });
+  });
+}
+
+async function refreshHistory(): Promise<void> {
+  if (historyFilter === "ALL") return;
+  try {
+    const filter: HubHistoryFilter = {};
+    if (historyFilter === "COMPLETED" || historyFilter === "INCOMPLETE") {
+      filter.status = historyFilter;
+    } else if (historyFilter === "MICROSOFT_GRAPH" || historyFilter === "GOOGLE_CALENDAR") {
+      filter.provider = historyFilter;
+    }
+    const items = await meetings.listHistory(filter);
+    renderList(items, recentList, "No matching history.");
+  } catch (error: unknown) {
+    showErrorMessage(error);
+  }
+}
+
 // --- Init ---------------------------------------------------------------------
 
 $("hub-refresh-button").addEventListener("click", () => void refreshHub());
 bindSearch();
 bindMeetingChat();
+bindHistoryFilters();
 void refreshHub();
 syncChatScopeVisibility();
 // Refresh again when the window regains focus so a capture that stopped

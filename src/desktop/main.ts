@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell } from "electron";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -19,6 +19,8 @@ import {
 import { ElectronSafeStorageCredentialStore } from "../security/CredentialStore";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
+import { AutomationPreferencesStore } from "../automation/AutomationPreferences";
+import { registerAutomationIpc } from "./automation-ipc";
 import { registerCalendarIpc, type GoogleOAuthConfigInput, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
 import { registerMeetingsIpc } from "./meetings-ipc";
 import { registerTasksIpc } from "./tasks-ipc";
@@ -32,6 +34,7 @@ let googleOAuthConfigPath = "";
 let microsoftCredentialStore: ElectronSafeStorageCredentialStore | undefined;
 let mainWindow: BrowserWindow | undefined;
 let ipcRegistered = false;
+let automationTick: ReturnType<typeof setInterval> | undefined;
 
 async function bootstrap(): Promise<void> {
   if (runtime === undefined) {
@@ -45,6 +48,14 @@ async function bootstrap(): Promise<void> {
     }, {
       microsoftCalendarConnection: await createMicrosoftCalendarConnection(),
       googleCalendarConnection: await createGoogleCalendarConnection(),
+      automationPreferences: new AutomationPreferencesStore(join(userDataPath, "automation-preferences.json")),
+      localNotifier: {
+        notify: ({ title, body }) => {
+          if (Notification.isSupported()) {
+            new Notification({ title, body }).show();
+          }
+        },
+      },
     });
   }
   const configured = await runtime.initialize();
@@ -120,9 +131,28 @@ async function bootstrap(): Promise<void> {
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
       getAuthorizedRendererUrl: () => rendererUrl,
     });
+    registerAutomationIpc({
+      ipcMain: ipcMain as unknown as IpcMainLike,
+      runtime,
+      getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
+      getAuthorizedRendererUrl: () => rendererUrl,
+    });
     ipcRegistered = true;
   }
   await mainWindow.loadFile(rendererPath);
+  startAutomationTicks();
+}
+
+function startAutomationTicks(): void {
+  if (automationTick !== undefined || runtime === undefined) return;
+  const engine = runtime;
+  const tick = (): void => {
+    void engine.automation?.runTick().catch((error: unknown) => {
+      console.error("AI WorkMate automation tick failed", error);
+    });
+  };
+  tick();
+  automationTick = setInterval(tick, 60_000);
 }
 
 /**

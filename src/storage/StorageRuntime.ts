@@ -54,6 +54,10 @@ import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscrip
 import { MeetingHubService } from "../meetings/MeetingHubService";
 import { GroundedMeetingChatService } from "../meetings/GroundedMeetingChatService";
 import { TaskManagementService } from "../tasks/TaskManagementService";
+import { AutomationEngine, type LocalNotifier } from "../automation/AutomationEngine";
+import { DEFAULT_AUTOMATION_PREFERENCES, type AutomationPreferencesStore } from "../automation/AutomationPreferences";
+import { OfficeExportService } from "../office/OfficeExportService";
+import type { HubAutomationPreferences, HubOfficeExportKind, HubOfficeExportResult } from "../domain/hub";
 import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
 import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
 import type { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
@@ -70,6 +74,8 @@ export interface StorageRuntimeIntegrations {
   nativeCapturePolicy?: Partial<NativeCapturePolicy>;
   transcriptionEngine?: TranscriptionEngine;
   analysisProvider?: AIProvider;
+  automationPreferences?: AutomationPreferencesStore;
+  localNotifier?: LocalNotifier;
 }
 
 /** Application lifecycle boundary for first-run setup and location changes. */
@@ -86,6 +92,9 @@ export class StorageRuntime {
   public meetingChat: GroundedMeetingChatService | undefined;
   /** Task and follow-up management with meeting provenance. */
   public tasks: TaskManagementService | undefined;
+  /** User-controlled local notifications and meeting detection. */
+  public automation: AutomationEngine | undefined;
+  public officeExports: OfficeExportService | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -507,6 +516,46 @@ export class StorageRuntime {
     return tasks;
   }
 
+  public requireAutomation(): AutomationEngine {
+    const automation = this.automation;
+    if (automation === undefined) {
+      throw new StorageError("Choose a local data location before using notifications.");
+    }
+    return automation;
+  }
+
+  public requireOfficeExports(): OfficeExportService {
+    const office = this.officeExports;
+    if (office === undefined) {
+      throw new StorageError("Choose a local data location before exporting Office documents.");
+    }
+    return office;
+  }
+
+  public async getAutomationPreferences(): Promise<HubAutomationPreferences> {
+    const store = this.integrations.automationPreferences;
+    if (store === undefined) {
+      return { ...DEFAULT_AUTOMATION_PREFERENCES };
+    }
+    return store.read();
+  }
+
+  public async setAutomationPreferences(patch: Partial<HubAutomationPreferences>): Promise<HubAutomationPreferences> {
+    const store = this.integrations.automationPreferences;
+    if (store === undefined) {
+      throw new StorageError("Automation preferences are not configured in this session.");
+    }
+    return store.write(patch);
+  }
+
+  public async exportOfficeDocument(
+    meetingId: string,
+    kind: HubOfficeExportKind,
+    exportDirectory: string,
+  ): Promise<HubOfficeExportResult> {
+    return this.requireOfficeExports().exportMeetingDocument(meetingId, kind, exportDirectory);
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -675,6 +724,15 @@ export class StorageRuntime {
       clock: this.clock,
     });
     this.tasks = new TaskManagementService({ store, clock: this.clock });
+    this.officeExports = new OfficeExportService(store, this.clock);
+    this.automation = new AutomationEngine({
+      store,
+      clock: this.clock,
+      ...(this.integrations.localNotifier === undefined ? {} : { notifier: this.integrations.localNotifier }),
+      ...(this.integrations.automationPreferences === undefined
+        ? {}
+        : { preferences: () => this.integrations.automationPreferences!.read() }),
+    });
   }
 
   private async detachStore(reason: string): Promise<void> {
@@ -687,6 +745,8 @@ export class StorageRuntime {
     this.meetingHub = undefined;
     this.meetingChat = undefined;
     this.tasks = undefined;
+    this.automation = undefined;
+    this.officeExports = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;

@@ -10,11 +10,13 @@ import {
   HUB_MAX_TRANSCRIPT_READ_BYTES,
   type HubAnalysisDocument,
   type HubArtifactInfo,
+  type HubAssistedJoinPlan,
   type HubCalendarInfo,
   type HubCaptureCapabilities,
   type HubCaptureRequest,
   type HubCaptureSnapshot,
   type HubDecisionInfo,
+  type HubHistoryFilter,
   type HubMeetingSummary,
   type HubProcessingJobInfo,
   type HubTaskInfo,
@@ -30,6 +32,7 @@ import type {
   MeetingCaptureOrchestrator,
 } from "../capture/MeetingCaptureOrchestrator";
 import type { LocalFirstStore } from "../storage/LocalFirstStore";
+import { buildAssistedJoinPlan } from "./AssistedJoin";
 
 export type MeetingHubErrorCode =
   | "MEETING_NOT_FOUND"
@@ -175,6 +178,52 @@ export class MeetingHubService {
       recent,
       historyTotal,
     };
+  }
+
+  public listHistory(filter: HubHistoryFilter = {}): HubMeetingSummary[] {
+    const overviewMeetings = this.store.listMeetings();
+    const associations = this.store.database.listCalendarEventAssociations();
+    const associationsByMeeting = new Map<string, CalendarEventAssociation>();
+    for (const association of associations) {
+      if (!associationsByMeeting.has(association.meetingId)) {
+        associationsByMeeting.set(association.meetingId, association);
+      }
+    }
+    const artifacts = this.store.database.listArtifacts();
+    const activeFlowMeetingIds = new Set(this.orchestrator?.getActiveMeetingIds() ?? []);
+    const query = filter.query?.trim().toLowerCase() ?? "";
+    const limit = Math.min(Math.max(1, Math.floor(filter.limit ?? 50)), 200);
+    const results: HubMeetingSummary[] = [];
+    for (const meeting of overviewMeetings) {
+      if (!TERMINAL_MEETING_STATUSES.has(meeting.status)) continue;
+      if (filter.status !== undefined && meeting.status !== filter.status) continue;
+      const association = associationsByMeeting.get(meeting.meetingId);
+      if (filter.provider !== undefined && association?.provider !== filter.provider) continue;
+      if (query.length > 0) {
+        const haystack = `${meeting.title} ${association?.subject ?? ""} ${association?.location ?? ""}`.toLowerCase();
+        if (!haystack.includes(query)) continue;
+      }
+      const meetingArtifacts = artifacts.filter((artifact) => artifact.meetingId === meeting.meetingId);
+      results.push(summarizeMeeting(
+        meeting,
+        meetingArtifacts,
+        association,
+        activeFlowMeetingIds.has(meeting.meetingId) || LIVE_MEETING_STATUSES.has(meeting.status),
+      ));
+    }
+    return results
+      .sort((a, b) => (occurrenceValue(b) ?? "").localeCompare(occurrenceValue(a) ?? ""))
+      .slice(0, limit);
+  }
+
+  public getAssistedJoinPlan(meetingId: string): HubAssistedJoinPlan {
+    const meeting = this.requireMeeting(meetingId);
+    const association = this.store.database.listCalendarEventAssociations(meeting.meetingId)[0];
+    return buildAssistedJoinPlan({
+      meetingId: meeting.meetingId,
+      meetingTitle: meeting.title,
+      ...(association === undefined ? {} : { association }),
+    });
   }
 
   public getMeetingDetail(meetingId: string): MeetingDetail {

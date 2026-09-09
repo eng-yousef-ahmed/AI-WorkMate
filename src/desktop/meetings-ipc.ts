@@ -107,6 +107,26 @@ export function registerMeetingsIpc({
       ...(meetingIds === undefined || meetingIds === null ? {} : { meetingIds: readMeetingIdScope(meetingIds) }),
     });
   });
+
+  handle(MEETINGS_IPC_CHANNELS.listHistory, (_event: unknown, filter: unknown): unknown =>
+    runtime.requireMeetingHub().listHistory(readHistoryFilter(filter)));
+
+  handle(MEETINGS_IPC_CHANNELS.getAssistedJoinPlan, (_event: unknown, meetingId: unknown): unknown =>
+    runtime.requireMeetingHub().getAssistedJoinPlan(readMeetingId(meetingId)));
+
+  handle(MEETINGS_IPC_CHANNELS.beginAssistedJoin, async (_event: unknown, meetingId: unknown): Promise<unknown> => {
+    const hub = runtime.requireMeetingHub();
+    const id = readMeetingId(meetingId);
+    const plan = hub.getAssistedJoinPlan(id);
+    if (plan.nextAction === "OPEN_JOIN_URL") {
+      const url = hub.getLinkedUrl(id, "JOIN");
+      if (url === undefined) {
+        throw new StorageError("This meeting has no safe calendar link to open.");
+      }
+      await openExternal(url);
+    }
+    return plan;
+  });
 }
 
 const MAX_CHAT_QUESTION_LENGTH = 600;
@@ -140,6 +160,40 @@ function readMeetingIdScope(value: unknown): string[] {
     }
   }
   return scope;
+}
+
+function readHistoryFilter(value: unknown): { status?: "COMPLETED" | "INCOMPLETE" | "FAILED" | "CANCELLED" | "PROCESSING"; provider?: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR"; query?: string; limit?: number } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new StorageError("The history filter is invalid.");
+  }
+  const record = value as Record<string, unknown>;
+  const filter: { status?: "COMPLETED" | "INCOMPLETE" | "FAILED" | "CANCELLED" | "PROCESSING"; provider?: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR"; query?: string; limit?: number } = {};
+  if (record.status !== undefined) {
+    if (record.status !== "COMPLETED" && record.status !== "INCOMPLETE" && record.status !== "FAILED" && record.status !== "CANCELLED" && record.status !== "PROCESSING") {
+      throw new StorageError("The history status filter is invalid.");
+    }
+    filter.status = record.status;
+  }
+  if (record.provider !== undefined) {
+    if (record.provider !== "MICROSOFT_GRAPH" && record.provider !== "GOOGLE_CALENDAR") {
+      throw new StorageError("The history provider filter is invalid.");
+    }
+    filter.provider = record.provider;
+  }
+  if (record.query !== undefined) {
+    if (typeof record.query !== "string" || record.query.length > MAX_STRING_LENGTH) {
+      throw new StorageError("The history search text is invalid.");
+    }
+    filter.query = record.query;
+  }
+  if (record.limit !== undefined) {
+    if (typeof record.limit !== "number" || !Number.isFinite(record.limit)) {
+      throw new StorageError("The history limit is invalid.");
+    }
+    filter.limit = Math.min(Math.max(1, Math.trunc(record.limit)), 200);
+  }
+  return filter;
 }
 
 function readMeetingId(value: unknown, label = "meeting id"): string {

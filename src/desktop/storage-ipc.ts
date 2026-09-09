@@ -4,6 +4,7 @@ import { toRendererCalendarSyncResult, type RendererCalendarSyncResult } from ".
 import type { AIProcessingPolicy, StorageSnapshot } from "../domain/models";
 import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
+import { assertOfficeExportKind } from "../office/OfficeExportService";
 import { STORAGE_IPC_CHANNELS, type LocationChangePreview } from "./storage-api";
 
 export interface IpcMainLike {
@@ -157,6 +158,22 @@ export function registerStorageIpc({
     if (destination === null) return null;
     const created = await requireStore(runtime).exports.exportMeeting(meetingId, destination);
     return { size: created.size };
+  });
+
+  handle(STORAGE_IPC_CHANNELS.exportOfficeDocument, async (_event: unknown, meetingId: unknown, kind: unknown) => {
+    if (typeof meetingId !== "string" || meetingId.length === 0) {
+      throw new StorageError("A meeting ID is required for export.");
+    }
+    const exportKind = assertOfficeExportKind(kind);
+    const destination = await chooseDirectory(dialog, "Choose where to save this Office document.");
+    if (destination === null) return null;
+    const created = await runtime.exportOfficeDocument(meetingId, exportKind, destination);
+    return {
+      kind: created.kind,
+      filename: created.filename,
+      size: created.size,
+      mimeType: created.mimeType,
+    };
   });
 
   handle(STORAGE_IPC_CHANNELS.setAiProcessingPolicy, async (_event: unknown, policy: unknown) => {

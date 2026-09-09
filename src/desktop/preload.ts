@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
-import { CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type CalendarRendererAPI, type MeetingsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
+import { AUTOMATION_IPC_CHANNELS, CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type AutomationRendererAPI, type CalendarRendererAPI, type MeetingsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {
   getSnapshot: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getSnapshot),
@@ -15,6 +15,7 @@ const storageApi: StorageRendererAPI = {
   createBackup: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.createBackup),
   restoreBackup: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.restoreBackup),
   exportMeeting: (meetingId) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.exportMeeting, meetingId),
+  exportOfficeDocument: (meetingId, kind) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.exportOfficeDocument, meetingId, kind),
   setAiProcessingPolicy: (policy: AIProcessingPolicy) =>
     ipcRenderer.invoke(STORAGE_IPC_CHANNELS.setAiProcessingPolicy, policy),
   syncMicrosoftCalendar: (request) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar, request),
@@ -65,6 +66,17 @@ const meetingsApi: MeetingsRendererAPI = {
   openLinkedUrl: (meetingId, kind) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.openLinkedUrl, meetingId, kind),
   askMeetingHistory: (question, meetingIds) =>
     ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.askMeetingHistory, question, meetingIds === undefined ? undefined : [...meetingIds]),
+  listHistory: (filter) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.listHistory, filter === undefined ? undefined : { ...filter }),
+  getAssistedJoinPlan: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getAssistedJoinPlan, meetingId),
+  beginAssistedJoin: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.beginAssistedJoin, meetingId),
 };
 
-contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi, tasks: tasksApi });
+const automationApi: AutomationRendererAPI = {
+  getPreferences: () => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.getPreferences),
+  setPreferences: (patch) => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.setPreferences, { ...patch }),
+  listNotifications: (query) => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.listNotifications, query === undefined ? undefined : { ...query }),
+  markRead: (notificationId) => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.markRead, notificationId),
+  runTick: () => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.runTick),
+};
+
+contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi, tasks: tasksApi, automation: automationApi });
