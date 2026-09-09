@@ -53,6 +53,8 @@ const meetingsApi: MeetingsRendererAPI = {
   processMeeting: (meetingId, userApprovedForThisRequest) =>
     ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.processMeeting, meetingId, userApprovedForThisRequest === true),
   openLinkedUrl: (meetingId, kind) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.openLinkedUrl, meetingId, kind),
+  askMeetingHistory: (question, meetingIds) =>
+    ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.askMeetingHistory, question, meetingIds === undefined ? undefined : [...meetingIds]),
 };
 
 contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi });

@@ -201,5 +201,38 @@ export interface HubCaptureCapabilities {
   window: boolean;
 }
 
+/** One verbatim evidence window used to ground a chat answer. */
+export interface HubChatEvidenceSource {
+  sourceId: string;
+  meetingId: string;
+  meetingTitle: string;
+  meetingDate: string;
+  transcriptId: string;
+  artifactFileId: string;
+  language: string;
+  /** Verbatim transcript excerpt (bounded window, exact file text). */
+  snippet: string;
+}
+
+export interface HubChatRequest {
+  question: string;
+  /** Optional scope: only meetings whose ids are listed. */
+  meetingIds?: string[];
+}
+
+export type HubChatRefusalReason = "NO_EVIDENCE" | "GROUNDING_FAILED";
+
+export interface HubChatAnswer {
+  question: string;
+  /** Verbatim model text when grounded; the standard refusal line otherwise. */
+  answer: string;
+  refusal: boolean;
+  refusalReason?: HubChatRefusalReason;
+  /** Sources actually used as evidence (empty on refusal). */
+  evidence: HubChatEvidenceSource[];
+  providerId?: string;
+  createdAt: string;
+}
+
 export const HUB_MAX_TRANSCRIPT_READ_BYTES = 24 * 1024 * 1024;
 export const HUB_MAX_ANALYSIS_READ_BYTES = 8 * 1024 * 1024;

@@ -1,6 +1,8 @@
 import type {
   HubAnalysisDocument,
   HubCaptureCapabilities,
+  HubChatAnswer,
+  HubChatEvidenceSource,
   HubMeetingSummary,
   HubTranscriptContent,
   MeetingDetail,
@@ -28,6 +30,7 @@ const captureStatus = $("hub-capture-status");
 
 let capabilities: HubCaptureCapabilities | undefined;
 let openMeetingId: string | undefined;
+let openMeetingTitle = "";
 let busy = false;
 
 const STATUS_LABELS: Record<string, string> = {
@@ -370,7 +373,9 @@ async function renderDetail(meetingId: string): Promise<void> {
       meetings.getAnalysis(meetingId).catch(() => undefined),
     ]);
     openMeetingId = meetingId;
+    openMeetingTitle = detail.meeting.title;
     renderDetailPane(detail, analysis);
+    syncChatScopeVisibility();
   } catch (error: unknown) {
     showErrorMessage(error);
   }
@@ -385,7 +390,9 @@ function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument |
   const back = button("← Meetings", "button mini ghost", () => {
     detailPane.hidden = true;
     openMeetingId = undefined;
+    openMeetingTitle = "";
     detailPane.replaceChildren();
+    syncChatScopeVisibility();
   });
   const titleBox = el("div", "detail-title");
   titleBox.append(
@@ -536,11 +543,165 @@ function showErrorMessage(error: unknown): void {
   showNoticeMessage(error instanceof Error ? error.message : String(error), true);
 }
 
+// --- Meeting chat (grounded, local-only) --------------------------------------
+
+const SUGGESTED_QUESTIONS = [
+  "What decisions were made in my recent meetings?",
+  "Who said what about the data migration?",
+  "Which follow-up tasks are still open?",
+  "When was the release date discussed?",
+];
+
+const chatThread = $("chat-thread");
+const chatEmpty = $("chat-empty");
+const chatSuggestions = $("chat-suggestions");
+const chatForm = $<HTMLFormElement>("chat-form");
+const chatQuestionInput = $<HTMLInputElement>("chat-question");
+const chatSendButton = $<HTMLButtonElement>("chat-send-button");
+const chatStatus = $("chat-status");
+const chatScopeWrap = $("chat-scope-wrap");
+const chatScopeInput = $<HTMLInputElement>("chat-scope-current");
+
+let chatBusy = false;
+
+function syncChatScopeVisibility(): void {
+  chatScopeWrap.hidden = openMeetingId === undefined;
+  if (openMeetingId === undefined) {
+    chatScopeInput.checked = false;
+  }
+}
+
+function renderSuggestionChips(): void {
+  chatSuggestions.replaceChildren();
+  for (const question of SUGGESTED_QUESTIONS) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chat-suggestion";
+    chip.textContent = question;
+    chip.addEventListener("click", () => {
+      if (chatBusy) return;
+      chatQuestionInput.value = question;
+      void submitChatQuestion();
+    });
+    chatSuggestions.append(chip);
+  }
+}
+
+function setChatBusy(busy: boolean, statusText?: string): void {
+  chatBusy = busy;
+  chatSendButton.disabled = busy;
+  chatQuestionInput.disabled = busy;
+  if (statusText === undefined) {
+    chatStatus.hidden = true;
+    chatStatus.textContent = "";
+    return;
+  }
+  chatStatus.hidden = false;
+  chatStatus.textContent = statusText;
+}
+
+function appendUserBubble(question: string): void {
+  chatEmpty.hidden = true;
+  const bubble = el("div", "chat-bubble user");
+  bubble.textContent = question;
+  chatThread.append(bubble);
+}
+
+function appendAnswerBubble(answer: HubChatAnswer): void {
+  const bubble = el("div", answer.refusal ? "chat-bubble assistant refusal" : "chat-bubble assistant");
+  if (answer.refusal) {
+    const lines = answer.answer.split("\n").filter((line) => line.trim().length > 0);
+    if (lines.length === 0) lines.push("I cannot answer this from the recorded meetings.");
+    for (const line of lines) {
+      bubble.append(el("span", undefined, line));
+    }
+    const hint = el("span", undefined, answer.refusalReason === "NO_EVIDENCE"
+      ? "No recorded meeting in this workspace covers that — the question was not sent anywhere."
+      : "The local model's draft could not be verified against the transcripts, so it was withheld.");
+    hint.classList.add("chat-evidence-label");
+    bubble.append(hint);
+  } else {
+    const lines = answer.answer.split("\n").filter((line) => line.trim().length > 0);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (index > 0) bubble.append(document.createElement("br"));
+      if (/^\[meeting\s*·/.test(line.trim())) {
+        bubble.append(renderCitationLine(line.trim()));
+      } else {
+        bubble.append(el("span", undefined, line));
+      }
+    }
+  }
+  chatThread.append(bubble);
+
+  if (!answer.refusal && answer.evidence.length > 0) {
+    bubble.append(renderEvidenceBar(answer.evidence));
+  }
+  chatThread.scrollTop = chatThread.scrollHeight;
+}
+
+function renderCitationLine(line: string): HTMLElement {
+  const cite = el("span", "chat-cite");
+  cite.textContent = line;
+  cite.title = "Verbatim quote from the local transcript";
+  return cite;
+}
+
+function renderEvidenceBar(evidence: HubChatEvidenceSource[]): HTMLElement {
+  const bar = el("div", "chat-evidence");
+  bar.append(el("span", "chat-evidence-label", "SOURCE TRANSCRIPTS"));
+  for (const source of evidence) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chat-source-chip";
+    chip.textContent = `${source.meetingTitle} · ${source.meetingDate}`;
+    chip.title = "Open this meeting";
+    chip.addEventListener("click", () => void openDetail(source.meetingId));
+    bar.append(chip);
+  }
+  return bar;
+}
+
+async function submitChatQuestion(): Promise<void> {
+  const question = chatQuestionInput.value.trim();
+  if (question.length < 2 || chatBusy) return;
+  setChatBusy(true, "The local model is answering on this device…");
+  appendUserBubble(question);
+  try {
+    const scope = chatScopeInput.checked && openMeetingId !== undefined ? [openMeetingId] : undefined;
+    const answer = await meetings.askMeetingHistory(question, scope);
+    appendAnswerBubble(answer);
+  } catch (error: unknown) {
+    const bubble = el("div", "chat-bubble assistant refusal");
+    bubble.textContent = error instanceof Error ? error.message : String(error);
+    chatThread.append(bubble);
+  } finally {
+    chatQuestionInput.value = "";
+    setChatBusy(false);
+    chatThread.scrollTop = chatThread.scrollHeight;
+  }
+}
+
+function bindMeetingChat(): void {
+  renderSuggestionChips();
+  chatForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitChatQuestion();
+  });
+  chatScopeInput.addEventListener("change", () => {
+    if (chatScopeInput.checked && openMeetingId !== undefined && openMeetingTitle.length > 0) {
+      showNoticeMessage(`Answers will be grounded only in “${openMeetingTitle}”.`);
+    }
+  });
+}
+
 // --- Init ---------------------------------------------------------------------
 
 $("hub-refresh-button").addEventListener("click", () => void refreshHub());
 bindSearch();
+bindMeetingChat();
 void refreshHub();
+syncChatScopeVisibility();
 // Refresh again when the window regains focus so a capture that stopped
 // elsewhere is reflected without manual reloads.
 window.addEventListener("focus", () => {

@@ -82,6 +82,34 @@
             </div>
           </div>
 
+          <div class="hub-chat-panel" id="meeting-chat-panel">
+            <div class="panel-heading">
+              <div class="panel-icon">?</div>
+              <div><h3>Ask your meetings</h3><p>Grounded answers from your local transcripts — every fact carries a <code>[meeting · …]</code> citation or a refusal. Nothing you ask is sent to the cloud.</p></div>
+              <span class="calendar-badge connected" id="chat-local-badge"><span class="status-dot"></span> Local model only</span>
+            </div>
+            <div id="chat-thread" class="chat-thread" role="log" aria-live="polite">
+              <div id="chat-empty" class="chat-empty">
+                <p>Ask what happened, who said what, which decisions were made, or when something is due — using only the meetings recorded on this device.</p>
+                <div id="chat-suggestions" class="chat-suggestions"></div>
+              </div>
+            </div>
+            <form id="chat-form" class="chat-form">
+              <label class="hub-search-label" for="chat-question">QUESTION</label>
+              <div class="chat-input-row">
+                <input id="chat-question" type="text" maxlength="600" spellcheck="true" autocomplete="off" placeholder="e.g. What did we decide about the data migration?" />
+                <button id="chat-send-button" type="submit" class="button primary">Ask <span>→</span></button>
+              </div>
+              <div class="chat-form-foot">
+                <label id="chat-scope-wrap" class="chat-scope-toggle" hidden>
+                  <input id="chat-scope-current" type="checkbox" />
+                  <span>Only ask about the meeting currently open</span>
+                </label>
+                <div id="chat-status" class="calendar-line" hidden role="status"></div>
+              </div>
+            </form>
+          </div>
+
           <div id="hub-detail" class="hub-detail" hidden></div>
           <div id="hub-notice" class="notice" role="status" aria-live="polite"></div>
         </section>

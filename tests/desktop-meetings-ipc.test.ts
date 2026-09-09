@@ -7,7 +7,8 @@ import { MeetingHubError } from "../src/meetings/MeetingHubService";
 import { StorageError } from "../src/storage/errors";
 import { MEETINGS_IPC_CHANNELS } from "../src/desktop/storage-api";
 import { registerMeetingsIpc } from "../src/desktop/meetings-ipc";
-import type { HubCaptureSnapshot, HubMeetingSummary, MeetingHubOverview } from "../src/domain/hub";
+import type { GroundedMeetingChatService } from "../src/meetings/GroundedMeetingChatService";
+import type { HubCaptureSnapshot, HubChatAnswer, HubMeetingSummary, MeetingHubOverview } from "../src/domain/hub";
 
 type IpcHandler = (...args: unknown[]) => unknown;
 
@@ -46,6 +47,10 @@ interface HubStubOptions {
   openUrl?: string | undefined;
   analysis?: unknown;
   meetingNotFound?: boolean;
+  chat?: {
+    answer?: HubChatAnswer;
+    askError?: unknown;
+  };
 }
 
 function createStubs(options: HubStubOptions = {}): {
@@ -68,8 +73,26 @@ function createStubs(options: HubStubOptions = {}): {
     getLinkedUrl: (id: string, kind: "JOIN" | "WEB") => { calls.push(`getLinkedUrl:${id}:${kind}`); return options.openUrl; },
   } as unknown as MeetingHubService;
 
+  const chatAnswer: HubChatAnswer = options.chat?.answer ?? {
+    question: "",
+    answer: "I cannot answer this from the recorded meetings.",
+    refusal: true,
+    refusalReason: "NO_EVIDENCE",
+    evidence: [],
+    createdAt: "2026-09-09T08:00:00.000Z",
+  };
+  const chat = {
+    ask: async (request: { question: string; meetingIds?: string[] }) => {
+      calls.push(`chatAsk:${request.question}:${(request.meetingIds ?? []).join(",")}`);
+      if (options.chat?.askError !== undefined) throw options.chat.askError;
+      return chatAnswer;
+    },
+    localModelId: "local-llama-cpp",
+  } as unknown as GroundedMeetingChatService;
+
   const runtime = {
     requireMeetingHub: () => hub,
+    requireMeetingChat: () => chat,
     processCompletedMeeting: async (id: string) => { calls.push(`processCompletedMeeting:${id}`); },
   } as unknown as StorageRuntime;
 
@@ -256,5 +279,87 @@ test("meetings IPC storage errors surface with their fixed message and never raw
   await assert.rejects(
     invoke(handlers, MEETINGS_IPC_CHANNELS.stopCapture, AUTHORIZED_EVENT, "meeting-1"),
     /Choose a local data location/,
+  );
+});
+
+test("meetings IPC chat routes the question and scope only from the authorized renderer", async () => {
+  const { calls, runtime } = createStubs({
+    chat: {
+      answer: {
+        question: "What did we decide?",
+        answer: "We agreed to ship locally.\n[meeting · we agreed to ship locally]",
+        refusal: false,
+        evidence: [{ sourceId: "meeting-1:transcript-1", meetingId: "meeting-1", meetingTitle: "Standup", meetingDate: "2026-09-09", transcriptId: "transcript-1", artifactFileId: "artifact-1", language: "en", snippet: "we agreed to ship locally" }],
+        providerId: "local-llama-cpp",
+        createdAt: "2026-09-09T08:00:00.000Z",
+      },
+    },
+  });
+  const handlers = register(runtime);
+
+  const answer = await invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", ["meeting-1"]) as HubChatAnswer;
+  assert.equal(answer.refusal, false);
+  assert.equal(answer.evidence[0]?.sourceId, "meeting-1:transcript-1");
+  assert.deepEqual(calls, ["chatAsk:What did we decide?:meeting-1"]);
+
+  // Omitting the scope is allowed (chat covers the whole history).
+  await invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?");
+  assert.deepEqual(calls, ["chatAsk:What did we decide?:meeting-1", "chatAsk:What did we decide?:"]);
+
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, UNAUTHORIZED_EVENT, "What did we decide?"),
+    /unauthorized renderer/,
+  );
+  assert.deepEqual(calls.length, 2);
+});
+
+test("meetings IPC chat validates the question and the meeting scope before the service", async () => {
+  const { calls, runtime } = createStubs();
+  const handlers = register(runtime);
+
+  for (const bad of [undefined, null, 42, "", "   ", "a", "x".repeat(601), { question: "hi" }, ["what"]]) {
+    await assert.rejects(
+      invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, bad),
+      /invalid/i,
+    );
+  }
+  assert.deepEqual(calls, []);
+
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", "meeting-1"),
+    /invalid/i,
+  );
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", [42]),
+    /invalid/i,
+  );
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", ["x".repeat(300)]),
+    /invalid/i,
+  );
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", Array.from({ length: 201 }, (_, index) => `meeting-${index}`)),
+    /too large/i,
+  );
+  assert.deepEqual(calls, []);
+
+  // Duplicates collapse before the service call.
+  await invoke(handlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", ["m-1", "m-1", "m-2"]);
+  assert.deepEqual(calls, ["chatAsk:What did we decide?:m-1,m-2"]);
+});
+
+test("meetings IPC chat sanitizes service failures and keeps hub error codes", async () => {
+  const failing = createStubs({ chat: { askError: new MeetingHubError("MEETING_NOT_FOUND", "Meeting not found: ghost") } });
+  const failingHandlers = register(failing.runtime);
+  await assert.rejects(
+    invoke(failingHandlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?", ["ghost"]),
+    (error: unknown) => error instanceof MeetingHubError && error.code === "MEETING_NOT_FOUND",
+  );
+
+  const raw = createStubs({ chat: { askError: new Error("C:\\Users\\ada\\transcript raw detail leaked") } });
+  const rawHandlers = register(raw.runtime);
+  await assert.rejects(
+    invoke(rawHandlers, MEETINGS_IPC_CHANNELS.askMeetingHistory, AUTHORIZED_EVENT, "What did we decide?"),
+    /could not be completed/,
   );
 });

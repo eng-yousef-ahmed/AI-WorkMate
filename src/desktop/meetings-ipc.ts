@@ -99,6 +99,47 @@ export function registerMeetingsIpc({
     }
     await openExternal(url);
   });
+
+  handle(MEETINGS_IPC_CHANNELS.askMeetingHistory, async (_event: unknown, question: unknown, meetingIds: unknown): Promise<unknown> => {
+    const chat = runtime.requireMeetingChat();
+    return chat.ask({
+      question: readChatQuestion(question),
+      ...(meetingIds === undefined || meetingIds === null ? {} : { meetingIds: readMeetingIdScope(meetingIds) }),
+    });
+  });
+}
+
+const MAX_CHAT_QUESTION_LENGTH = 600;
+const MAX_CHAT_SCOPE_MEETINGS = 200;
+
+function readChatQuestion(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new StorageError("The chat question is invalid.");
+  }
+  const question = value.trim();
+  if (question.length < 2 || question.length > MAX_CHAT_QUESTION_LENGTH) {
+    throw new StorageError("The chat question is invalid.");
+  }
+  return question;
+}
+
+function readMeetingIdScope(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new StorageError("The meeting scope is invalid.");
+  }
+  if (value.length > MAX_CHAT_SCOPE_MEETINGS) {
+    throw new StorageError("The meeting scope is too large.");
+  }
+  const scope: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const id = readMeetingId(item);
+    if (!seen.has(id)) {
+      seen.add(id);
+      scope.push(id);
+    }
+  }
+  return scope;
 }
 
 function readMeetingId(value: unknown, label = "meeting id"): string {

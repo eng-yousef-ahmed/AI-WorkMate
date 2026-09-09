@@ -793,6 +793,63 @@ function validAnalysis(meetingId: string): AnalysisDocument {
   };
 }
 
+test("GROUNDED_QA chat requests stream plain text through llama.cpp without JSON parsing", async () => {
+  const meetingId = "11111111-1111-4111-8111-111111111111";
+  const chatPrompt = "Evidence:\n[...]\nQuestion: What was decided?\nAnswer:";
+  let seenArgs: readonly string[] | undefined;
+  const provider = new LocalLlmProvider({
+    platform: "linux",
+    helperRunner: (args) => {
+      seenArgs = args;
+      return scriptedLlamaRunner("We agreed to ship locally.\n[meeting · we agreed to ship locally]")(args);
+    },
+  });
+  const result = await provider.process({ meetingId, purpose: "GROUNDED_QA", content: chatPrompt });
+  assert.equal(result.providerId, "local-llama-cpp");
+  assert.equal(result.persistedByProvider, false);
+  assert.equal(result.output, "We agreed to ship locally.\n[meeting · we agreed to ship locally]");
+  // Chat generation never imposes the analysis JSON schema and never emits a schema file.
+  assert.equal(seenArgs?.includes("--json-schema"), false);
+  assert.equal(seenArgs?.includes("-n"), true);
+  const predictIndex = seenArgs?.indexOf("-n") ?? -1;
+  const tokens = predictIndex >= 0 ? Number(seenArgs?.[predictIndex + 1]) : NaN;
+  assert.ok(tokens > 0 && tokens < LOCAL_LLM_MAX_PREDICT_TOKENS, `chat token budget ${tokens} must stay below analysis budget`);
+  const contextIndex = seenArgs?.indexOf("-c") ?? -1;
+  const context = contextIndex >= 0 ? Number(seenArgs?.[contextIndex + 1]) : NaN;
+  assert.ok(context > 2048, `chat context ${context} must exceed the analysis context`);
+  assert.equal(seenArgs?.includes("-p"), true);
+  const promptIndex = seenArgs?.indexOf("-p") ?? -1;
+  assert.equal(promptIndex >= 0 ? seenArgs?.[promptIndex + 1] : undefined, chatPrompt);
+});
+
+test("GROUNDED_QA strips llama.cpp perf banners but never the answer text itself", async () => {
+  const provider = new LocalLlmProvider({
+    platform: "linux",
+    helperRunner: scriptedLlamaRunner("The deadline is October.\n[meeting · the deadline is october]\n\nllama_perf_context_print: prompt eval time = 1234.56 ms / 100 tokens"),
+  });
+  const result = await provider.process({ meetingId: "11111111-1111-4111-8111-111111111111", purpose: "GROUNDED_QA", content: "Evidence: x\nQuestion: q\nAnswer:" });
+  assert.equal(result.output, "The deadline is October.\n[meeting · the deadline is october]");
+});
+
+test("GROUNDED_QA fails closed on crash and timeout like analysis requests", async () => {
+  await assert.rejects(
+    new LocalLlmProvider({ platform: "linux", helperRunner: crashingRunner() }).process({
+      meetingId: "11111111-1111-4111-8111-111111111111",
+      purpose: "GROUNDED_QA",
+      content: "Evidence: x\nQuestion: q\nAnswer:",
+    }),
+    (error: unknown) => error instanceof LocalLlmError && error.code === "ANALYSIS_ENGINE_CRASHED",
+  );
+  await assert.rejects(
+    new LocalLlmProvider({ platform: "linux", timeoutMs: 20, helperRunner: unkillableRunner() }).process({
+      meetingId: "11111111-1111-4111-8111-111111111111",
+      purpose: "GROUNDED_QA",
+      content: "Evidence: x\nQuestion: q\nAnswer:",
+    }),
+    (error: unknown) => error instanceof LocalLlmError && error.code === "ANALYSIS_ENGINE_TIMEOUT",
+  );
+});
+
 function scriptedLlamaRunner(output: AnalysisDocument | string): LocalLlmHelperRunner {
   const text = typeof output === "string" ? output : JSON.stringify(output);
   return () => completed(text, 0);

@@ -110,14 +110,61 @@ export class LocalLlmProvider implements AIProvider {
         false,
       );
     }
-    const transcriptJson = typeof request.content === "string" ? request.content : Buffer.from(request.content).toString("utf8");
-    const transcript = parseTranscriptJson(transcriptJson, request.meetingId);
     const cliPath = await this.resolveCliPath();
     const modelPath = await this.resolveModelPath();
-    const prompt = buildAnalysisPrompt(transcript, this.clock().toISOString());
     const helperName = basename(cliPath);
-    const args = buildLlamaCliArgs(modelPath, prompt, helperName);
     const runner = this.helperRunner ?? createSpawnRunner(cliPath);
+    if (request.purpose === "GROUNDED_QA") {
+      // Grounded meeting chat: the caller supplies the assembled evidence
+      // prompt; the local model answers in plain text with verbatim citations.
+      const prompt = typeof request.content === "string" ? request.content : Buffer.from(request.content).toString("utf8");
+      if (prompt.length === 0) {
+        throw new LocalLlmError("ANALYSIS_ENGINE_INVALID_OUTPUT", "The grounded chat prompt is empty.", false);
+      }
+      const output = await this.runChild(
+        buildGroundedChatCliArgs(modelPath, prompt, helperName),
+        helperName,
+        runner,
+        abortSignal,
+        (stdoutText) => trimChatTextOutput(stdoutText),
+      );
+      return {
+        providerId: this.descriptor.id,
+        output,
+        processedAt: this.clock().toISOString(),
+        persistedByProvider: false,
+      };
+    }
+    const transcriptJson = typeof request.content === "string" ? request.content : Buffer.from(request.content).toString("utf8");
+    const transcript = parseTranscriptJson(transcriptJson, request.meetingId);
+    const prompt = buildAnalysisPrompt(transcript, this.clock().toISOString());
+    const output = await this.runChild(
+      buildLlamaCliArgs(modelPath, prompt, helperName),
+      helperName,
+      runner,
+      abortSignal,
+      (stdoutText, stderrText) => extractJsonObject(stdoutText, stderrText),
+    );
+    return {
+      providerId: this.descriptor.id,
+      output,
+      processedAt: this.clock().toISOString(),
+      persistedByProvider: false,
+    };
+  }
+
+  /**
+   * Runs one llama.cpp CLI child with a bounded wall clock, abort wiring, and
+   * crash/timeout mapping. `decode` converts raw stdout into the provider
+   * result (structured JSON for analysis, plain text for grounded chat).
+   */
+  private async runChild(
+    args: readonly string[],
+    helperName: string,
+    runner: LocalLlmHelperRunner,
+    abortSignal: AbortSignal | undefined,
+    decode: (stdoutText: string, stderrText: string) => string,
+  ): Promise<string> {
     const child = runner(args);
     child.closeStdin?.();
     let timeout: NodeJS.Timeout | undefined;
@@ -158,13 +205,7 @@ export class LocalLlmProvider implements AIProvider {
           true,
         );
       }
-      const output = extractJsonObject(stdoutText, stderrText);
-      return {
-        providerId: this.descriptor.id,
-        output,
-        processedAt: this.clock().toISOString(),
-        persistedByProvider: false,
-      };
+      return decode(stdoutText, stderrText);
     } catch (error: unknown) {
       if (error instanceof LocalLlmError) {
         throw error;
@@ -416,6 +457,63 @@ export function buildLlamaCliArgs(modelPath: string, prompt: string, _helperName
     "-p",
     prompt,
   ];
+}
+
+/**
+ * Grounded chat generation budget. Answers are short prose with verbatim
+ * citations; 768 tokens covers a complete answer with headroom over a
+ * typical 150-300 token response.
+ */
+export const LOCAL_LLM_CHAT_MAX_PREDICT_TOKENS = 768;
+
+/**
+ * Grounded chat context window. Evidence (bounded snippets) plus instructions
+ * can reach ~1500 tokens, so a wider window than the 2048-token analysis
+ * context keeps room for the full 768-token answer without truncation.
+ */
+export const LOCAL_LLM_CHAT_CONTEXT_TOKENS = 4096;
+
+/** llama.cpp CLI args for grounded meeting chat (no JSON schema constraint). */
+export function buildGroundedChatCliArgs(modelPath: string, prompt: string, _helperName = "llama-cli.exe"): readonly string[] {
+  const threads = String(localLlmCpuThreadCount());
+  return [
+    "-m",
+    modelPath,
+    "-n",
+    String(LOCAL_LLM_CHAT_MAX_PREDICT_TOKENS),
+    "-c",
+    String(LOCAL_LLM_CHAT_CONTEXT_TOKENS),
+    "-t",
+    threads,
+    "-tb",
+    threads,
+    "-b",
+    String(CPU_BATCH_SIZE),
+    "--temp",
+    "0",
+    "--top-k",
+    "1",
+    "-ngl",
+    "0",
+    "--no-display-prompt",
+    "--single-turn",
+    "-p",
+    prompt,
+  ];
+}
+
+/**
+ * Chat stdout cleanup: llama.cpp may append its own perf/timing banner after
+ * the generated text; anything after a banner marker is never part of the
+ * answer. Content before it is returned verbatim (never paraphrased here).
+ */
+function trimChatTextOutput(stdout: string): string {
+  const text = stripBomAndAnsi(stdout);
+  const marker = text.search(/\nllama_|\nmain:\s*|\nprint_info|\nllm_load_tensors/);
+  if (marker >= 0) {
+    return text.slice(0, marker).trim();
+  }
+  return text.trim();
 }
 
 export function resolveLocalLlmTimeoutMs(requested?: number, envValue = process.env.AI_WORKMATE_LOCAL_LLM_TIMEOUT_MS): number {

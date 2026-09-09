@@ -14,6 +14,7 @@ import type {
   HubCaptureCapabilities,
   HubCaptureRequest,
   HubCaptureSnapshot,
+  HubChatAnswer,
   HubTranscriptContent,
   MeetingDetail,
   MeetingHubOverview,
@@ -55,6 +56,7 @@ export const MEETINGS_IPC_CHANNELS = {
   listActiveCaptures: "meetings:capture-active",
   processMeeting: "meetings:process",
   openLinkedUrl: "meetings:open-linked-url",
+  askMeetingHistory: "meetings:chat-ask",
 } as const;
 
 export const CALENDAR_IPC_CHANNELS = {
@@ -139,6 +141,12 @@ export interface MeetingsRendererAPI {
   processMeeting(meetingId: string, userApprovedForThisRequest?: boolean): Promise<void>;
   /** Opens the persisted join/web URL of a linked calendar event in the browser. */
   openLinkedUrl(meetingId: string, kind: "JOIN" | "WEB"): Promise<void>;
+  /**
+   * Asks a question grounded ONLY in the persisted local meeting transcripts.
+   * Answers always carry `[meeting · …]` verbatim citations or a refusal;
+   * meeting content is processed only by the local model in this process.
+   */
+  askMeetingHistory(question: string, meetingIds?: string[]): Promise<HubChatAnswer>;
 }
 
 /**
@@ -173,6 +181,7 @@ export type {
   HubCaptureCapabilities,
   HubCaptureRequest,
   HubCaptureSnapshot,
+  HubChatAnswer,
   HubTranscriptContent,
   IntegrityReport,
   MeetingDetail,

@@ -52,6 +52,7 @@ export interface ChangeDataRootResult {
 
 import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
 import { MeetingHubService } from "../meetings/MeetingHubService";
+import { GroundedMeetingChatService } from "../meetings/GroundedMeetingChatService";
 import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
 import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
 import type { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
@@ -80,6 +81,8 @@ export class StorageRuntime {
   public meetingProcessing: MeetingTranscriptionOrchestrator | undefined;
   /** Meeting Hub (dashboard/calendar linkage/capture controls); created with the store. */
   public meetingHub: MeetingHubService | undefined;
+  /** Grounded local chat over meeting history (LOCAL_ONLY by construction). */
+  public meetingChat: GroundedMeetingChatService | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -483,6 +486,15 @@ export class StorageRuntime {
     return hub;
   }
 
+  /** Grounded meeting-history chat (throws before first-run setup). */
+  public requireMeetingChat(): GroundedMeetingChatService {
+    const chat = this.meetingChat;
+    if (chat === undefined) {
+      throw new StorageError("Choose a local data location before using meeting chat.");
+    }
+    return chat;
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -642,6 +654,14 @@ export class StorageRuntime {
       orchestrator: this.meetingCapture,
       clock: this.clock,
     });
+    // Grounded chat is LOCAL_ONLY by construction: the service refuses any
+    // provider that is not the local llama.cpp runtime, and the local
+    // processing policy enforcer also gates transcription/analysis flows.
+    this.meetingChat = new GroundedMeetingChatService({
+      store,
+      provider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
+      clock: this.clock,
+    });
   }
 
   private async detachStore(reason: string): Promise<void> {
@@ -652,6 +672,7 @@ export class StorageRuntime {
     this.meetingCapture = undefined;
     this.meetingProcessing = undefined;
     this.meetingHub = undefined;
+    this.meetingChat = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;

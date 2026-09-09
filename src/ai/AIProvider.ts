@@ -12,7 +12,7 @@ export interface AIProviderDescriptor {
 
 export interface AIProcessRequest {
   meetingId: string;
-  purpose: "TRANSCRIPTION" | "SUMMARY" | "DECISIONS" | "TASKS";
+  purpose: "TRANSCRIPTION" | "SUMMARY" | "DECISIONS" | "TASKS" | "GROUNDED_QA";
   content: string | Uint8Array;
   language?: string;
 }

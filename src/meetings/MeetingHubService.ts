@@ -39,7 +39,8 @@ export type MeetingHubErrorCode =
   | "ARTIFACT_UNAVAILABLE"
   | "TRANSCRIPT_TOO_LARGE"
   | "ANALYSIS_UNAVAILABLE"
-  | "INVALID_REQUEST";
+  | "INVALID_REQUEST"
+  | "CHAT_CLOUD_DISALLOWED";
 
 export class MeetingHubError extends Error {
   public constructor(
