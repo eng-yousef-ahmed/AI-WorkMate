@@ -21,6 +21,7 @@ import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
 import { registerCalendarIpc, type GoogleOAuthConfigInput, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
 import { registerMeetingsIpc } from "./meetings-ipc";
+import { registerTasksIpc } from "./tasks-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
 
@@ -112,6 +113,12 @@ async function bootstrap(): Promise<void> {
       openExternal: async (url: string) => {
         await shell.openExternal(url);
       },
+    });
+    registerTasksIpc({
+      ipcMain: ipcMain as unknown as IpcMainLike,
+      runtime,
+      getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
+      getAuthorizedRendererUrl: () => rendererUrl,
     });
     ipcRegistered = true;
   }

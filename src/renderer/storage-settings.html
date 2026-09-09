@@ -18,6 +18,7 @@
         <nav aria-label="Workspace">
           <a href="#overview"><span class="nav-icon">◈</span> Overview</a>
           <a href="#meetings"><span class="nav-icon">◷</span> Meetings</a>
+          <a href="#tasks"><span class="nav-icon">✓</span> Tasks</a>
           <a href="#projects"><span class="nav-icon">▦</span> Projects</a>
         </nav>
         <div class="workspace-label settings-label">SETTINGS</div>
@@ -112,6 +113,60 @@
 
           <div id="hub-detail" class="hub-detail" hidden></div>
           <div id="hub-notice" class="notice" role="status" aria-live="polite"></div>
+        </section>
+
+        <section id="tasks" class="section-block tasks-section" aria-label="Tasks and follow-ups">
+          <div class="section-heading">
+            <div><h2>Tasks &amp; follow-ups</h2><p>Action items from your meetings — each task keeps its meeting and analysis provenance, stored on this device.</p></div>
+            <div class="hub-heading-actions">
+              <span id="tasks-summary-badge" class="calendar-badge neutral">Loading…</span>
+              <button id="tasks-refresh-button" class="button secondary" title="Refresh tasks">↻ Refresh</button>
+            </div>
+          </div>
+
+          <div class="tasks-grid">
+            <div class="panel tasks-composer">
+              <div class="panel-heading">
+                <div class="panel-icon">＋</div>
+                <div><h3>New task</h3><p>Tasks always belong to a meeting so their origin is never lost.</p></div>
+              </div>
+              <form id="tasks-create-form" class="chat-form" autocomplete="off">
+                <label class="hub-search-label" for="tasks-new-meeting">ORIGIN MEETING</label>
+                <select id="tasks-new-meeting" class="tasks-meeting-select"></select>
+                <label class="hub-search-label" for="tasks-new-text">TASK</label>
+                <input id="tasks-new-text" type="text" maxlength="2000" spellcheck="true" placeholder="e.g. Verify the backup restore flow on Windows" autocomplete="off" />
+                <div class="tasks-field-row">
+                  <label class="field-label" for="tasks-new-assignee">OWNER / ASSIGNEE<input id="tasks-new-assignee" type="text" maxlength="200" placeholder="Optional" autocomplete="off" /></label>
+                  <label class="field-label" for="tasks-new-due">DUE DATE<input id="tasks-new-due" type="date" /></label>
+                </div>
+                <div class="config-actions">
+                  <button id="tasks-create-button" type="submit" class="button primary">Add task</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="panel tasks-list-panel">
+              <div class="panel-heading">
+                <div class="panel-icon">✓</div>
+                <div><h3>Action items</h3><p>Complete tasks here or reopen them; edits keep provenance.</p></div>
+              </div>
+              <div id="tasks-filters" class="tasks-filters" role="group" aria-label="Filter tasks by status">
+                <button type="button" class="tasks-filter active" data-status="ALL">All</button>
+                <button type="button" class="tasks-filter" data-status="OPEN">Open</button>
+                <button type="button" class="tasks-filter" data-status="IN_PROGRESS">In progress</button>
+                <button type="button" class="tasks-filter" data-status="DONE">Done</button>
+                <button type="button" class="tasks-filter" data-status="CANCELLED">Cancelled</button>
+              </div>
+              <div id="tasks-list" class="meeting-list"></div>
+              <div id="tasks-status" class="calendar-line" hidden role="status"></div>
+            </div>
+          </div>
+
+          <details id="tasks-followups" class="tasks-followups">
+            <summary>Follow-ups from meeting analysis <span id="tasks-followups-count" class="count-badge">0</span></summary>
+            <p class="helper">Follow-ups noted by analysis are suggestions — convert the ones you want to track into tasks above. They stay local.</p>
+            <div id="tasks-followups-list" class="meeting-list"></div>
+          </details>
         </section>
 
         <section class="hero-card">
@@ -243,5 +298,6 @@
     </div>
     <script src="./storage-settings.js"></script>
     <script src="./meetings-hub.js"></script>
+    <script src="./tasks.js"></script>
   </body>
 </html>

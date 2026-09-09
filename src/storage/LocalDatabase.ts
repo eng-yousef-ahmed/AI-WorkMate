@@ -84,8 +84,25 @@ export interface ProjectRecord {
 export interface TaskRecord extends ActionItem {
   meetingId: string;
   projectId?: string;
+  /**
+   * Provenance: the persisted artifact (analysis task/follow-up JSON) this
+   * task was created from, when it came out of a meeting analysis. Manual
+   * tasks have none.
+   */
+  sourceArtifactId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type TaskStatusValue = "OPEN" | "IN_PROGRESS" | "DONE" | "CANCELLED";
+
+export interface TaskUpdateFields {
+  text?: string;
+  assignee?: string | null;
+  dueDate?: string | null;
+  status?: TaskStatusValue;
+  sourceArtifactId?: string | null;
+  updatedAt?: string;
 }
 
 export interface DecisionRecord extends Decision {
@@ -326,6 +343,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   assignee TEXT,
   due_date TEXT,
   status TEXT NOT NULL CHECK (status IN ('OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED')),
+  source_artifact_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -390,6 +408,13 @@ export class LocalDatabase {
   public checkpoint(): void {
     this.ensureOpen();
     this.database.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  }
+
+  /** Column names of a table (tests and migration guards). */
+  public describeTable(table: string): string[] {
+    this.ensureOpen();
+    const rows = this.database.prepare(`PRAGMA table_info(${table})`).all() as SqlRow[];
+    return rows.map((row) => stringValue(row.name));
   }
 
   public transaction<T>(callback: () => T): T {
@@ -1118,10 +1143,10 @@ export class LocalDatabase {
     this.database
       .prepare(
         `INSERT INTO tasks (
-          task_id, meeting_id, project_id, text, assignee, due_date, status,
+          task_id, meeting_id, project_id, text, assignee, due_date, status, source_artifact_id,
           created_at, updated_at
         ) VALUES (
-          $taskId, $meetingId, $projectId, $text, $assignee, $dueDate, $status,
+          $taskId, $meetingId, $projectId, $text, $assignee, $dueDate, $status, $sourceArtifactId,
           $createdAt, $updatedAt
         )`,
       )
@@ -1133,30 +1158,52 @@ export class LocalDatabase {
         $assignee: task.assignee ?? null,
         $dueDate: task.dueDate ?? null,
         $status: task.status ?? "OPEN",
+        $sourceArtifactId: task.sourceArtifactId ?? null,
         $createdAt: task.createdAt,
         $updatedAt: task.updatedAt,
       });
+  }
+
+  public getTask(taskId: string): TaskRecord | undefined {
+    const row = this.database.prepare("SELECT * FROM tasks WHERE task_id = $taskId").get({ $taskId: taskId });
+    return row === undefined ? undefined : mapTaskRecord(row as SqlRow);
   }
 
   public listTasks(meetingId: string): TaskRecord[] {
     const rows = this.database
       .prepare("SELECT * FROM tasks WHERE meeting_id = $meetingId ORDER BY created_at")
       .all({ $meetingId: meetingId });
-    return rows.map((row) => {
-      const value = row as SqlRow;
-      const task: TaskRecord = {
-        taskId: stringValue(value.task_id),
-        meetingId: stringValue(value.meeting_id),
-        text: stringValue(value.text),
-        status: stringValue(value.status) as TaskRecord["status"],
-        createdAt: stringValue(value.created_at),
-        updatedAt: stringValue(value.updated_at),
-      };
-      addOptional(task, "projectId", optionalString(value.project_id));
-      addOptional(task, "assignee", optionalString(value.assignee));
-      addOptional(task, "dueDate", optionalString(value.due_date));
-      return task;
-    });
+    return rows.map((row) => mapTaskRecord(row as SqlRow));
+  }
+
+  /** Every task across all meetings (ordered by creation time). */
+  public listAllTasks(): TaskRecord[] {
+    const rows = this.database.prepare("SELECT * FROM tasks ORDER BY created_at").all();
+    return rows.map((row) => mapTaskRecord(row as SqlRow));
+  }
+
+  public updateTask(taskId: string, fields: TaskUpdateFields): TaskRecord | undefined {
+    const assignments: string[] = [];
+    const parameters: Record<string, string | number | bigint | Uint8Array | null> = { $taskId: taskId };
+    const push = (column: string, key: string, value: string | number | bigint | Uint8Array | null | undefined): void => {
+      if (value !== undefined) {
+        assignments.push(`${column} = $${key}`);
+        parameters[`$${key}`] = value;
+      }
+    };
+    push("text", "text", fields.text);
+    push("assignee", "assignee", fields.assignee === undefined ? undefined : fields.assignee);
+    push("due_date", "dueDate", fields.dueDate === undefined ? undefined : fields.dueDate);
+    push("status", "status", fields.status);
+    push("source_artifact_id", "sourceArtifactId", fields.sourceArtifactId === undefined ? undefined : fields.sourceArtifactId);
+    push("updated_at", "updatedAt", fields.updatedAt);
+    if (assignments.length === 0) {
+      return this.getTask(taskId);
+    }
+    this.database
+      .prepare(`UPDATE tasks SET ${assignments.join(", ")} WHERE task_id = $taskId`)
+      .run(parameters);
+    return this.getTask(taskId);
   }
 
   public appendAudit(record: AuditRecord): void {
@@ -1277,9 +1324,23 @@ export class LocalDatabase {
       if (currentVersion > 0 && currentVersion < 8) {
         this.applyCalendarProviderMigration();
       }
+      if (currentVersion > 0 && currentVersion < 9) {
+        this.applyTaskSourceArtifactMigration();
+      }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
         .run({ $version: DATABASE_SCHEMA_VERSION, $appliedAt: this.clock().toISOString() });
+    }
+  }
+
+  /** Schema v9: tasks gain optional source_artifact_id for analysis provenance. */
+  private applyTaskSourceArtifactMigration(): void {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(tasks)").all() as SqlRow[])
+        .map((row) => stringValue(row.name)),
+    );
+    if (!columns.has("source_artifact_id")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN source_artifact_id TEXT;");
     }
   }
 
@@ -1525,6 +1586,22 @@ function mapArtifact(row: SqlRow): Artifact {
   const recordingVariant = optionalString(row.recording_variant) as RecordingVariant | undefined;
   addOptional(artifact, "recordingVariant", recordingVariant);
   return artifact;
+}
+
+function mapTaskRecord(value: SqlRow): TaskRecord {
+  const task: TaskRecord = {
+    taskId: stringValue(value.task_id),
+    meetingId: stringValue(value.meeting_id),
+    text: stringValue(value.text),
+    status: stringValue(value.status) as TaskRecord["status"],
+    createdAt: stringValue(value.created_at),
+    updatedAt: stringValue(value.updated_at),
+  };
+  addOptional(task, "projectId", optionalString(value.project_id));
+  addOptional(task, "assignee", optionalString(value.assignee));
+  addOptional(task, "dueDate", optionalString(value.due_date));
+  addOptional(task, "sourceArtifactId", optionalString(value.source_artifact_id));
+  return task;
 }
 
 function addOptional<T extends object, K extends keyof T>(object: T, key: K, value: T[K] | undefined): void {

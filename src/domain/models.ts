@@ -1,5 +1,5 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 8;
+export const DATABASE_SCHEMA_VERSION = 9;
 
 export type CalendarProvider = "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR";
 

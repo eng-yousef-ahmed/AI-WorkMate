@@ -97,6 +97,9 @@ select:focus { border-color: rgba(139,123,255,.6); }.helper { margin-top: 10px; 
 /* Microsoft 365 calendar integration */
 input[type="text"] { width: 100%; padding: 10px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
 input[type="text"]:focus { border-color: rgba(139,123,255,.6); }
+input[type="search"] { width: 100%; padding: 10px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
+input[type="date"] { width: 100%; padding: 9px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
+input[type="search"]:focus, input[type="date"]:focus { border-color: rgba(139,123,255,.6); }
 .button:disabled { opacity: .45; cursor: default; transform: none; }
 .calendar-card { padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
 .calendar-main { display: flex; align-items: center; gap: 16px; }
@@ -228,5 +231,34 @@ code { padding: 1px 5px; border-radius: 4px; color: #c9b2ff; background: rgba(13
 .chat-scope-toggle { display: inline-flex; align-items: center; gap: 7px; color: #7c879b; font-size: 11px; cursor: pointer; }
 .chat-scope-toggle input { accent-color: var(--accent); }
 #chat-status { margin-top: 0; }
+
+/* ---------- Tasks & follow-ups ---------- */
+.tasks-section { border-top: 1px solid var(--line); padding-top: 26px; }
+.tasks-grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 14px; align-items: start; }
+.tasks-composer .field-label input, .tasks-field-row input { margin-top: 5px; }
+.tasks-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.tasks-meeting-select { width: 100%; margin-top: 6px; }
+.tasks-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.tasks-filter { padding: 4px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,.12); background: transparent; color: #8b96a9; font-size: 11px; }
+.tasks-filter.active { background: rgba(139,123,255,.16); border-color: rgba(139,123,255,.5); color: #cfc6ff; }
+.task-row { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.07); border-radius: 10px; background: rgba(255,255,255,.025); }
+.task-row.done { opacity: .62; }
+.task-row .task-title { display: flex; gap: 9px; align-items: flex-start; color: #dbe2ef; font-size: 12.8px; line-height: 1.5; word-break: break-word; }
+.task-row.done .task-title-text { text-decoration: line-through; color: #8a94a6; }
+.task-title-text { flex: 1; min-width: 0; }
+.task-check { flex: none; width: 19px; height: 19px; margin-top: 1px; border-radius: 6px; border: 1px solid rgba(139,123,255,.55); background: transparent; color: transparent; font-size: 12px; line-height: 1; }
+.task-row.done .task-check { background: rgba(103,214,160,.25); border-color: rgba(103,214,160,.6); color: #a8f0cc; }
+.task-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: #77839a; font-size: 10.8px; }
+.task-meta-chip { padding: 1px 8px; border-radius: 999px; background: rgba(255,255,255,.05); color: #8f9aaf; }
+.task-meta-chip.provenance { background: rgba(139,123,255,.09); color: #b3a6f5; }
+.task-meta-chip.due-overdue { background: rgba(232,84,84,.14); color: #f0a3a3; }
+.task-meeting-link { padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(94,215,233,.25); background: rgba(94,215,233,.06); color: #93dce6; font-size: 10.5px; cursor: pointer; }
+.task-meeting-link:hover { border-color: rgba(94,215,233,.55); background: rgba(94,215,233,.12); }
+.task-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.task-edit-fields { display: grid; gap: 7px; padding-top: 6px; }
+.task-edit-fields input { width: 100%; }
+.task-edit-fields .tasks-field-row { margin-top: 0; }
+.followup-row { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px dashed rgba(255,255,255,.09); border-radius: 9px; }
+.followup-row .meeting-main { flex: 1; }
+@media (max-width: 1080px) { .hub-grid { grid-template-columns: 1fr; } .tasks-grid { grid-template-columns: 1fr; } }
 .notice.visible { display: block; }
-@media (max-width: 1080px) { .hub-grid { grid-template-columns: 1fr; } }

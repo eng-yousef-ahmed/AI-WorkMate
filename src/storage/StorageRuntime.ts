@@ -53,6 +53,7 @@ export interface ChangeDataRootResult {
 import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
 import { MeetingHubService } from "../meetings/MeetingHubService";
 import { GroundedMeetingChatService } from "../meetings/GroundedMeetingChatService";
+import { TaskManagementService } from "../tasks/TaskManagementService";
 import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
 import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
 import type { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
@@ -83,6 +84,8 @@ export class StorageRuntime {
   public meetingHub: MeetingHubService | undefined;
   /** Grounded local chat over meeting history (LOCAL_ONLY by construction). */
   public meetingChat: GroundedMeetingChatService | undefined;
+  /** Task and follow-up management with meeting provenance. */
+  public tasks: TaskManagementService | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -495,6 +498,15 @@ export class StorageRuntime {
     return chat;
   }
 
+  /** Task and follow-up management (throws before first-run setup). */
+  public requireTasks(): TaskManagementService {
+    const tasks = this.tasks;
+    if (tasks === undefined) {
+      throw new StorageError("Choose a local data location before using tasks.");
+    }
+    return tasks;
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -662,6 +674,7 @@ export class StorageRuntime {
       provider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
       clock: this.clock,
     });
+    this.tasks = new TaskManagementService({ store, clock: this.clock });
   }
 
   private async detachStore(reason: string): Promise<void> {
@@ -673,6 +686,7 @@ export class StorageRuntime {
     this.meetingProcessing = undefined;
     this.meetingHub = undefined;
     this.meetingChat = undefined;
+    this.tasks = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;

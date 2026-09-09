@@ -36,7 +36,7 @@ import type { AIProvider } from "../ai/AIProvider";
 import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
 import { BackupService } from "./BackupService";
 import { ExportService } from "./ExportService";
-import { LocalDatabase, type AuditRecord, type DuplicateMeetingKeys, type ParticipantRecord, type TranscriptRecord } from "./LocalDatabase";
+import { LocalDatabase, type AuditRecord, type DuplicateMeetingKeys, type ParticipantRecord, type TaskRecord, type TaskUpdateFields, type TranscriptRecord } from "./LocalDatabase";
 import type { StorageIntegrityService } from "./IntegrityService";
 import { RecoveryScanner } from "./RecoveryScanner";
 import { RecordingDiskMonitor, type RecordingDiskMonitorOptions } from "./RecordingDiskMonitor";
@@ -286,6 +286,36 @@ export class LocalFirstStore {
 
   public listMeetings(): Meeting[] {
     return this.requireDatabase().listMeetings();
+  }
+
+  // --- Tasks (task management over the persisted action-item table) ---------
+
+  public listAllTasks(): TaskRecord[] {
+    return this.requireDatabase().listAllTasks();
+  }
+
+  public listMeetingTasks(meetingId: string): TaskRecord[] {
+    this.requireMeeting(meetingId);
+    return this.requireDatabase().listTasks(meetingId);
+  }
+
+  public getTaskRecord(taskId: string): TaskRecord | undefined {
+    return this.requireDatabase().getTask(taskId);
+  }
+
+  public updateTaskRecord(taskId: string, fields: TaskUpdateFields): TaskRecord | undefined {
+    const updated = this.requireDatabase().updateTask(taskId, fields);
+    if (updated !== undefined) {
+      this.requireDatabase().appendAudit(
+        this.audit("TASK_UPDATED", updated.meetingId, { taskId: updated.taskId, ...(fields as object) }),
+      );
+    }
+    return updated;
+  }
+
+  public registerTaskRecord(task: TaskRecord): void {
+    this.requireDatabase().registerTask(task);
+    this.requireDatabase().appendAudit(this.audit("TASK_CREATED", task.meetingId, { taskId: task.taskId }));
   }
 
   public async upsertCalendarMeeting(
@@ -1100,8 +1130,14 @@ export class LocalFirstStore {
         this.database.registerDecision({ ...decision, meetingId: meeting.meetingId, createdAt });
       }
       for (const task of persistable.tasks) {
-        this.database.registerTask({ ...task, meetingId: meeting.meetingId, createdAt, updatedAt: createdAt });
-        this.database.appendAudit(this.audit("TASK_CREATED", meeting.meetingId, { taskId: task.taskId }));
+        this.database.registerTask({
+          ...task,
+          meetingId: meeting.meetingId,
+          sourceArtifactId: savedTasks.fileId,
+          createdAt,
+          updatedAt: createdAt,
+        });
+        this.database.appendAudit(this.audit("TASK_CREATED", meeting.meetingId, { taskId: task.taskId, sourceArtifactId: savedTasks.fileId }));
         if (task.assignee !== undefined) {
           this.database.appendAudit(this.audit("TASK_ASSIGNED", meeting.meetingId, { taskId: task.taskId, assignee: task.assignee }));
         }

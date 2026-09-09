@@ -709,3 +709,12 @@ window.addEventListener("focus", () => {
     void refreshHub();
   }
 });
+
+// Tasks panel asks the hub to open the originating meeting of a task.
+window.addEventListener("ai-workmate:open-meeting", ((event: Event) => {
+  const meetingId = (event as CustomEvent<{ meetingId?: unknown }>).detail?.meetingId;
+  if (typeof meetingId === "string" && meetingId.length > 0) {
+    void openDetail(meetingId);
+    $("meetings").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}) as EventListener);

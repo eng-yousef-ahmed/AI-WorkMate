@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
-import { CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, type CalendarRendererAPI, type MeetingsRendererAPI, type StorageRendererAPI } from "./storage-api";
+import { CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type CalendarRendererAPI, type MeetingsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {
   getSnapshot: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getSnapshot),
@@ -38,6 +38,16 @@ const calendarApi: CalendarRendererAPI = {
   saveGoogleOAuthConfig: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.saveGoogleOAuthConfig, input),
 };
 
+const tasksApi: TasksRendererAPI = {
+  listTasks: (query) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.listTasks, query === undefined ? undefined : { ...query }),
+  getTask: (taskId) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.getTask, taskId),
+  createTask: (input) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.createTask, input),
+  updateTask: (taskId, patch) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.updateTask, taskId, patch),
+  setTaskStatus: (taskId, status) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.setTaskStatus, taskId, status),
+  listFollowupSuggestions: (meetingId) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.listFollowupSuggestions, meetingId),
+  convertFollowup: (followupId) => ipcRenderer.invoke(TASKS_IPC_CHANNELS.convertFollowup, followupId),
+};
+
 const meetingsApi: MeetingsRendererAPI = {
   getOverview: () => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getOverview),
   getDetail: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getDetail, meetingId),
@@ -57,4 +67,4 @@ const meetingsApi: MeetingsRendererAPI = {
     ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.askMeetingHistory, question, meetingIds === undefined ? undefined : [...meetingIds]),
 };
 
-contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi });
+contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi, tasks: tasksApi });

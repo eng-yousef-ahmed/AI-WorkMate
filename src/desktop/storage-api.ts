@@ -15,6 +15,11 @@ import type {
   HubCaptureRequest,
   HubCaptureSnapshot,
   HubChatAnswer,
+  HubFollowupSuggestion,
+  HubTaskCreateInput,
+  HubTaskItem,
+  HubTaskStatus,
+  HubTaskUpdateInput,
   HubTranscriptContent,
   MeetingDetail,
   MeetingHubOverview,
@@ -57,6 +62,16 @@ export const MEETINGS_IPC_CHANNELS = {
   processMeeting: "meetings:process",
   openLinkedUrl: "meetings:open-linked-url",
   askMeetingHistory: "meetings:chat-ask",
+} as const;
+
+export const TASKS_IPC_CHANNELS = {
+  listTasks: "tasks:list",
+  getTask: "tasks:get",
+  createTask: "tasks:create",
+  updateTask: "tasks:update",
+  setTaskStatus: "tasks:status",
+  listFollowupSuggestions: "tasks:followups-list",
+  convertFollowup: "tasks:followups-convert",
 } as const;
 
 export const CALENDAR_IPC_CHANNELS = {
@@ -149,6 +164,27 @@ export interface MeetingsRendererAPI {
   askMeetingHistory(question: string, meetingIds?: string[]): Promise<HubChatAnswer>;
 }
 
+export interface TaskListQuery {
+  meetingId?: string;
+  status?: HubTaskStatus;
+  limit?: number;
+}
+
+/**
+ * Task surface. The renderer sends only task fields and status names; every
+ * item it receives carries meeting provenance (title/date) and, for tasks
+ * born from an analysis, the analysis date — never artifact paths or content.
+ */
+export interface TasksRendererAPI {
+  listTasks(query?: TaskListQuery): Promise<HubTaskItem[]>;
+  getTask(taskId: string): Promise<HubTaskItem | undefined>;
+  createTask(input: HubTaskCreateInput): Promise<HubTaskItem>;
+  updateTask(taskId: string, patch: HubTaskUpdateInput): Promise<HubTaskItem>;
+  setTaskStatus(taskId: string, status: HubTaskStatus): Promise<HubTaskItem>;
+  listFollowupSuggestions(meetingId?: string): Promise<HubFollowupSuggestion[]>;
+  convertFollowup(followupId: string): Promise<HubTaskItem>;
+}
+
 /**
  * Calendar connection surface. Every payload is sanitized in the main
  * process: no tokens, verifiers, state values, cursor URLs, or provider
@@ -182,6 +218,11 @@ export type {
   HubCaptureRequest,
   HubCaptureSnapshot,
   HubChatAnswer,
+  HubFollowupSuggestion,
+  HubTaskCreateInput,
+  HubTaskItem,
+  HubTaskStatus,
+  HubTaskUpdateInput,
   HubTranscriptContent,
   IntegrityReport,
   MeetingDetail,

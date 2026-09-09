@@ -234,5 +234,60 @@ export interface HubChatAnswer {
   createdAt: string;
 }
 
+/** Task status values shared with the renderer. */
+export type HubTaskStatus = "OPEN" | "IN_PROGRESS" | "DONE" | "CANCELLED";
+
+export type HubTaskSourceKind = "MANUAL" | "ANALYSIS_TASKS" | "ANALYSIS_FOLLOWUPS";
+
+/** A task with full provenance, ready for the renderer (never contains paths). */
+export interface HubTaskItem {
+  taskId: string;
+  text: string;
+  assignee?: string;
+  dueDate?: string;
+  status: HubTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  meetingId: string;
+  meetingTitle: string;
+  meetingDate: string;
+  /** MANUAL, or ANALYSIS_* when created from a persisted analysis artifact. */
+  sourceKind: HubTaskSourceKind;
+  /** ISO date of the analysis the task came from (undefined for MANUAL). */
+  analysisDate?: string;
+}
+
+/** Create input: manual tasks must declare their originating meeting. */
+export interface HubTaskCreateInput {
+  meetingId: string;
+  text: string;
+  assignee?: string;
+  dueDate?: string;
+  /** Reserved for converting analysis follow-ups; set by the service. */
+  sourceArtifactId?: string;
+}
+
+export interface HubTaskUpdateInput {
+  text?: string;
+  /** Provide null to clear the assignee. */
+  assignee?: string | null;
+  /** Provide null to clear the due date. */
+  dueDate?: string | null;
+}
+
+/** Analysis follow-ups offered for conversion into managed tasks. */
+export interface HubFollowupSuggestion {
+  followupId: string;
+  meetingId: string;
+  meetingTitle: string;
+  meetingDate: string;
+  analysisDate: string;
+  /** The persisted ANALYSIS_FOLLOWUPS artifact this came from. */
+  sourceArtifactFileId: string;
+  text: string;
+  /** True when an identical task already exists from the same follow-up artifact. */
+  alreadyTask: boolean;
+}
+
 export const HUB_MAX_TRANSCRIPT_READ_BYTES = 24 * 1024 * 1024;
 export const HUB_MAX_ANALYSIS_READ_BYTES = 8 * 1024 * 1024;

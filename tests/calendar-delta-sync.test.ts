@@ -15,6 +15,7 @@ import {
 import { CalendarSyncService } from "../src/calendar/CalendarSyncService";
 import { LocalDatabase } from "../src/storage/LocalDatabase";
 import { LocalFirstStore } from "../src/storage/LocalFirstStore";
+import { DATABASE_SCHEMA_VERSION } from "../src/domain/models";
 import { withTempStore } from "./helpers";
 
 function calendarEvent(overrides: Partial<NormalizedCalendarEvent> & { externalEventId: string }): NormalizedCalendarEvent {
@@ -466,7 +467,7 @@ test("schema v8 migration widens the provider CHECK and preserves associations",
       .get() as { sql: string };
     assert.match(ddlRow.sql, /MICROSOFT_GRAPH', 'GOOGLE_CALENDAR/);
     const version = verify.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number };
-    assert.equal(version.version, 8);
+    assert.equal(version.version, DATABASE_SCHEMA_VERSION);
     verify.close();
   } finally {
     await rm(root, { recursive: true, force: true });
