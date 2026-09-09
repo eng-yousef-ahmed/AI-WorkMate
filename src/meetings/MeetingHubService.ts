@@ -15,6 +15,7 @@ import {
   type HubCaptureRequest,
   type HubCaptureSnapshot,
   type HubDecisionInfo,
+  type HubMeetingAssistPlan,
   type HubMeetingSummary,
   type HubProcessingJobInfo,
   type HubTaskInfo,
@@ -25,6 +26,7 @@ import {
   type TranscriptSearchHit,
   type TranscriptSearchResults,
 } from "../domain/hub";
+import { MeetingAssistService } from "./MeetingAssistService";
 import type {
   MeetingCaptureFlowSnapshot,
   MeetingCaptureOrchestrator,
@@ -322,6 +324,30 @@ export class MeetingHubService {
       screen: kinds.SCREEN?.available === true,
       window: kinds.WINDOW?.available === true,
     };
+  }
+
+  /**
+   * Assisted flow plan for a calendar-linked meeting (Teams/Zoom/Google
+   * Meet/other). The plan is derived from persisted meeting data and the
+   * locally discovered capture capabilities; no URLs or paths are returned.
+   * When capture discovery fails the plan still answers (capture off), so
+   * join-and-note guidance always works.
+   */
+  public async getAssistedFlowPlan(meetingId: string): Promise<HubMeetingAssistPlan> {
+    this.requireMeeting(meetingId);
+    let capabilities: HubCaptureCapabilities = {
+      supported: false,
+      microphone: false,
+      systemLoopback: false,
+      screen: false,
+      window: false,
+    };
+    try {
+      capabilities = await this.getCaptureCapabilities();
+    } catch {
+      // No capture adapter (or discovery failure): plan without capture.
+    }
+    return new MeetingAssistService({ store: this.store }).plan(meetingId, capabilities);
   }
 
   public async startMeetingCapture(request: HubCaptureRequest): Promise<HubCaptureSnapshot> {

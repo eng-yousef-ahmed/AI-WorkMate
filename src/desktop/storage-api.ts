@@ -16,6 +16,7 @@ import type {
   HubCaptureSnapshot,
   HubChatAnswer,
   HubFollowupSuggestion,
+  HubMeetingAssistPlan,
   HubNotification,
   HubNotificationPage,
   HubNotificationSettings,
@@ -66,6 +67,7 @@ export const MEETINGS_IPC_CHANNELS = {
   processMeeting: "meetings:process",
   openLinkedUrl: "meetings:open-linked-url",
   askMeetingHistory: "meetings:chat-ask",
+  getAssistedFlowPlan: "meetings:assist-plan",
 } as const;
 
 export const TASKS_IPC_CHANNELS = {
@@ -181,6 +183,11 @@ export interface MeetingsRendererAPI {
    * meeting content is processed only by the local model in this process.
    */
   askMeetingHistory(question: string, meetingIds?: string[]): Promise<HubChatAnswer>;
+  /**
+   * Platform-aware assisted capture plan (Teams/Zoom/Google Meet/other)
+   * derived from the persisted meeting link and local capture capabilities.
+   */
+  getAssistedFlowPlan(meetingId: string): Promise<HubMeetingAssistPlan>;
 }
 
 export interface TaskListQuery {
@@ -255,6 +262,7 @@ export type {
   HubCaptureSnapshot,
   HubChatAnswer,
   HubFollowupSuggestion,
+  HubMeetingAssistPlan,
   HubNotification,
   HubNotificationPage,
   HubNotificationSettings,

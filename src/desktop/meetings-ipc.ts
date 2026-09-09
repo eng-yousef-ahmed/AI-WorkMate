@@ -115,6 +115,10 @@ export function registerMeetingsIpc({
       ...(meetingIds === undefined || meetingIds === null ? {} : { meetingIds: readMeetingIdScope(meetingIds) }),
     });
   });
+
+  handle(MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, async (_event: unknown, meetingId: unknown): Promise<unknown> => {
+    return runtime.requireMeetingHub().getAssistedFlowPlan(readMeetingId(meetingId));
+  });
 }
 
 const MAX_CHAT_QUESTION_LENGTH = 600;

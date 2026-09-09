@@ -304,3 +304,17 @@ code { padding: 1px 5px; border-radius: 4px; color: #c9b2ff; background: rgba(13
 .notifications-settings .helper { margin: 10px 0 0; }
 .notification-go-link { display: block; padding: 2px 0; }
 @media (max-width: 640px) { .notifications-panel { right: -72px; } }
+
+/* --- Assisted flow (Teams/Zoom/Meet capture plans) -------------------------- */
+.assist-card { margin: 18px 0 4px; padding: 15px 17px; border: 1px solid rgba(94,215,233,.16); border-radius: 10px; background: linear-gradient(140deg, rgba(94,215,233,.06), transparent 70%); }
+.assist-heading { align-items: center; gap: 9px; }
+.assist-heading h4 { margin: 0; }
+.assist-heading small { color: var(--muted); font-size: 10px; }
+.assist-platform-chip { align-self: flex-start; padding: 3px 9px; border-radius: 20px; background: rgba(94,215,233,.1); color: var(--cyan); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.assist-summary { margin: 10px 0 0; color: #c4cde0; font-size: 11px; line-height: 1.55; }
+.assist-summary.muted { color: var(--muted); }
+.assist-checklist { margin: 12px 0 2px; padding-left: 18px; display: grid; gap: 7px; }
+.assist-checklist li { color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.assist-checklist strong { display: block; color: #dfe4ee; font-size: 11px; }
+.assist-checklist small { color: var(--dim); font-size: 9.5px; }
+.assist-actions { margin-top: 11px; }

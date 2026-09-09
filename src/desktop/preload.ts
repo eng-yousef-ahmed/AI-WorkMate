@@ -65,6 +65,7 @@ const meetingsApi: MeetingsRendererAPI = {
   openLinkedUrl: (meetingId, kind) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.openLinkedUrl, meetingId, kind),
   askMeetingHistory: (question, meetingIds) =>
     ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.askMeetingHistory, question, meetingIds === undefined ? undefined : [...meetingIds]),
+  getAssistedFlowPlan: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, meetingId),
 };
 
 const notificationsApi: NotificationsRendererAPI = {

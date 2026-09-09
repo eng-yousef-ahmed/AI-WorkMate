@@ -173,6 +173,38 @@ export interface HubCaptureRequest {
   window?: string;
 }
 
+/**
+ * Online-meeting platform classification for assisted flows. Classified in
+ * the main process from persisted calendar URLs; the renderer only ever
+ * receives the label and the recommended capture booleans.
+ */
+export type HubMeetingPlatformKind = "TEAMS" | "ZOOM" | "GOOGLE_MEET" | "OTHER_ONLINE" | "NONE";
+
+export interface HubAssistChecklistItem {
+  id: string;
+  title: string;
+  note?: string;
+}
+
+/**
+ * Renderer-safe assisted capture plan for one calendar-linked meeting. No
+ * URLs, absolute paths, window source ids, or capability internals cross
+ * the boundary; `window` uses "" to request the native deterministic window
+ * default.
+ */
+export interface HubMeetingAssistPlan {
+  meetingId: string;
+  meetingTitle: string;
+  meetingDate: string;
+  platform: HubMeetingPlatformKind;
+  platformLabel: string;
+  captureSupported: boolean;
+  joinLinkAvailable: boolean;
+  recommended: HubCaptureRequest;
+  rationale: string[];
+  checklist: HubAssistChecklistItem[];
+}
+
 export interface HubSearchRequest {
   query: string;
   limit?: number;

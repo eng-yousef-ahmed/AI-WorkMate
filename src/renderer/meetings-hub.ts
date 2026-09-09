@@ -1,8 +1,10 @@
 import type {
   HubAnalysisDocument,
   HubCaptureCapabilities,
+  HubCaptureRequest,
   HubChatAnswer,
   HubChatEvidenceSource,
+  HubMeetingAssistPlan,
   HubMeetingSummary,
   HubTranscriptContent,
   MeetingDetail,
@@ -218,14 +220,65 @@ async function refreshHub(): Promise<void> {
 
 // --- Capture controls --------------------------------------------------------
 
-async function startCapture(meetingId: string): Promise<void> {
+async function startCapture(meetingId: string, request?: HubCaptureRequest): Promise<void> {
   try {
-    await meetings.startCapture({ meetingId, microphone: true, systemLoopback: true, screen: false });
+    const captureRequest = request ?? { meetingId, microphone: true, systemLoopback: true, screen: false };
+    await meetings.startCapture(captureRequest);
     showNoticeMessage("Recording started. Meeting audio stays on this device.");
   } catch (error: unknown) {
     showErrorMessage(error);
   }
   await refreshHub();
+}
+
+/** Renders the platform-aware assisted flow card inside the meeting detail. */
+function renderAssistPlan(plan: HubMeetingAssistPlan, summary: HubMeetingSummary): HTMLElement {
+  const card = el("div", "assist-card");
+  const heading = el("div", "detail-heading assist-heading");
+  heading.append(
+    el("div", "assist-platform-chip", `◆ ${plan.platformLabel}`),
+    el("h4", undefined, "Assisted flow"),
+    el("small", undefined, plan.joinLinkAvailable
+      ? "The stored meeting link is ready — join, then start the recommended capture."
+      : "No join link was stored for this meeting; the capture plan below still works."),
+  );
+  card.append(heading);
+
+  if (plan.captureSupported) {
+    const sourceLine = el("p", "assist-summary");
+    const labels: string[] = [];
+    if (plan.recommended.systemLoopback) labels.push("system audio");
+    if (plan.recommended.microphone) labels.push("microphone");
+    if (plan.recommended.window !== undefined) labels.push("meeting window capture");
+    if (plan.recommended.screen) labels.push("screen capture");
+    sourceLine.textContent = labels.length > 0
+      ? `Recommended sources: ${labels.join(" + ")}. Everything is recorded on this device.`
+      : "No capture source is available on this computer right now.";
+    card.append(sourceLine);
+  } else {
+    card.append(el("p", "assist-summary muted", "Capture is not available on this computer right now — join normally and take notes."));
+  }
+
+  const steps = el("ol", "assist-checklist");
+  for (const item of plan.checklist) {
+    const step = el("li");
+    const title = el("strong", undefined, item.title);
+    step.append(title);
+    if (item.note !== undefined) {
+      step.append(el("small", undefined, item.note));
+    }
+    steps.append(step);
+  }
+  card.append(steps);
+
+  const actions = el("div", "meeting-actions assist-actions");
+  if (plan.captureSupported && !summary.isActive && summary.status !== "CANCELLED") {
+    actions.append(button("Start recommended capture", "button mini primary", () => {
+      void startCapture(plan.meetingId, { ...plan.recommended });
+    }));
+  }
+  card.append(actions);
+  return card;
 }
 
 async function stopCapture(meetingId: string): Promise<void> {
@@ -368,20 +421,23 @@ function renderAnalysis(analysis: HubAnalysisDocument): HTMLElement {
 
 async function renderDetail(meetingId: string): Promise<void> {
   try {
-    const [detail, analysis] = await Promise.all([
+    const [detail, analysis, plan] = await Promise.all([
       meetings.getDetail(meetingId),
       meetings.getAnalysis(meetingId).catch(() => undefined),
+      // The assisted-flow plan is guidance only: when planning fails (no
+      // capture adapter, discovery error) the meeting still opens normally.
+      meetings.getAssistedFlowPlan(meetingId).catch(() => undefined),
     ]);
     openMeetingId = meetingId;
     openMeetingTitle = detail.meeting.title;
-    renderDetailPane(detail, analysis);
+    renderDetailPane(detail, analysis, plan);
     syncChatScopeVisibility();
   } catch (error: unknown) {
     showErrorMessage(error);
   }
 }
 
-function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument | undefined): void {
+function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument | undefined, plan?: HubMeetingAssistPlan): void {
   detailPane.replaceChildren();
   detailPane.hidden = false;
 
@@ -404,11 +460,19 @@ function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument |
 
   const actions = el("div", "meeting-actions detail-actions");
   const captureSupported = capabilities?.supported === true;
+  const assistedRequest: HubCaptureRequest | undefined =
+    plan?.captureSupported === true ? { ...plan.recommended } : undefined;
   if (summary.isActive) {
     actions.append(button("Stop recording", "button mini danger", () => void stopCapture(summary.meetingId)));
     actions.append(button("Cancel recording", "button mini ghost", () => void abortCapture(summary.meetingId)));
-  } else if (captureSupported && summary.status !== "CANCELLED") {
-    actions.append(button("Record meeting", "button mini primary", () => void startCapture(summary.meetingId)));
+  } else if (summary.status !== "CANCELLED" && (captureSupported || plan === undefined)) {
+    // With a plan, the recommended (platform-aware) sources are used; without
+    // one the legacy microphone + system audio defaults apply.
+    actions.append(button(
+      assistedRequest !== undefined ? "Record meeting (recommended)" : "Record meeting",
+      "button mini primary",
+      () => void startCapture(summary.meetingId, assistedRequest),
+    ));
   }
   if (summary.calendar?.joinUrl !== undefined && summary.status !== "CANCELLED") {
     actions.append(button("Join meeting", "button mini", () => {
@@ -424,6 +488,10 @@ function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument |
   }
   header.append(actions);
   detailPane.append(header);
+
+  if (plan !== undefined) {
+    detailPane.append(renderAssistPlan(plan, summary));
+  }
 
   if (analysis !== undefined) {
     detailPane.append(renderAnalysis(analysis));
