@@ -1342,6 +1342,27 @@ export class LocalDatabase {
     if (!columns.has("source_artifact_id")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN source_artifact_id TEXT;");
     }
+    // Backfill: analysis persistence wrote task rows and the matching
+    // ANALYSIS_TASKS analysis record inside one transaction sharing the same
+    // meeting and created_at, so each legacy analysis task can be pointed back
+    // at the exact artifact that produced it. Rows left NULL are manual.
+    this.database.exec(`
+      UPDATE tasks SET source_artifact_id = (
+        SELECT ar.artifact_id FROM analysis_records ar
+        WHERE ar.meeting_id = tasks.meeting_id
+          AND ar.kind = 'TASKS'
+          AND ar.created_at = tasks.created_at
+        ORDER BY ar.analysis_id
+        LIMIT 1
+      )
+      WHERE source_artifact_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM analysis_records ar
+          WHERE ar.meeting_id = tasks.meeting_id
+            AND ar.kind = 'TASKS'
+            AND ar.created_at = tasks.created_at
+        );
+    `);
   }
 
   /**

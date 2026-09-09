@@ -18,15 +18,28 @@ test("schema v8 tasks migrate to v9 with provenance column and preserved rows", 
   const dbPath = join(root, "local.db");
   const legacy = new DatabaseSync(dbPath);
   try {
-    // The v8-era database: schema_migrations at 8 and a tasks table WITHOUT
-    // the source_artifact_id provenance column. Meetings etc. are absent and
-    // get created at the current shape by the migration runner.
+    // The v8-era database: schema_migrations at 8, a tasks table WITHOUT the
+    // source_artifact_id provenance column, and the analysis_records rows
+    // that analysis persistence wrote alongside task rows (same meeting and
+    // created_at). Meetings etc. are absent and get created at the current
+    // shape by the migration runner.
     legacy.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
       );
       INSERT INTO schema_migrations (version, applied_at) VALUES (8, '2026-09-01T00:00:00.000Z');
+      CREATE TABLE IF NOT EXISTS analysis_records (
+        analysis_id TEXT PRIMARY KEY,
+        meeting_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        source_transcript_ids TEXT,
+        source_transcript_shas TEXT
+      );
+      INSERT INTO analysis_records (analysis_id, meeting_id, kind, artifact_id, created_at)
+      VALUES ('analysis-legacy', 'meeting-legacy', 'TASKS', 'analysis-artifact-legacy', '2026-09-08T10:00:00.000Z');
       CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,
         meeting_id TEXT NOT NULL,
@@ -39,7 +52,9 @@ test("schema v8 tasks migrate to v9 with provenance column and preserved rows", 
         updated_at TEXT NOT NULL
       );
       INSERT INTO tasks (task_id, meeting_id, text, assignee, due_date, status, created_at, updated_at)
-      VALUES ('task-legacy', 'meeting-legacy', 'Verify backup restore', 'Ada', '2026-10-01', 'OPEN', '2026-09-08T10:00:00.000Z', '2026-09-08T10:00:00.000Z');
+      VALUES ('task-legacy', 'meeting-legacy', 'Verify backup restore', 'Ada', '2026-10-01', 'OPEN', '2026-09-07T10:00:00.000Z', '2026-09-07T10:00:00.000Z');
+      INSERT INTO tasks (task_id, meeting_id, text, status, created_at, updated_at)
+      VALUES ('task-legacy-analyzed', 'meeting-legacy', 'Analyzed legacy task', 'OPEN', '2026-09-08T10:00:00.000Z', '2026-09-08T10:00:00.000Z');
     `);
   } finally {
     legacy.close();
@@ -58,7 +73,25 @@ test("schema v8 tasks migrate to v9 with provenance column and preserved rows", 
     assert.equal(task.dueDate, "2026-10-01");
     assert.equal(task.status, "OPEN");
     assert.equal(task.sourceArtifactId, undefined);
+    // Rows written by analysis persistence are backfilled with the exact
+    // ANALYSIS_TASKS artifact that produced them (matched on meeting +
+    // created_at) so provenance survives the migration.
+    const analyzed = database.getTask("task-legacy-analyzed") as TaskRecord;
+    assert.equal(analyzed.sourceArtifactId, "analysis-artifact-legacy");
     assert.equal(DATABASE_SCHEMA_VERSION, 9);
+    database.close();
+
+    // Reopening the migrated database is idempotent: no duplicate version
+    // bumps, no migration failure, and the provenance column supports writes.
+    const reopened = new LocalDatabase(dbPath, () => new Date("2026-09-10T00:00:00.000Z"));
+    try {
+      assert.ok(reopened.describeTable("tasks").includes("source_artifact_id"));
+      reopened.updateTask("task-legacy", { sourceArtifactId: "analysis-artifact-1", updatedAt: "2026-09-10T00:00:00.000Z" });
+      const after = reopened.getTask("task-legacy") as TaskRecord;
+      assert.equal(after.sourceArtifactId, "analysis-artifact-1");
+    } finally {
+      reopened.close();
+    }
   } finally {
     database.close();
     await rm(root, { recursive: true, force: true });

@@ -256,14 +256,9 @@ export class TaskManagementService {
   private toTaskItems(records: TaskRecord[]): HubTaskItem[] {
     const meetings = new Map(this.store.listMeetings().map((item) => [item.meetingId, item]));
     const artifacts = new Map(this.store.database.listArtifacts().map((item) => [item.fileId, item]));
-    const latestTaskAnalyses = new Map<string, string>();
     const analysisDateByArtifact = new Map<string, string>();
     for (const meeting of meetings.values()) {
-      let latest = "";
       for (const analysis of this.store.database.listAnalysis(meeting.meetingId)) {
-        if (analysis.kind === "TASKS" && analysis.createdAt > latest) {
-          latest = analysis.createdAt;
-        }
         if (analysis.kind === "TASKS" || analysis.kind === "FOLLOWUPS") {
           const existing = analysisDateByArtifact.get(analysis.artifactId);
           if (existing === undefined || analysis.createdAt > existing) {
@@ -271,7 +266,6 @@ export class TaskManagementService {
           }
         }
       }
-      if (latest.length > 0) latestTaskAnalyses.set(meeting.meetingId, latest);
     }
     return records.map((record) => {
       const resolved = meetings.get(record.meetingId);
@@ -294,14 +288,6 @@ export class TaskManagementService {
           item.sourceKind = (artifact.artifactType === "ANALYSIS_FOLLOWUPS" ? "ANALYSIS_FOLLOWUPS" : "ANALYSIS_TASKS") as HubTaskSourceKind;
           const analysisDate = analysisDateByArtifact.get(record.sourceArtifactId);
           if (analysisDate !== undefined) item.analysisDate = analysisDate;
-        }
-      } else {
-        // Legacy rows were written by analysis persistence; use the meeting's
-        // latest analysis date when one exists.
-        const latest = latestTaskAnalyses.get(record.meetingId);
-        if (latest !== undefined) {
-          item.sourceKind = "ANALYSIS_TASKS";
-          item.analysisDate = latest;
         }
       }
       return item;

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import { TaskManagementService } from "../src/tasks/TaskManagementService";
 import { StorageError } from "../src/storage/errors";
-import type { LocalFirstStore } from "../src/storage/LocalFirstStore";
+import { LocalFirstStore } from "../src/storage/LocalFirstStore";
 import { withTempStore } from "./helpers";
 
 async function seedMeetingWithAnalysis(store: LocalFirstStore, options: { title?: string; taskText?: string; followups?: string[]; analysisCreatedAt?: string } = {}): Promise<string> {
@@ -223,6 +224,90 @@ test("tasks: follow-up suggestions come from analysis artifacts only, with conve
       tasks.convertFollowupToTask(`${suggestions[1]!.sourceArtifactFileId}:99`),
       /no longer exists/i,
     );
+  });
+});
+
+test("tasks: persist across store reopen with provenance, owner, due date and status", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-workmate-tasks-persist-"));
+  try {
+    const open = async (): Promise<LocalFirstStore> => {
+      const store = new LocalFirstStore(root);
+      await store.initialize();
+      return store;
+    };
+    const first = await open();
+    const meetingId = randomUUID();
+    await first.createMeeting({ meetingId, title: "Planning sync", meetingDate: "2026-09-07", startedAt: "2026-09-07T09:00:00.000Z" });
+    await first.saveAnalysis(
+      {
+        meetingId,
+        createdAt: "2026-09-08T10:00:00.000Z",
+        summary: "s",
+        decisions: [],
+        tasks: [{ taskId: randomUUID(), text: "Verify backup restore on Windows", assignee: "Ada", dueDate: "2026-10-01", status: "OPEN" }],
+        risks: [],
+        questions: [],
+        followups: ["Check restore flow"],
+      },
+      {},
+    );
+    const service = new TaskManagementService({ store: first, clock: () => new Date("2026-09-09T08:00:00.000Z") });
+    const manual = service.createTask({ meetingId, text: "Manual task", assignee: "Bilal", dueDate: "2026-10-15" });
+    service.setTaskStatus(manual.taskId, "IN_PROGRESS");
+    first.close();
+
+    const second = await open();
+    const tasks = new TaskManagementService({ store: second, clock: () => new Date("2026-09-09T09:00:00.000Z") });
+    const items = tasks.listTasks({ meetingId });
+    assert.equal(items.length, 2);
+    const analysisTask = items.find((item) => item.text === "Verify backup restore on Windows");
+    assert.ok(analysisTask !== undefined);
+    assert.equal(analysisTask!.sourceKind, "ANALYSIS_TASKS");
+    assert.equal(analysisTask!.analysisDate, "2026-09-08T10:00:00.000Z");
+    assert.equal(analysisTask!.assignee, "Ada");
+    assert.equal(analysisTask!.dueDate, "2026-10-01");
+    assert.equal(analysisTask!.meetingTitle, "Planning sync");
+    const persistedManual = items.find((item) => item.text === "Manual task");
+    assert.ok(persistedManual !== undefined);
+    assert.equal(persistedManual!.status, "IN_PROGRESS");
+    assert.equal(persistedManual!.assignee, "Bilal");
+    assert.equal(persistedManual!.dueDate, "2026-10-15");
+    assert.equal(persistedManual!.sourceKind, "MANUAL");
+
+    const done = tasks.setTaskStatus(analysisTask!.taskId, "DONE");
+    assert.equal(done.status, "DONE");
+    second.close();
+
+    const third = await open();
+    try {
+      const after = new TaskManagementService({ store: third, clock: () => new Date("2026-09-09T10:00:00.000Z") }).listTasks({ meetingId });
+      assert.equal(after.find((item) => item.taskId === analysisTask!.taskId)?.status, "DONE");
+      // Provenance survives even after the status change was persisted.
+      assert.equal(after.find((item) => item.taskId === analysisTask!.taskId)?.sourceKind, "ANALYSIS_TASKS");
+    } finally {
+      third.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("tasks: renderer-safe task DTOs never leak paths or artifact names", async () => {
+  await withTempStore(async (store) => {
+    const meetingId = await seedMeetingWithAnalysis(store, {
+      title: "Planning",
+      taskText: "Verify restore",
+      followups: ["Check restore flow"],
+    });
+    const tasks = service(store);
+    const suggestions = await tasks.listFollowupSuggestions();
+    const converted = await tasks.convertFollowupToTask(suggestions[0]!.followupId);
+    const serialized = JSON.stringify([...tasks.listTasks({ meetingId }), ...suggestions, converted]);
+    assert.ok(!serialized.includes("/"), "task DTOs must never contain path separators");
+    assert.ok(!serialized.includes("\\"), "task DTOs must never contain backslashes");
+    assert.ok(!serialized.includes(".txt"), "task DTOs must never expose artifact file names");
+    assert.ok(!serialized.includes(".json"), "task DTOs must never expose artifact file names");
+    assert.equal(serialized.includes("DATA_ROOT"), false);
   });
 });
 
