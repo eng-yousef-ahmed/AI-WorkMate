@@ -16,6 +16,10 @@ import type {
   HubCaptureSnapshot,
   HubChatAnswer,
   HubFollowupSuggestion,
+  HubNotification,
+  HubNotificationPage,
+  HubNotificationSettings,
+  HubNotificationSettingsInput,
   HubTaskCreateInput,
   HubTaskItem,
   HubTaskStatus,
@@ -90,6 +94,21 @@ export const CALENDAR_IPC_CHANNELS = {
   syncGoogleCalendarAuto: "calendar:sync-google-auto",
   saveGoogleOAuthConfig: "calendar:google-save-oauth-config",
 } as const;
+
+export const NOTIFICATIONS_IPC_CHANNELS = {
+  list: "notifications:list",
+  markRead: "notifications:mark-read",
+  markAllRead: "notifications:mark-all-read",
+  getSettings: "notifications:get-settings",
+  updateSettings: "notifications:update-settings",
+  runAutomationNow: "notifications:run-automation",
+} as const;
+
+/**
+ * Main -> renderer push channel: the notification history or its settings
+ * changed (an IPC action or an automation tick), so the bell badge refreshes.
+ */
+export const NOTIFICATIONS_CHANGED_EVENT = "notifications:changed";
 
 /** Renderer-sendable Microsoft OAuth application settings (no secrets). */
 export interface MicrosoftOAuthSettingsInput {
@@ -186,6 +205,23 @@ export interface TasksRendererAPI {
 }
 
 /**
+ * Notification-center surface. History items are renderer-safe
+ * HubNotification DTOs (meeting/task references and display text only) and
+ * settings are automation preferences — no paths, DATA_ROOT, or secrets.
+ */
+export interface NotificationsRendererAPI {
+  list(): Promise<HubNotificationPage>;
+  markRead(notificationId: string): Promise<HubNotification | undefined>;
+  markAllRead(): Promise<number>;
+  getSettings(): Promise<HubNotificationSettings>;
+  updateSettings(input: HubNotificationSettingsInput): Promise<HubNotificationSettings>;
+  /** Runs the local automation pass on demand (explicit user action). */
+  runAutomationNow(): Promise<unknown>;
+  /** Subscribes to main-process change events; returns an unsubscribe fn. */
+  onChanged(listener: () => void): () => void;
+}
+
+/**
  * Calendar connection surface. Every payload is sanitized in the main
  * process: no tokens, verifiers, state values, cursor URLs, or provider
  * error bodies cross this boundary.
@@ -219,6 +255,10 @@ export type {
   HubCaptureSnapshot,
   HubChatAnswer,
   HubFollowupSuggestion,
+  HubNotification,
+  HubNotificationPage,
+  HubNotificationSettings,
+  HubNotificationSettingsInput,
   HubTaskCreateInput,
   HubTaskItem,
   HubTaskStatus,

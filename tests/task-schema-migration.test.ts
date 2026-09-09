@@ -78,7 +78,11 @@ test("schema v8 tasks migrate to v9 with provenance column and preserved rows", 
     // created_at) so provenance survives the migration.
     const analyzed = database.getTask("task-legacy-analyzed") as TaskRecord;
     assert.equal(analyzed.sourceArtifactId, "analysis-artifact-legacy");
-    assert.equal(DATABASE_SCHEMA_VERSION, 9);
+    // Schema v10 (added after v9) also applies on the v8-era database: the
+    // notifications table exists while v8 data is preserved untouched.
+    assert.equal(DATABASE_SCHEMA_VERSION, 10);
+    const notificationColumns = database.describeTable("notifications");
+    assert.ok(notificationColumns.includes("dedupe_key"), `notifications columns: ${notificationColumns.join(",")}`);
     database.close();
 
     // Reopening the migrated database is idempotent: no duplicate version

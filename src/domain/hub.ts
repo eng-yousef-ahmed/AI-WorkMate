@@ -289,5 +289,51 @@ export interface HubFollowupSuggestion {
   alreadyTask: boolean;
 }
 
+export type HubNotificationKind = "MEETING_READY" | "MEETING_ISSUE" | "TASK_DUE" | "FOLLOWUP_DIGEST";
+export type HubNotificationAction = "open-meeting" | "open-tasks";
+
+/**
+ * Notification-center entry. Renderer-safe: carries meeting/task references
+ * and display text only — never absolute paths, DATA_ROOT, or artifact
+ * content beyond the composed title/body.
+ */
+export interface HubNotification {
+  notificationId: string;
+  kind: HubNotificationKind;
+  severity: "INFO" | "WARNING";
+  title: string;
+  body: string;
+  createdAt: string;
+  /** Set once the user opened/dismissed the notification. */
+  readAt: string | null;
+  meetingId?: string;
+  taskId?: string;
+  /** Renderer navigation hint when the notification points at a meeting/task. */
+  action?: HubNotificationAction;
+}
+
+/** Automation and popup preferences (persisted locally, no secrets). */
+export interface HubNotificationSettings {
+  /** Master switch: OS popups and automated alerts (due tasks/digest). */
+  notificationsEnabled: boolean;
+  /** Opt-in daily local digest of open tasks and follow-ups. Default OFF. */
+  digestEnabled: boolean;
+  /** Local 24h "HH:MM" time after which the daily digest may fire. */
+  digestTime: string;
+  updatedAt: string;
+}
+
+export interface HubNotificationSettingsInput {
+  notificationsEnabled?: boolean;
+  digestEnabled?: boolean;
+  digestTime?: string;
+}
+
+/** Notification-center page payload: newest-first items plus total unread. */
+export interface HubNotificationPage {
+  notifications: HubNotification[];
+  unread: number;
+}
+
 export const HUB_MAX_TRANSCRIPT_READ_BYTES = 24 * 1024 * 1024;
 export const HUB_MAX_ANALYSIS_READ_BYTES = 8 * 1024 * 1024;

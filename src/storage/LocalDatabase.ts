@@ -119,6 +119,25 @@ export interface AuditRecord {
   createdAt: string;
 }
 
+export type NotificationKind = "MEETING_READY" | "MEETING_ISSUE" | "TASK_DUE" | "FOLLOWUP_DIGEST";
+export type NotificationSeverity = "INFO" | "WARNING";
+export type NotificationAction = "open-meeting" | "open-tasks";
+
+export interface NotificationRecord {
+  notificationId: string;
+  kind: NotificationKind;
+  severity: NotificationSeverity;
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt?: string;
+  meetingId?: string;
+  taskId?: string;
+  action?: NotificationAction;
+  /** Unique event identity used to make every notification idempotent. */
+  dedupeKey: string;
+}
+
 export interface ArtifactOperationUpdate {
   state: ArtifactOperationState;
   fileId?: string;
@@ -362,6 +381,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS audit_action_index ON audit_log(action);
 CREATE INDEX IF NOT EXISTS audit_meeting_index ON audit_log(meeting_id);
 CREATE INDEX IF NOT EXISTS audit_created_index ON audit_log(created_at);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  notification_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('MEETING_READY', 'MEETING_ISSUE', 'TASK_DUE', 'FOLLOWUP_DIGEST')),
+  severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  read_at TEXT,
+  meeting_id TEXT REFERENCES meetings(meeting_id) ON DELETE CASCADE,
+  task_id TEXT,
+  action TEXT CHECK (action IS NULL OR action IN ('open-meeting', 'open-tasks')),
+  dedupe_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS notifications_read_index ON notifications(read_at);
 `;
 
 export class LocalDatabase {
@@ -1206,6 +1241,98 @@ export class LocalDatabase {
     return this.getTask(taskId);
   }
 
+  /**
+   * Inserts a notification. The unique dedupe key makes repeated generation
+   * of the same event idempotent: an already-present key is ignored and the
+   * method reports that nothing was inserted.
+   */
+  public addNotification(record: NotificationRecord): boolean {
+    const result = this.database
+      .prepare(
+        `INSERT INTO notifications (
+          notification_id, kind, severity, title, body, created_at, read_at,
+          meeting_id, task_id, action, dedupe_key
+        ) VALUES (
+          $notificationId, $kind, $severity, $title, $body, $createdAt, $readAt,
+          $meetingId, $taskId, $action, $dedupeKey
+        ) ON CONFLICT(dedupe_key) DO NOTHING`,
+      )
+      .run({
+        $notificationId: record.notificationId,
+        $kind: record.kind,
+        $severity: record.severity,
+        $title: record.title,
+        $body: record.body,
+        $createdAt: record.createdAt,
+        $readAt: record.readAt ?? null,
+        $meetingId: record.meetingId ?? null,
+        $taskId: record.taskId ?? null,
+        $action: record.action ?? null,
+        $dedupeKey: record.dedupeKey,
+      });
+    return Number(result.changes) > 0;
+  }
+
+  /** Newest-first notification history for the in-app notification center. */
+  public listNotifications(limit = 100): NotificationRecord[] {
+    const rows = this.database
+      .prepare("SELECT * FROM notifications ORDER BY created_at DESC, notification_id DESC LIMIT $limit")
+      .all({ $limit: Math.min(Math.max(1, Math.trunc(limit)), 1000) });
+    return rows.map((row) => mapNotificationRecord(row as SqlRow));
+  }
+
+  public unreadNotificationCount(): number {
+    const row = this.database.prepare("SELECT COUNT(*) AS count FROM notifications WHERE read_at IS NULL").get() as SqlRow;
+    return numberValue(row.count);
+  }
+
+  public markNotificationRead(notificationId: string, readAt: string): NotificationRecord | undefined {
+    this.database
+      .prepare("UPDATE notifications SET read_at = $readAt WHERE notification_id = $notificationId AND read_at IS NULL")
+      .run({ $notificationId: notificationId, $readAt: readAt });
+    return this.getNotification(notificationId);
+  }
+
+  public getNotification(notificationId: string): NotificationRecord | undefined {
+    const row = this.database.prepare("SELECT * FROM notifications WHERE notification_id = $notificationId").get({ $notificationId: notificationId });
+    return row === undefined ? undefined : mapNotificationRecord(row as SqlRow);
+  }
+
+  public markAllNotificationsRead(readAt: string): number {
+    const result = this.database
+      .prepare("UPDATE notifications SET read_at = $readAt WHERE read_at IS NULL")
+      .run({ $readAt: readAt });
+    return Number(result.changes);
+  }
+
+  /**
+   * Retention for the notification center: keeps at most `keepLatest` rows
+   * and drops rows older than `maxAgeMs`. Runs inside one transaction so the
+   * in-app history can never grow without bound.
+   */
+  public pruneNotifications(keepLatest: number, maxAgeMs: number, now: Date): number {
+    const keptBoundary = new Date(now.getTime() - maxAgeMs).toISOString();
+    const overflow: SqlRow[] = this.database
+      .prepare(
+        "SELECT notification_id FROM notifications ORDER BY created_at DESC LIMIT -1 OFFSET $keep",
+      )
+      .all({ $keep: Math.max(0, Math.trunc(keepLatest)) });
+    let removed = 0;
+    this.transaction(() => {
+      for (const row of overflow) {
+        const removedRow = this.database
+          .prepare("DELETE FROM notifications WHERE notification_id = $notificationId")
+          .run({ $notificationId: stringValue(row.notification_id) });
+        removed += Number(removedRow.changes);
+      }
+      const aged = this.database
+        .prepare("DELETE FROM notifications WHERE created_at < $boundary")
+        .run({ $boundary: keptBoundary });
+      removed += Number(aged.changes);
+    });
+    return removed;
+  }
+
   public appendAudit(record: AuditRecord): void {
     this.database
       .prepare(
@@ -1623,6 +1750,23 @@ function mapTaskRecord(value: SqlRow): TaskRecord {
   addOptional(task, "dueDate", optionalString(value.due_date));
   addOptional(task, "sourceArtifactId", optionalString(value.source_artifact_id));
   return task;
+}
+
+function mapNotificationRecord(value: SqlRow): NotificationRecord {
+  const record: NotificationRecord = {
+    notificationId: stringValue(value.notification_id),
+    kind: stringValue(value.kind) as NotificationRecord["kind"],
+    severity: stringValue(value.severity) as NotificationRecord["severity"],
+    title: stringValue(value.title),
+    body: stringValue(value.body),
+    createdAt: stringValue(value.created_at),
+    dedupeKey: stringValue(value.dedupe_key),
+  };
+  addOptional(record, "readAt", optionalString(value.read_at));
+  addOptional(record, "meetingId", optionalString(value.meeting_id));
+  addOptional(record, "taskId", optionalString(value.task_id));
+  addOptional(record, "action", optionalString(value.action) as NotificationAction | undefined);
+  return record;
 }
 
 function addOptional<T extends object, K extends keyof T>(object: T, key: K, value: T[K] | undefined): void {

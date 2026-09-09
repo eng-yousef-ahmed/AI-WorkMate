@@ -36,7 +36,37 @@
       <main class="content">
         <header class="topbar">
           <div><div class="eyebrow">SETTINGS / STORAGE</div><h1>AI WorkMate Storage</h1></div>
-          <div class="topbar-actions"><span id="sync-status" class="sync-status"><span class="status-dot"></span> Local-first</span><button id="refresh-button" class="icon-button" title="Refresh storage statistics">↻</button></div>
+          <div class="topbar-actions">
+            <span id="sync-status" class="sync-status"><span class="status-dot"></span> Local-first</span>
+            <div class="notifications-wrap" id="notifications-wrap">
+              <button id="notifications-toggle" class="icon-button notifications-bell" type="button" aria-haspopup="true" aria-expanded="false" title="Notifications" aria-label="Notifications">🔔<span id="notifications-unread" class="bell-badge" hidden>0</span></button>
+              <div id="notifications-panel" class="notifications-panel" hidden>
+                <div class="notifications-header">
+                  <div class="notifications-title"><strong>Notifications</strong><small>Created on this device from your meetings and tasks</small></div>
+                  <button id="notifications-mark-all" class="button secondary small-button" type="button">Mark all read</button>
+                </div>
+                <div id="notifications-list" class="notifications-list" role="list" aria-label="Notifications"></div>
+                <div id="notifications-empty" class="notifications-empty" hidden>Nothing yet — meeting results, due tasks, and your daily digest will appear here.</div>
+                <details class="notifications-settings">
+                  <summary>Alerts &amp; automation</summary>
+                  <label class="toggle-row" for="notifications-enabled">
+                    <span class="toggle-copy"><strong>Notifications</strong><small>Allow popups while the window is in the background; due-date and digest alerts are generated only while this is on.</small></span>
+                    <input id="notifications-enabled" type="checkbox" />
+                  </label>
+                  <label class="toggle-row" for="notifications-digest">
+                    <span class="toggle-copy"><strong>Daily review digest</strong><small>Opt-in summary of open tasks and follow-ups, at most once per day while the app is open. Nothing is scheduled or sent anywhere else.</small></span>
+                    <input id="notifications-digest" type="checkbox" />
+                  </label>
+                  <div class="toggle-row digest-time-row">
+                    <label class="field-label digest-time-label" for="notifications-digest-time">DIGEST TIME<input id="notifications-digest-time" type="time" step="60" /></label>
+                    <button id="notifications-run-now" class="button secondary small-button" type="button">Run checks now</button>
+                  </div>
+                  <p id="notifications-run-result" class="helper" role="status"></p>
+                </details>
+              </div>
+            </div>
+            <button id="refresh-button" class="icon-button" title="Refresh storage statistics">↻</button>
+          </div>
         </header>
 
         <section id="meetings" class="meetings-hub" aria-label="Meeting hub">
@@ -299,5 +329,6 @@
     <script src="./storage-settings.js"></script>
     <script src="./meetings-hub.js"></script>
     <script src="./tasks.js"></script>
+    <script src="./notifications.js"></script>
   </body>
 </html>

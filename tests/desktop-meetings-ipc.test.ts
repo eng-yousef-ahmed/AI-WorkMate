@@ -363,3 +363,43 @@ test("meetings IPC chat sanitizes service failures and keeps hub error codes", a
     /could not be completed/,
   );
 });
+
+test("meetings IPC processMeeting records the terminal outcome through the notification center", async () => {
+  const { calls, runtime } = createStubs();
+  const outcomes: string[] = [];
+  const runtimeWithNotifications = {
+    ...runtime,
+    notifications: {
+      recordMeetingOutcome: (meetingId: string) => { outcomes.push(meetingId); return undefined; },
+    },
+  } as unknown as StorageRuntime;
+  const handlers = register(runtimeWithNotifications);
+  const result = await invoke(handlers, MEETINGS_IPC_CHANNELS.processMeeting, AUTHORIZED_EVENT, "meeting-1", true);
+  assert.deepEqual(calls, ["processCompletedMeeting:meeting-1", "getMeetingDetail"]);
+  assert.deepEqual(outcomes, ["meeting-1"]);
+  assert.ok(result !== undefined);
+});
+
+test("meetings IPC processMeeting records an issue outcome even when processing throws", async () => {
+  const { runtime } = createStubs();
+  const failingRuntime = {
+    ...runtime,
+    processCompletedMeeting: async () => { throw new StorageError("Transcription failed mid-run."); },
+    notifications: {
+      recordMeetingOutcome: (meetingId: string) => { void meetingId; return undefined; },
+    },
+  } as unknown as StorageRuntime;
+  const handlers = register(failingRuntime);
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.processMeeting, AUTHORIZED_EVENT, "meeting-1"),
+    /Transcription failed/,
+  );
+});
+
+test("meetings IPC processMeeting tolerates runtimes without a notification center", async () => {
+  const { runtime, calls } = createStubs();
+  const handlers = register(runtime); // stub has no `notifications` member
+  const result = await invoke(handlers, MEETINGS_IPC_CHANNELS.processMeeting, AUTHORIZED_EVENT, "meeting-1");
+  assert.ok(result !== undefined);
+  assert.deepEqual(calls, ["processCompletedMeeting:meeting-1", "getMeetingDetail"]);
+});

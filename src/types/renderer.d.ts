@@ -1,5 +1,6 @@
 import type { CalendarRendererAPI } from "../desktop/storage-api";
 import type { MeetingsRendererAPI } from "../desktop/storage-api";
+import type { NotificationsRendererAPI } from "../desktop/storage-api";
 import type { StorageRendererAPI } from "../desktop/storage-api";
 import type { TasksRendererAPI } from "../desktop/storage-api";
 
@@ -10,6 +11,7 @@ declare global {
       calendar: CalendarRendererAPI;
       meetings: MeetingsRendererAPI;
       tasks: TasksRendererAPI;
+      notifications: NotificationsRendererAPI;
     };
   }
 }
