@@ -2,6 +2,7 @@ import type {
   CalendarEventAttendee,
   CalendarEventPerson,
   CalendarOnlineMeetingInfo,
+  CalendarProvider,
 } from "../../domain/models";
 import type {
   CalendarEventListRequest,
@@ -48,6 +49,8 @@ export interface GraphCalendarEvent {
   id?: string;
   iCalUId?: string;
   subject?: string;
+  bodyPreview?: string;
+  showAs?: string;
   start?: GraphDateTimeTimeZone;
   end?: GraphDateTimeTimeZone;
   organizer?: GraphRecipient;
@@ -66,6 +69,8 @@ const EVENT_SELECT_FIELDS = [
   "id",
   "iCalUId",
   "subject",
+  "bodyPreview",
+  "showAs",
   "start",
   "end",
   "organizer",
@@ -80,9 +85,20 @@ const EVENT_SELECT_FIELDS = [
   "lastModifiedDateTime",
 ].join(",");
 
+export interface MicrosoftGraphCalendarProviderOptions {
+  /** Non-secret account identity (e.g. signed-in UPN) stamped onto normalized events. */
+  accountId?: string;
+}
+
 /** Calendar provider boundary for Microsoft Graph. It returns normalized events only. */
 export class MicrosoftGraphCalendarProvider implements CalendarEventProvider {
-  public constructor(private readonly client: MicrosoftGraphClient) {}
+  public readonly providerId: CalendarProvider = "MICROSOFT_GRAPH";
+  public readonly accountId: string | undefined;
+
+  public constructor(private readonly client: MicrosoftGraphClient, options: MicrosoftGraphCalendarProviderOptions = {}) {
+    const accountId = options.accountId?.trim();
+    this.accountId = accountId === undefined || accountId.length === 0 ? undefined : accountId;
+  }
 
   public async listEvents(request: CalendarEventListRequest): Promise<NormalizedCalendarEvent[]> {
     assertValidRange(request.startTime, request.endTime);
@@ -98,7 +114,7 @@ export class MicrosoftGraphCalendarProvider implements CalendarEventProvider {
       $select: EVENT_SELECT_FIELDS,
     });
     const events = await this.client.getAllPages<GraphCalendarEvent>(`/me/calendarView?${params.toString()}`, request.signal);
-    return events.map((event) => normalizeGraphCalendarEvent(event));
+    return events.map((event) => normalizeGraphCalendarEvent(event, this.accountId));
   }
 
   public async getEventById(request: CalendarEventLookupRequest): Promise<NormalizedCalendarEvent> {
@@ -111,11 +127,11 @@ export class MicrosoftGraphCalendarProvider implements CalendarEventProvider {
       `/me/events/${encodeURIComponent(request.externalEventId)}?${params.toString()}`,
       request.signal,
     );
-    return normalizeGraphCalendarEvent(event);
+    return normalizeGraphCalendarEvent(event, this.accountId);
   }
 }
 
-export function normalizeGraphCalendarEvent(event: GraphCalendarEvent): NormalizedCalendarEvent {
+export function normalizeGraphCalendarEvent(event: GraphCalendarEvent, accountId?: string): NormalizedCalendarEvent {
   const externalEventId = requiredString(event.id, "Microsoft Graph event is missing id.");
   const startTime = normalizeGraphDateTime(event.start, "start");
   const endTime = normalizeGraphDateTime(event.end, "end");
@@ -130,12 +146,41 @@ export function normalizeGraphCalendarEvent(event: GraphCalendarEvent): Normaliz
     attendees: normalizeAttendees(event.attendees),
     isCancelled: event.isCancelled === true,
   };
+  const trimmedAccountId = accountId?.trim();
+  if (trimmedAccountId !== undefined && trimmedAccountId.length > 0) {
+    normalized.accountId = trimmedAccountId;
+  }
+  addOptional(normalized, "startTimeZone", graphTimeZoneLabel(event.start));
+  addOptional(normalized, "endTimeZone", graphTimeZoneLabel(event.end));
   addOptional(normalized, "organizer", normalizePerson(event.organizer));
   addOptional(normalized, "location", location);
   addOptional(normalized, "onlineMeeting", onlineMeeting);
   addOptional(normalized, "webUrl", cleanString(event.webLink));
+  addOptional(normalized, "description", cleanString(event.bodyPreview));
+  addOptional(normalized, "status", cleanString(event.showAs));
   addOptional(normalized, "lastModifiedAt", normalizeOptionalIsoDate(event.lastModifiedDateTime));
+  const iCalUId = cleanString(event.iCalUId);
+  if (iCalUId !== undefined) {
+    normalized.syncMetadata = { iCalUId };
+  }
   return normalized;
+}
+
+/**
+ * Preserves the provider's source timezone label when it carries information
+ * beyond the normalized ISO instant. UTC (and absent zones on convertible
+ * timestamps) is encoded by the `Z` ISO form, so no extra field is needed.
+ */
+function graphTimeZoneLabel(value: GraphDateTimeTimeZone | undefined): string | undefined {
+  const timeZone = cleanString(value?.timeZone);
+  if (timeZone === undefined || timeZone.toUpperCase() === "UTC") {
+    return undefined;
+  }
+  const dateTime = cleanString(value?.dateTime);
+  if (dateTime !== undefined && /(?:z|[+-]\d{2}:?\d{2})$/i.test(dateTime)) {
+    return undefined;
+  }
+  return timeZone;
 }
 
 function normalizeGraphDateTime(value: GraphDateTimeTimeZone | undefined, field: string): string {

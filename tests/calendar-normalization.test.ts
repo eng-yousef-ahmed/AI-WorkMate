@@ -207,6 +207,58 @@ function calendarEvent(overrides: Partial<NormalizedCalendarEvent> = {}): Normal
   };
 }
 
+test("normalizes Phase 10 provider fields while preserving the source timezone", () => {
+  const normalized = normalizeGraphCalendarEvent(
+    {
+      ...graphEvent("graph-event-10", "Phase 10 Review"),
+      iCalUId: "ical-uid-10",
+      bodyPreview: "Review the Phase 10 foundation.",
+      showAs: "busy",
+      start: { dateTime: "2026-09-01T10:00:00", timeZone: "Arabian Standard Time" },
+      end: { dateTime: "2026-09-01T11:00:00", timeZone: "Arabian Standard Time" },
+    },
+    "ada@example.com",
+  );
+
+  assert.equal(normalized.accountId, "ada@example.com");
+  assert.equal(normalized.startTime, "2026-09-01T10:00:00 [Arabian Standard Time]");
+  assert.equal(normalized.endTime, "2026-09-01T11:00:00 [Arabian Standard Time]");
+  assert.equal(normalized.startTimeZone, "Arabian Standard Time");
+  assert.equal(normalized.endTimeZone, "Arabian Standard Time");
+  assert.equal(normalized.description, "Review the Phase 10 foundation.");
+  assert.equal(normalized.status, "busy");
+  assert.deepEqual(normalized.syncMetadata, { iCalUId: "ical-uid-10" });
+});
+
+test("omits redundant timezone labels for UTC and explicit-offset timestamps", () => {
+  const normalized = normalizeGraphCalendarEvent({
+    ...graphEvent("graph-event-utc", "UTC Event"),
+    start: { dateTime: "2026-09-01T10:00:00+03:00", timeZone: "Arabian Standard Time" },
+    end: { dateTime: "2026-09-01T11:00:00Z", timeZone: "UTC" },
+  });
+
+  assert.equal(normalized.startTime, "2026-09-01T07:00:00.000Z");
+  assert.equal(normalized.endTime, "2026-09-01T11:00:00.000Z");
+  assert.equal(normalized.startTimeZone, undefined);
+  assert.equal(normalized.endTimeZone, undefined);
+  assert.equal(normalized.accountId, undefined);
+  assert.equal(normalized.syncMetadata, undefined);
+});
+
+test("exposes provider identity and leaves incremental sync unimplemented", () => {
+  const client = new MicrosoftGraphClient({
+    getAccessToken: async () => ({ accessToken: "unused", scopes: ["Calendars.Read"] }),
+  });
+  const provider = new MicrosoftGraphCalendarProvider(client, { accountId: "ada@example.com" });
+  const anonymous = new MicrosoftGraphCalendarProvider(client, { accountId: "  " });
+
+  assert.equal(provider.providerId, "MICROSOFT_GRAPH");
+  assert.equal(provider.accountId, "ada@example.com");
+  assert.equal(anonymous.accountId, undefined);
+  const asProvider: CalendarEventProvider = provider;
+  assert.equal(asProvider.listChangedEvents, undefined);
+});
+
 function graphEvent(id: string, subject: string): GraphCalendarEvent {
   return {
     id,

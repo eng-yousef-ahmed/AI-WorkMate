@@ -1,7 +1,7 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 7;
+export const DATABASE_SCHEMA_VERSION = 8;
 
-export type CalendarProvider = "MICROSOFT_GRAPH";
+export type CalendarProvider = "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR";
 
 export type MeetingPlatform = "TEAMS" | "OTHER_ONLINE" | "NONE";
 
@@ -22,20 +22,48 @@ export interface CalendarOnlineMeetingInfo {
   tollNumber?: string;
 }
 
+/**
+ * Non-secret source metadata needed for calendar synchronization. Opaque
+ * provider sync state only; OAuth tokens and secrets must never be stored
+ * here (see ElectronSafeStorageCredentialStore, outside DATA_ROOT).
+ * `syncToken` is reserved for Phase 10B incremental/delta synchronization and
+ * is excluded from change detection until then.
+ */
+export interface CalendarSyncMetadata {
+  iCalUId?: string;
+  etag?: string;
+  syncToken?: string;
+}
+
 export interface CalendarEventAssociation {
+  /** Stable internal event ID, deterministic from provider + account + external ID. Retained on update. */
+  associationId: string;
   provider: CalendarProvider;
+  /** Non-secret account identity (e.g. account UPN/email); "" means unknown/legacy single-account. */
+  accountId: string;
+  /** Optional non-secret calendar identifier within the account. */
+  calendarId?: string;
   externalEventId: string;
   meetingId: string;
   subject: string;
   startTime: string;
   endTime: string;
+  /** Source timezone label as given by the provider when non-UTC; UTC is encoded by the ISO `Z` form. */
+  startTimeZone?: string;
+  endTimeZone?: string;
   organizer?: CalendarEventPerson;
   attendees: CalendarEventAttendee[];
   location?: string;
   onlineMeeting?: CalendarOnlineMeetingInfo;
   webUrl?: string;
+  /** Denormalized online-meeting join URL for deterministic meeting-URL correlation. */
+  joinUrl?: string;
+  description?: string;
+  /** Provider-native event status verbatim (e.g. Graph showAs); `isCancelled` stays authoritative. */
+  status?: string;
   isCancelled: boolean;
   lastModifiedAt?: string;
+  syncMetadata?: CalendarSyncMetadata;
   meetingPlatform: MeetingPlatform;
   normalizedFingerprint: string;
   createdAt: string;

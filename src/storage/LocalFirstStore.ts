@@ -16,7 +16,7 @@ import type {
   TranscriptDocument,
 } from "../domain/models";
 import { STORAGE_VERSION, type TranscriptSegment } from "../domain/models";
-import type { CalendarMeetingUpsertResult, NormalizedCalendarEvent } from "../calendar/CalendarModels";
+import { calendarEventAssociationId, type CalendarMeetingUpsertResult, type NormalizedCalendarEvent } from "../calendar/CalendarModels";
 import type { AIProvider } from "../ai/AIProvider";
 import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
 import { BackupService } from "./BackupService";
@@ -277,17 +277,24 @@ export class LocalFirstStore {
     event: NormalizedCalendarEvent & { meetingPlatform: MeetingPlatform; normalizedFingerprint: string },
   ): Promise<CalendarMeetingUpsertResult> {
     const database = this.requireDatabase();
-    if (event.provider !== "MICROSOFT_GRAPH") {
+    if (event.provider !== "MICROSOFT_GRAPH" && event.provider !== "GOOGLE_CALENDAR") {
       throw new StorageError(`Unsupported calendar provider: ${event.provider}`);
     }
-    let existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
+    const accountId = event.accountId ?? "";
+    let existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId, accountId);
     let meeting = existingAssociation === undefined ? undefined : database.getMeeting(existingAssociation.meetingId);
     if (existingAssociation !== undefined && meeting === undefined) {
       throw new StorageError(`Calendar association points to a missing meeting: ${existingAssociation.meetingId}`);
     }
     if (meeting === undefined) {
-      meeting = database.findDuplicateMeeting({ calendarEventId: event.externalEventId }) ??
+      meeting = database.findDuplicateMeeting({ calendarEventId: calendarMeetingKey(event.provider, accountId, event.externalEventId) }) ??
+        database.findDuplicateMeeting({ calendarEventId: event.externalEventId }) ??
         database.findDuplicateMeeting({ calendarEventId: `${event.provider}:${event.externalEventId}` });
+    }
+    if (meeting === undefined) {
+      // Cross-source correlation: same meeting URL overlapping in time, e.g. a
+      // manually created meeting that matches a newly synced calendar event.
+      meeting = findMeetingByJoinUrlOverlap(database, event);
     }
     if (event.isCancelled && meeting === undefined) {
       return { action: "CANCELLED_SKIPPED" };
@@ -301,13 +308,15 @@ export class LocalFirstStore {
           meetingDate: meetingDateFromCalendarStart(event.startTime),
           startedAt: event.startTime,
           endedAt: event.endTime,
-          calendarEventId: event.externalEventId,
+          calendarEventId: calendarMeetingKey(event.provider, accountId, event.externalEventId),
           status: "SCHEDULED",
           metadata: {
             calendarDiscovery: {
               provider: event.provider,
               externalEventId: event.externalEventId,
               meetingPlatform: event.meetingPlatform,
+              ...(accountId === "" ? {} : { accountId }),
+              ...(event.calendarId === undefined ? {} : { calendarId: event.calendarId }),
             },
           },
         });
@@ -326,7 +335,7 @@ export class LocalFirstStore {
       }
     }
 
-    existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
+    existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId, accountId);
     const now = this.clock().toISOString();
     const association = calendarAssociationFromEvent(
       event,
@@ -365,7 +374,7 @@ export class LocalFirstStore {
       return { associationAction, statusChanged };
     });
 
-    const persistedAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
+    const persistedAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId, accountId);
     if (createdMeeting) {
       return { action: "CREATED", meetingId: meeting.meetingId, association: persistedAssociation };
     }
@@ -1475,6 +1484,57 @@ export class DenyAllApprovalEngine implements ApprovalEngine {
   }
 }
 
+/**
+ * Meeting-level calendar identity. Account-less events keep the bare external
+ * ID for backward compatibility; account-scoped events use a composite key so
+ * the same provider event ID under two accounts never collides.
+ */
+function calendarMeetingKey(provider: string, accountId: string, externalEventId: string): string {
+  return accountId === "" ? externalEventId : `${provider}:${accountId}:${externalEventId}`;
+}
+
+/**
+ * Links a synced event to an existing meeting discovered through another
+ * channel: exact meeting-URL match plus overlapping [start, end) windows, so
+ * recurring meetings sharing one join link do not cross-link.
+ */
+function findMeetingByJoinUrlOverlap(
+  database: LocalDatabase,
+  event: NormalizedCalendarEvent,
+): Meeting | undefined {
+  const urls = new Set<string>();
+  if (event.onlineMeeting?.joinUrl !== undefined) {
+    urls.add(event.onlineMeeting.joinUrl);
+  }
+  if (event.webUrl !== undefined) {
+    urls.add(event.webUrl);
+  }
+  if (urls.size === 0) {
+    return undefined;
+  }
+  const eventStart = Date.parse(event.startTime);
+  const eventEnd = Date.parse(event.endTime);
+  if (Number.isNaN(eventStart) || Number.isNaN(eventEnd)) {
+    return undefined;
+  }
+  for (const url of urls) {
+    for (const candidate of database.findAssociationsByMeetingUrl(url)) {
+      const candidateStart = Date.parse(candidate.startTime);
+      const candidateEnd = Date.parse(candidate.endTime);
+      if (Number.isNaN(candidateStart) || Number.isNaN(candidateEnd)) {
+        continue;
+      }
+      if (candidateStart < eventEnd && eventStart < candidateEnd) {
+        const meeting = database.getMeeting(candidate.meetingId);
+        if (meeting !== undefined) {
+          return meeting;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function calendarAssociationFromEvent(
   event: NormalizedCalendarEvent & { meetingPlatform: MeetingPlatform; normalizedFingerprint: string },
   meetingId: string,
@@ -1482,7 +1542,9 @@ function calendarAssociationFromEvent(
   updatedAt: string,
 ): CalendarEventAssociation {
   const association: CalendarEventAssociation = {
+    associationId: calendarEventAssociationId(event.provider, event.accountId ?? "", event.externalEventId),
     provider: event.provider,
+    accountId: event.accountId ?? "",
     externalEventId: event.externalEventId,
     meetingId,
     subject: event.subject,
@@ -1495,11 +1557,18 @@ function calendarAssociationFromEvent(
     createdAt,
     updatedAt,
   };
+  addOptional(association, "calendarId", event.calendarId);
+  addOptional(association, "startTimeZone", event.startTimeZone);
+  addOptional(association, "endTimeZone", event.endTimeZone);
   addOptional(association, "organizer", event.organizer);
   addOptional(association, "location", event.location);
   addOptional(association, "onlineMeeting", event.onlineMeeting);
   addOptional(association, "webUrl", event.webUrl);
+  addOptional(association, "joinUrl", event.onlineMeeting?.joinUrl);
+  addOptional(association, "description", event.description);
+  addOptional(association, "status", event.status);
   addOptional(association, "lastModifiedAt", event.lastModifiedAt);
+  addOptional(association, "syncMetadata", event.syncMetadata);
   return association;
 }
 

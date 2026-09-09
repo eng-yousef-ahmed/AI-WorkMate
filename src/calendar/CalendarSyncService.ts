@@ -3,6 +3,7 @@ import type { LocalFirstStore } from "../storage/LocalFirstStore";
 import { MicrosoftGraphError } from "../integrations/microsoft/MicrosoftGraphClient";
 import {
   assertNotAborted,
+  deduplicateCalendarAttendees,
   type CalendarEventProvider,
   type CalendarMeetingUpsertResult,
   type CalendarSyncErrorInfo,
@@ -22,7 +23,8 @@ export class CalendarSyncService {
 
   public async syncRange(range: CalendarSyncRange): Promise<CalendarSyncResult> {
     assertValidRange(range.startTime, range.endTime);
-    const result = emptyResult(this.providerId, range.startTime, range.endTime);
+    const providerId = this.provider.providerId ?? this.providerId;
+    const result = emptyResult(providerId, range.startTime, range.endTime);
     let events: NormalizedCalendarEvent[];
     try {
       assertNotAborted(range.signal);
@@ -36,15 +38,24 @@ export class CalendarSyncService {
       if (isAbortError(error)) {
         throw error;
       }
-      result.errors.push(calendarErrorFromUnknown(error, this.providerId));
+      result.errors.push(calendarErrorFromUnknown(error, providerId));
       result.errorCount = result.errors.length;
       return result;
     }
 
     for (const event of events) {
       assertNotAborted(range.signal);
-      const meetingPlatform = detectMeetingPlatform(event);
-      const normalized = withCalendarFingerprint(event, meetingPlatform);
+      const accountId = event.accountId ?? this.provider.accountId;
+      const deduplicated: NormalizedCalendarEvent = {
+        ...event,
+        provider: providerId,
+        attendees: deduplicateCalendarAttendees(event.attendees),
+      };
+      if (accountId !== undefined) {
+        deduplicated.accountId = accountId;
+      }
+      const meetingPlatform = detectMeetingPlatform(deduplicated);
+      const normalized = withCalendarFingerprint(deduplicated, meetingPlatform);
       if (normalized.isCancelled) {
         result.cancelledCount += 1;
       }
@@ -55,7 +66,7 @@ export class CalendarSyncService {
         if (isAbortError(error)) {
           throw error;
         }
-        result.errors.push(calendarErrorFromUnknown(error, this.providerId, normalized.externalEventId));
+        result.errors.push(calendarErrorFromUnknown(error, providerId, normalized.externalEventId));
       }
     }
     result.errorCount = result.errors.length;

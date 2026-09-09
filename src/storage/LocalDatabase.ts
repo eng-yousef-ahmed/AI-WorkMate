@@ -2,6 +2,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { calendarEventAssociationId } from "../calendar/CalendarModels";
 import {
   DATABASE_SCHEMA_VERSION,
   type ActionItem,
@@ -114,6 +115,62 @@ export type RecordingRecord = RecordingMetadata;
 type SqlValue = string | number | bigint | Uint8Array | null;
 type SqlRow = Record<string, SqlValue>;
 
+/**
+ * Calendar association table DDL, kept standalone so the schema-version
+ * migration rebuilds the table from the same definition. Sync identity is
+ * (provider, account_id, external_event_id); association_id is the stable
+ * internal event ID, deterministic from that natural key.
+ */
+const CALENDAR_EVENT_ASSOCIATIONS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS calendar_event_associations (
+  association_id TEXT NOT NULL UNIQUE,
+  provider TEXT NOT NULL CHECK (provider IN ('MICROSOFT_GRAPH', 'GOOGLE_CALENDAR')),
+  account_id TEXT NOT NULL DEFAULT '',
+  calendar_id TEXT,
+  external_event_id TEXT NOT NULL,
+  meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id) ON DELETE CASCADE,
+  subject TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  start_time_zone TEXT,
+  end_time_zone TEXT,
+  organizer_json TEXT,
+  attendees_json TEXT NOT NULL DEFAULT '[]',
+  location TEXT,
+  online_meeting_json TEXT,
+  web_url TEXT,
+  join_url TEXT,
+  description TEXT,
+  status TEXT,
+  is_cancelled INTEGER NOT NULL CHECK (is_cancelled IN (0, 1)),
+  last_modified_at TEXT,
+  sync_metadata_json TEXT,
+  meeting_platform TEXT NOT NULL CHECK (meeting_platform IN ('TEAMS', 'OTHER_ONLINE', 'NONE')),
+  normalized_fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, account_id, external_event_id)
+);
+`;
+
+/**
+ * Calendar association indexes, applied after version-gated migrations. New
+ * columns cannot be indexed until the v8 rebuild has run, so these must not
+ * be part of the unconditional schema preamble.
+ */
+const CALENDAR_EVENT_ASSOCIATIONS_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS calendar_event_associations_meeting_index
+  ON calendar_event_associations(meeting_id);
+CREATE INDEX IF NOT EXISTS calendar_event_associations_start_index
+  ON calendar_event_associations(start_time);
+CREATE INDEX IF NOT EXISTS calendar_event_associations_platform_index
+  ON calendar_event_associations(meeting_platform);
+CREATE INDEX IF NOT EXISTS calendar_event_associations_join_url_index
+  ON calendar_event_associations(join_url) WHERE join_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS calendar_event_associations_web_url_index
+  ON calendar_event_associations(web_url) WHERE web_url IS NOT NULL;
+`;
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -151,32 +208,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS meetings_calendar_event_id_unique
 CREATE INDEX IF NOT EXISTS meetings_date_index ON meetings(meeting_date);
 CREATE INDEX IF NOT EXISTS meetings_status_index ON meetings(status);
 
-CREATE TABLE IF NOT EXISTS calendar_event_associations (
-  provider TEXT NOT NULL CHECK (provider IN ('MICROSOFT_GRAPH')),
-  external_event_id TEXT NOT NULL,
-  meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id) ON DELETE CASCADE,
-  subject TEXT NOT NULL,
-  start_time TEXT NOT NULL,
-  end_time TEXT NOT NULL,
-  organizer_json TEXT,
-  attendees_json TEXT NOT NULL DEFAULT '[]',
-  location TEXT,
-  online_meeting_json TEXT,
-  web_url TEXT,
-  is_cancelled INTEGER NOT NULL CHECK (is_cancelled IN (0, 1)),
-  last_modified_at TEXT,
-  meeting_platform TEXT NOT NULL CHECK (meeting_platform IN ('TEAMS', 'OTHER_ONLINE', 'NONE')),
-  normalized_fingerprint TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (provider, external_event_id)
-);
-CREATE INDEX IF NOT EXISTS calendar_event_associations_meeting_index
-  ON calendar_event_associations(meeting_id);
-CREATE INDEX IF NOT EXISTS calendar_event_associations_start_index
-  ON calendar_event_associations(start_time);
-CREATE INDEX IF NOT EXISTS calendar_event_associations_platform_index
-  ON calendar_event_associations(meeting_platform);
+${CALENDAR_EVENT_ASSOCIATIONS_TABLE_SQL}
 
 CREATE TABLE IF NOT EXISTS participants (
   participant_id TEXT PRIMARY KEY,
@@ -483,14 +515,35 @@ export class LocalDatabase {
   public getCalendarEventAssociation(
     provider: CalendarProvider,
     externalEventId: string,
+    accountId = "",
   ): CalendarEventAssociation | undefined {
     const row = this.database
       .prepare(
         `SELECT * FROM calendar_event_associations
-         WHERE provider = $provider AND external_event_id = $externalEventId`,
+         WHERE provider = $provider AND account_id = $accountId AND external_event_id = $externalEventId`,
       )
-      .get({ $provider: provider, $externalEventId: externalEventId });
+      .get({ $provider: provider, $accountId: accountId, $externalEventId: externalEventId });
     return row === undefined ? undefined : mapCalendarEventAssociation(row as SqlRow);
+  }
+
+  /**
+   * Exact meeting-URL correlation lookup. A URL (Teams join link or provider
+   * web link) matches either stored URL column; callers apply the additional
+   * time-overlap guard before linking. Results are deterministically ordered.
+   */
+  public findAssociationsByMeetingUrl(meetingUrl: string): CalendarEventAssociation[] {
+    const trimmed = meetingUrl.trim();
+    if (trimmed.length === 0) {
+      return [];
+    }
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM calendar_event_associations
+         WHERE join_url = $meetingUrl OR web_url = $meetingUrl
+         ORDER BY start_time, provider, account_id, external_event_id`,
+      )
+      .all({ $meetingUrl: trimmed }) as SqlRow[];
+    return rows.map((row) => mapCalendarEventAssociation(row));
   }
 
   public listCalendarEventAssociations(meetingId?: string): CalendarEventAssociation[] {
@@ -507,10 +560,10 @@ export class LocalDatabase {
 
   public upsertCalendarEventAssociation(association: CalendarEventAssociation): "CREATED" | "UPDATED" | "UNCHANGED" {
     this.ensureOpen();
-    const existing = this.getCalendarEventAssociation(association.provider, association.externalEventId);
+    const existing = this.getCalendarEventAssociation(association.provider, association.externalEventId, association.accountId);
     if (existing !== undefined && existing.meetingId !== association.meetingId) {
       throw new DuplicateMeetingError(
-        `Microsoft Graph event ${association.externalEventId} is already associated with meeting ${existing.meetingId}.`,
+        `Calendar event ${association.provider}:${association.externalEventId} is already associated with meeting ${existing.meetingId}.`,
         existing.meetingId,
       );
     }
@@ -520,46 +573,66 @@ export class LocalDatabase {
     this.database
       .prepare(
         `INSERT INTO calendar_event_associations (
-          provider, external_event_id, meeting_id, subject, start_time, end_time,
+          association_id, provider, account_id, calendar_id, external_event_id,
+          meeting_id, subject, start_time, end_time, start_time_zone, end_time_zone,
           organizer_json, attendees_json, location, online_meeting_json, web_url,
-          is_cancelled, last_modified_at, meeting_platform, normalized_fingerprint,
+          join_url, description, status, is_cancelled, last_modified_at,
+          sync_metadata_json, meeting_platform, normalized_fingerprint,
           created_at, updated_at
         ) VALUES (
-          $provider, $externalEventId, $meetingId, $subject, $startTime, $endTime,
+          $associationId, $provider, $accountId, $calendarId, $externalEventId,
+          $meetingId, $subject, $startTime, $endTime, $startTimeZone, $endTimeZone,
           $organizerJson, $attendeesJson, $location, $onlineMeetingJson, $webUrl,
-          $isCancelled, $lastModifiedAt, $meetingPlatform, $normalizedFingerprint,
+          $joinUrl, $description, $status, $isCancelled, $lastModifiedAt,
+          $syncMetadataJson, $meetingPlatform, $normalizedFingerprint,
           $createdAt, $updatedAt
         )
-        ON CONFLICT(provider, external_event_id) DO UPDATE SET
+        ON CONFLICT(provider, account_id, external_event_id) DO UPDATE SET
           meeting_id = excluded.meeting_id,
           subject = excluded.subject,
           start_time = excluded.start_time,
           end_time = excluded.end_time,
+          start_time_zone = excluded.start_time_zone,
+          end_time_zone = excluded.end_time_zone,
+          calendar_id = excluded.calendar_id,
           organizer_json = excluded.organizer_json,
           attendees_json = excluded.attendees_json,
           location = excluded.location,
           online_meeting_json = excluded.online_meeting_json,
           web_url = excluded.web_url,
+          join_url = excluded.join_url,
+          description = excluded.description,
+          status = excluded.status,
           is_cancelled = excluded.is_cancelled,
           last_modified_at = excluded.last_modified_at,
+          sync_metadata_json = excluded.sync_metadata_json,
           meeting_platform = excluded.meeting_platform,
           normalized_fingerprint = excluded.normalized_fingerprint,
           updated_at = excluded.updated_at`,
       )
       .run({
+        $associationId: association.associationId,
         $provider: association.provider,
+        $accountId: association.accountId,
+        $calendarId: association.calendarId ?? null,
         $externalEventId: association.externalEventId,
         $meetingId: association.meetingId,
         $subject: association.subject,
         $startTime: association.startTime,
         $endTime: association.endTime,
+        $startTimeZone: association.startTimeZone ?? null,
+        $endTimeZone: association.endTimeZone ?? null,
         $organizerJson: association.organizer === undefined ? null : JSON.stringify(association.organizer),
         $attendeesJson: JSON.stringify(association.attendees),
         $location: association.location ?? null,
         $onlineMeetingJson: association.onlineMeeting === undefined ? null : JSON.stringify(association.onlineMeeting),
         $webUrl: association.webUrl ?? null,
+        $joinUrl: association.joinUrl ?? null,
+        $description: association.description ?? null,
+        $status: association.status ?? null,
         $isCancelled: association.isCancelled ? 1 : 0,
         $lastModifiedAt: association.lastModifiedAt ?? null,
+        $syncMetadataJson: association.syncMetadata === undefined ? null : JSON.stringify(association.syncMetadata),
         $meetingPlatform: association.meetingPlatform,
         $normalizedFingerprint: association.normalizedFingerprint,
         $createdAt: association.createdAt,
@@ -1214,10 +1287,14 @@ export class LocalDatabase {
       if (currentVersion > 0 && currentVersion < 5) {
         this.applyRecordingMetadataMigration();
       }
+      if (currentVersion > 0 && currentVersion < 8) {
+        this.applyCalendarAccountMigration();
+      }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
         .run({ $version: DATABASE_SCHEMA_VERSION, $appliedAt: this.clock().toISOString() });
     }
+    this.database.exec(CALENDAR_EVENT_ASSOCIATIONS_INDEX_SQL);
   }
 
   private applyRecordingMetadataMigration(): void {
@@ -1254,6 +1331,85 @@ export class LocalDatabase {
     }
   }
 
+  /**
+   * Schema v8: rebuilds calendar_event_associations with the account-scoped
+   * primary key and the Phase 10 normalized columns. Legacy rows have no
+   * account identity, so they migrate to the empty-account scope — the same
+   * key a repeat sync of an account-less event would upsert into.
+   */
+  private applyCalendarAccountMigration(): void {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(calendar_event_associations)").all() as SqlRow[])
+        .map((row) => stringValue(row.name)),
+    );
+    if (columns.has("association_id")) {
+      return;
+    }
+    this.database.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.database.exec("BEGIN IMMEDIATE;");
+      try {
+        this.database.exec("ALTER TABLE calendar_event_associations RENAME TO calendar_event_associations_legacy;");
+        // The rename carries legacy indexes along; drop them so the shared
+        // post-migration step recreates every index against the new shape.
+        this.database.exec(
+          "DROP INDEX IF EXISTS calendar_event_associations_meeting_index;" +
+            "DROP INDEX IF EXISTS calendar_event_associations_start_index;" +
+            "DROP INDEX IF EXISTS calendar_event_associations_platform_index;",
+        );
+        this.database.exec(CALENDAR_EVENT_ASSOCIATIONS_TABLE_SQL);
+        const legacyRows = this.database.prepare("SELECT * FROM calendar_event_associations_legacy").all() as SqlRow[];
+        const insert = this.database.prepare(
+          `INSERT INTO calendar_event_associations (
+            association_id, provider, account_id, external_event_id,
+            meeting_id, subject, start_time, end_time,
+            organizer_json, attendees_json, location, online_meeting_json, web_url,
+            join_url, is_cancelled, last_modified_at,
+            meeting_platform, normalized_fingerprint, created_at, updated_at
+          ) VALUES (
+            $associationId, $provider, '', $externalEventId,
+            $meetingId, $subject, $startTime, $endTime,
+            $organizerJson, $attendeesJson, $location, $onlineMeetingJson, $webUrl,
+            $joinUrl, $isCancelled, $lastModifiedAt,
+            $meetingPlatform, $normalizedFingerprint, $createdAt, $updatedAt
+          )`,
+        );
+        for (const row of legacyRows) {
+          const provider = stringValue(row.provider) as CalendarProvider;
+          const externalEventId = stringValue(row.external_event_id);
+          insert.run({
+            $associationId: calendarEventAssociationId(provider, "", externalEventId),
+            $provider: provider,
+            $externalEventId: externalEventId,
+            $meetingId: stringValue(row.meeting_id),
+            $subject: stringValue(row.subject),
+            $startTime: stringValue(row.start_time),
+            $endTime: stringValue(row.end_time),
+            $organizerJson: optionalString(row.organizer_json) ?? null,
+            $attendeesJson: stringValue(row.attendees_json),
+            $location: optionalString(row.location) ?? null,
+            $onlineMeetingJson: optionalString(row.online_meeting_json) ?? null,
+            $webUrl: optionalString(row.web_url) ?? null,
+            $joinUrl: legacyJoinUrl(optionalString(row.online_meeting_json)),
+            $isCancelled: numberValue(row.is_cancelled),
+            $lastModifiedAt: optionalString(row.last_modified_at) ?? null,
+            $meetingPlatform: stringValue(row.meeting_platform),
+            $normalizedFingerprint: stringValue(row.normalized_fingerprint),
+            $createdAt: stringValue(row.created_at),
+            $updatedAt: stringValue(row.updated_at),
+          });
+        }
+        this.database.exec("DROP TABLE calendar_event_associations_legacy;");
+        this.database.exec("COMMIT;");
+      } catch (error: unknown) {
+        this.database.exec("ROLLBACK;");
+        throw error;
+      }
+    } finally {
+      this.database.exec("PRAGMA foreign_keys = ON;");
+    }
+  }
+
   private ensureOpen(): void {
     if (this.closed) {
       throw new StorageError("The local database is closed.");
@@ -1286,7 +1442,9 @@ function mapRecording(row: SqlRow): RecordingRecord {
 
 function mapCalendarEventAssociation(row: SqlRow): CalendarEventAssociation {
   const association: CalendarEventAssociation = {
+    associationId: stringValue(row.association_id),
     provider: stringValue(row.provider) as CalendarProvider,
+    accountId: optionalString(row.account_id) ?? "",
     externalEventId: stringValue(row.external_event_id),
     meetingId: stringValue(row.meeting_id),
     subject: stringValue(row.subject),
@@ -1307,8 +1465,18 @@ function mapCalendarEventAssociation(row: SqlRow): CalendarEventAssociation {
   if (onlineMeetingJson !== undefined) {
     association.onlineMeeting = JSON.parse(onlineMeetingJson) as CalendarEventAssociation["onlineMeeting"];
   }
+  const syncMetadataJson = optionalString(row.sync_metadata_json);
+  if (syncMetadataJson !== undefined) {
+    association.syncMetadata = JSON.parse(syncMetadataJson) as CalendarEventAssociation["syncMetadata"];
+  }
+  addOptional(association, "calendarId", optionalString(row.calendar_id));
+  addOptional(association, "startTimeZone", optionalString(row.start_time_zone));
+  addOptional(association, "endTimeZone", optionalString(row.end_time_zone));
   addOptional(association, "location", optionalString(row.location));
   addOptional(association, "webUrl", optionalString(row.web_url));
+  addOptional(association, "joinUrl", optionalString(row.join_url));
+  addOptional(association, "description", optionalString(row.description));
+  addOptional(association, "status", optionalString(row.status));
   addOptional(association, "lastModifiedAt", optionalString(row.last_modified_at));
   return association;
 }
@@ -1318,15 +1486,35 @@ function calendarEventAssociationEquals(left: CalendarEventAssociation, right: C
     left.subject === right.subject &&
     left.startTime === right.startTime &&
     left.endTime === right.endTime &&
+    (left.startTimeZone ?? null) === (right.startTimeZone ?? null) &&
+    (left.endTimeZone ?? null) === (right.endTimeZone ?? null) &&
+    (left.calendarId ?? null) === (right.calendarId ?? null) &&
     JSON.stringify(left.organizer ?? null) === JSON.stringify(right.organizer ?? null) &&
     JSON.stringify(left.attendees) === JSON.stringify(right.attendees) &&
     (left.location ?? null) === (right.location ?? null) &&
     JSON.stringify(left.onlineMeeting ?? null) === JSON.stringify(right.onlineMeeting ?? null) &&
     (left.webUrl ?? null) === (right.webUrl ?? null) &&
+    (left.joinUrl ?? null) === (right.joinUrl ?? null) &&
+    (left.description ?? null) === (right.description ?? null) &&
+    (left.status ?? null) === (right.status ?? null) &&
     left.isCancelled === right.isCancelled &&
     (left.lastModifiedAt ?? null) === (right.lastModifiedAt ?? null) &&
+    JSON.stringify(left.syncMetadata?.iCalUId ?? null) === JSON.stringify(right.syncMetadata?.iCalUId ?? null) &&
     left.meetingPlatform === right.meetingPlatform &&
     left.normalizedFingerprint === right.normalizedFingerprint;
+}
+
+/** Best-effort join-URL recovery for pre-v8 rows; never throws. */
+function legacyJoinUrl(onlineMeetingJson: string | undefined): string | null {
+  if (onlineMeetingJson === undefined) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(onlineMeetingJson) as { joinUrl?: unknown };
+    return typeof parsed.joinUrl === "string" && parsed.joinUrl.length > 0 ? parsed.joinUrl : null;
+  } catch {
+    return null;
+  }
 }
 
 function mapArtifactOperation(row: SqlRow): ArtifactOperation {
