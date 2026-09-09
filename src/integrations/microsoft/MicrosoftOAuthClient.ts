@@ -1,6 +1,8 @@
 import type { MicrosoftOAuthApplicationConfig } from "./MicrosoftOAuthConfig";
 import { microsoftTenant } from "./MicrosoftOAuthConfig";
 import { MICROSOFT_GRAPH_SCOPES } from "./MicrosoftAuth";
+import type { OAuthFormResponse, OAuthFormTransport } from "../oauth/OAuthFormTransport";
+import { FetchOAuthFormTransport } from "../oauth/OAuthFormTransport";
 
 /**
  * OAuth 2.0 Authorization Code + PKCE transport for Microsoft identity
@@ -19,14 +21,8 @@ export interface MicrosoftOAuthTokenResponse {
   tokenType: string;
 }
 
-export interface MicrosoftOAuthFormResponse {
-  status: number;
-  body: unknown;
-}
-
-export interface MicrosoftOAuthTransport {
-  postForm(url: string, form: Record<string, string>, signal?: AbortSignal): Promise<MicrosoftOAuthFormResponse>;
-}
+export type MicrosoftOAuthFormResponse = OAuthFormResponse;
+export type MicrosoftOAuthTransport = OAuthFormTransport;
 
 export interface MicrosoftOAuthClientOptions {
   transport?: MicrosoftOAuthTransport;
@@ -144,35 +140,7 @@ function grantedTokenFrom(token: MicrosoftOAuthTokenResponse, now: Date): Micros
   };
 }
 
-export class FetchMicrosoftOAuthTransport implements MicrosoftOAuthTransport {
-  public async postForm(url: string, form: Record<string, string>, signal?: AbortSignal): Promise<MicrosoftOAuthFormResponse> {
-    const body = new URLSearchParams();
-    for (const [key, value] of Object.entries(form)) {
-      body.set(key, value);
-    }
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        accept: "application/json",
-      },
-      body: body.toString(),
-      signal,
-      redirect: "error",
-    });
-    const text = await response.text();
-    let parsed: unknown = undefined;
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text) as unknown;
-      } catch {
-        parsed = text;
-      }
-    }
-    return { status: response.status, body: parsed };
-  }
-}
-
+export class FetchMicrosoftOAuthTransport extends FetchOAuthFormTransport implements MicrosoftOAuthTransport {}
 export class MicrosoftOAuthError extends Error {
   public constructor(
     public readonly code: string,

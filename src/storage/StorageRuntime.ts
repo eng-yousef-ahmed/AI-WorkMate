@@ -53,11 +53,16 @@ export interface ChangeDataRootResult {
 import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
 import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
 import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
+import type { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
 
 export interface StorageRuntimeIntegrations {
   microsoftCalendarProvider?: CalendarEventProvider;
   /** Main-process Microsoft 365 OAuth connection manager (PKCE, vault tokens). */
   microsoftCalendarConnection?: MicrosoftCalendarConnection;
+  /** Main-process Google Calendar OAuth connection manager (PKCE, vault tokens). */
+  googleCalendarConnection?: GoogleCalendarConnection;
+  /** Injectable Google provider (tests); the connection builds the real one. */
+  googleCalendarProvider?: CalendarEventProvider;
   nativeCaptureAdapter?: NativeCaptureAdapter;
   nativeCapturePolicy?: Partial<NativeCapturePolicy>;
   transcriptionEngine?: TranscriptionEngine;
@@ -224,26 +229,41 @@ export class StorageRuntime {
   public static readonly DEFAULT_CALENDAR_WINDOW_DAYS_BACK = 30;
   public static readonly DEFAULT_CALENDAR_WINDOW_DAYS_AHEAD = 120;
 
-  /**
-   * Synchronizes Microsoft 365 calendar events over the requested window.
-   * Uses the incremental delta path when a stored cursor covers the window
-   * and self-heals stale cursors with a full re-sync.
-   */
+  /** Synchronizes the Microsoft 365 calendar over the requested window. */
   public async syncMicrosoftCalendar(range: CalendarSyncRange): Promise<CalendarSyncResult> {
-    const provider = this.getMicrosoftCalendarProvider();
-    return new CalendarSyncService(provider, this.requireStore(), "MICROSOFT_GRAPH").syncCalendar(range);
+    return this.syncRange("MICROSOFT_GRAPH", this.getMicrosoftCalendarProvider(), range);
   }
 
-  /**
-   * Renderer-safe "sync now": runs the incremental delta when the stored
-   * window still covers the near future and otherwise refreshes the whole
-   * rolling window (which renews the delta cursor).
-   */
+  /** Renderer-safe Microsoft 365 "sync now" (delta when the window covers the horizon). */
   public async syncMicrosoftCalendarAuto(): Promise<CalendarSyncResult> {
+    return this.syncAuto("MICROSOFT_GRAPH", () => this.getMicrosoftCalendarProvider());
+  }
+
+  /** Synchronizes the Google Calendar over the requested window. */
+  public async syncGoogleCalendar(range: CalendarSyncRange): Promise<CalendarSyncResult> {
+    return this.syncRange("GOOGLE_CALENDAR", this.getGoogleCalendarProvider(), range);
+  }
+
+  /** Renderer-safe Google "sync now" (delta when the window covers the horizon). */
+  public async syncGoogleCalendarAuto(): Promise<CalendarSyncResult> {
+    return this.syncAuto("GOOGLE_CALENDAR", () => this.getGoogleCalendarProvider());
+  }
+
+  private async syncRange(
+    providerId: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR",
+    provider: CalendarEventProvider,
+    range: CalendarSyncRange,
+  ): Promise<CalendarSyncResult> {
+    return new CalendarSyncService(provider, this.requireStore(), providerId).syncCalendar(range);
+  }
+
+  private async syncAuto(
+    providerId: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR",
+    getProvider: () => CalendarEventProvider,
+  ): Promise<CalendarSyncResult> {
     const store = this.requireStore();
-    const state = store.getCalendarSyncState("MICROSOFT_GRAPH");
-    const provider = this.getMicrosoftCalendarProvider();
-    const service = new CalendarSyncService(provider, store, "MICROSOFT_GRAPH");
+    const state = store.getCalendarSyncState(providerId);
+    const service = new CalendarSyncService(getProvider(), store, providerId);
     const now = this.clock();
     const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     if (
@@ -257,74 +277,136 @@ export class StorageRuntime {
     return service.syncCalendar(range);
   }
 
-  /** Calendar connection status (sanitized; never contains tokens). */
+  /** Microsoft 365 connection status (sanitized; never contains tokens). */
   public async getMicrosoftCalendarStatus(): Promise<CalendarConnectionStatus | undefined> {
-    return this.integrations.microsoftCalendarConnection?.getStatus();
+    return this.getConnection("MICROSOFT_GRAPH")?.getStatus();
   }
 
-  /** Begins an interactive Microsoft 365 sign-in; returns the URL to open. */
   public async beginMicrosoftCalendarSignIn(): Promise<BeginCalendarSignInResult> {
-    const connection = this.requireMicrosoftCalendarConnection();
-    return connection.beginSignIn();
+    return this.requireConnection("MICROSOFT_GRAPH").beginSignIn();
   }
 
   public async completeMicrosoftCalendarSignIn(input: CompleteCalendarSignInInput): Promise<CalendarConnectionStatus> {
-    const connection = this.requireMicrosoftCalendarConnection();
-    return connection.completeSignIn(input);
+    return this.requireConnection("MICROSOFT_GRAPH").completeSignIn(input);
   }
 
   public async cancelMicrosoftCalendarSignIn(): Promise<void> {
-    await this.requireMicrosoftCalendarConnection().cancelSignIn();
+    await this.requireConnection("MICROSOFT_GRAPH").cancelSignIn();
   }
 
   public async disconnectMicrosoftCalendar(): Promise<CalendarConnectionStatus> {
-    const connection = this.requireMicrosoftCalendarConnection();
+    const connection = this.requireConnection("MICROSOFT_GRAPH");
     const status = await connection.disconnect();
-    // A fresh sign-in may use a different account/calendar; drop the stale
-    // cursor so the next sync starts from a clean full fetch.
     if (this.store !== undefined) {
       this.store.clearCalendarSyncState("MICROSOFT_GRAPH");
     }
     return status;
   }
 
+  /** Google Calendar connection status (sanitized; never contains tokens). */
+  public async getGoogleCalendarStatus(): Promise<CalendarConnectionStatus | undefined> {
+    return this.getConnection("GOOGLE_CALENDAR")?.getStatus();
+  }
+
+  public async beginGoogleCalendarSignIn(): Promise<BeginCalendarSignInResult> {
+    return this.requireConnection("GOOGLE_CALENDAR").beginSignIn();
+  }
+
+  public async completeGoogleCalendarSignIn(input: CompleteCalendarSignInInput): Promise<CalendarConnectionStatus> {
+    return this.requireConnection("GOOGLE_CALENDAR").completeSignIn(input);
+  }
+
+  public async cancelGoogleCalendarSignIn(): Promise<void> {
+    await this.requireConnection("GOOGLE_CALENDAR").cancelSignIn();
+  }
+
+  public async disconnectGoogleCalendar(): Promise<CalendarConnectionStatus> {
+    const connection = this.requireConnection("GOOGLE_CALENDAR");
+    const status = await connection.disconnect();
+    if (this.store !== undefined) {
+      this.store.clearCalendarSyncState("GOOGLE_CALENDAR");
+    }
+    return status;
+  }
+
   /**
-   * Swaps the Microsoft 365 connection manager (used after the OAuth config is
-   * saved). The previous connection's pending sign-in is cancelled; sessions
-   * live in the shared vault so a connected account survives the swap.
+   * Swaps a connection manager (used after the OAuth config is saved). The
+   * previous connection's pending sign-in is cancelled; sessions live in the
+   * shared vault so a connected account survives the swap.
    */
   public async setMicrosoftCalendarConnection(connection: MicrosoftCalendarConnection | undefined): Promise<void> {
-    const previous = this.integrations.microsoftCalendarConnection;
+    await this.swapConnection("MICROSOFT_GRAPH", connection, this.integrations.microsoftCalendarConnection);
+  }
+
+  public async setGoogleCalendarConnection(connection: GoogleCalendarConnection | undefined): Promise<void> {
+    await this.swapConnection("GOOGLE_CALENDAR", connection, this.integrations.googleCalendarConnection);
+  }
+
+  private async swapConnection(
+    provider: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR",
+    connection: CalendarConnectionLike | undefined,
+    previous: CalendarConnectionLike | undefined,
+  ): Promise<void> {
     if (previous !== undefined && previous !== connection) {
       await previous.cancelSignIn().catch(() => undefined);
     }
-    this.integrations.microsoftCalendarConnection = connection;
-    this.microsoftProviderCache = undefined;
+    if (provider === "MICROSOFT_GRAPH") {
+      this.integrations.microsoftCalendarConnection = connection as MicrosoftCalendarConnection | undefined;
+      this.microsoftProviderCache = undefined;
+    } else {
+      this.integrations.googleCalendarConnection = connection as GoogleCalendarConnection | undefined;
+      this.googleProviderCache = undefined;
+    }
   }
-
-  private microsoftProviderCache: CalendarEventProvider | undefined;
 
   private getMicrosoftCalendarProvider(): CalendarEventProvider {
     if (this.integrations.microsoftCalendarProvider !== undefined) {
       return this.integrations.microsoftCalendarProvider;
     }
-    const connection = this.integrations.microsoftCalendarConnection;
-    if (connection === undefined) {
-      throw new StorageError(
-        "Microsoft 365 calendar synchronization is not configured. Connect a Microsoft OAuth/MSAL provider before syncing.",
-      );
-    }
     if (this.microsoftProviderCache === undefined) {
-      this.microsoftProviderCache = connection.createCalendarProvider();
+      this.microsoftProviderCache = this.buildProvider("MICROSOFT_GRAPH");
     }
     return this.microsoftProviderCache;
   }
 
-  private requireMicrosoftCalendarConnection(): MicrosoftCalendarConnection {
-    const connection = this.integrations.microsoftCalendarConnection;
+  private getGoogleCalendarProvider(): CalendarEventProvider {
+    if (this.integrations.googleCalendarProvider !== undefined) {
+      return this.integrations.googleCalendarProvider;
+    }
+    if (this.googleProviderCache === undefined) {
+      this.googleProviderCache = this.buildProvider("GOOGLE_CALENDAR");
+    }
+    return this.googleProviderCache;
+  }
+
+  private buildProvider(provider: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR"): CalendarEventProvider {
+    const connection = this.getConnection(provider);
     if (connection === undefined) {
       throw new StorageError(
-        "Microsoft 365 calendar integration is not configured in this build.",
+        provider === "MICROSOFT_GRAPH"
+          ? "Microsoft 365 calendar synchronization is not configured. Connect Microsoft 365 before syncing."
+          : "Google Calendar synchronization is not configured. Connect Google Calendar before syncing.",
+      );
+    }
+    return connection.createCalendarProvider();
+  }
+
+  private microsoftProviderCache: CalendarEventProvider | undefined;
+  private googleProviderCache: CalendarEventProvider | undefined;
+
+  private getConnection(provider: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR"): CalendarConnectionLike | undefined {
+    return provider === "MICROSOFT_GRAPH"
+      ? this.integrations.microsoftCalendarConnection
+      : this.integrations.googleCalendarConnection;
+  }
+
+  private requireConnection(provider: "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR"): CalendarConnectionLike {
+    const connection = this.getConnection(provider);
+    if (connection === undefined) {
+      throw new StorageError(
+        provider === "MICROSOFT_GRAPH"
+          ? "Microsoft 365 calendar integration is not configured in this build."
+          : "Google Calendar integration is not configured in this build.",
       );
     }
     return connection;
@@ -559,6 +641,15 @@ export class StorageRuntime {
     this.store?.close();
     this.store = undefined;
   }
+}
+
+interface CalendarConnectionLike {
+  getStatus(): Promise<CalendarConnectionStatus>;
+  beginSignIn(): Promise<BeginCalendarSignInResult>;
+  completeSignIn(input: CompleteCalendarSignInInput): Promise<CalendarConnectionStatus>;
+  cancelSignIn(): Promise<void>;
+  disconnect(): Promise<CalendarConnectionStatus>;
+  createCalendarProvider(): CalendarEventProvider;
 }
 
 function productionNativeCapturePolicy(overrides: Partial<NativeCapturePolicy> | undefined): Partial<NativeCapturePolicy> {

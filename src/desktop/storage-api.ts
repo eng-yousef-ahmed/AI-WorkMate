@@ -40,12 +40,26 @@ export const CALENDAR_IPC_CHANNELS = {
   disconnectMicrosoft: "calendar:microsoft-disconnect",
   syncMicrosoftCalendarAuto: "calendar:sync-microsoft-auto",
   saveMicrosoftOAuthConfig: "calendar:microsoft-save-oauth-config",
+  getGoogleStatus: "calendar:google-status",
+  beginGoogleSignIn: "calendar:google-begin-sign-in",
+  completeGoogleSignIn: "calendar:google-complete-sign-in",
+  cancelGoogleSignIn: "calendar:google-cancel-sign-in",
+  disconnectGoogle: "calendar:google-disconnect",
+  syncGoogleCalendarAuto: "calendar:sync-google-auto",
+  saveGoogleOAuthConfig: "calendar:google-save-oauth-config",
 } as const;
 
 /** Renderer-sendable Microsoft OAuth application settings (no secrets). */
 export interface MicrosoftOAuthSettingsInput {
   clientId?: string;
   tenant?: string;
+  redirectUri?: string;
+}
+
+/** Renderer-sendable Google OAuth application settings (no secrets). */
+export interface GoogleOAuthSettingsInput {
+  clientId?: string;
+  clientSecret?: string;
   redirectUri?: string;
 }
 
@@ -94,6 +108,13 @@ export interface CalendarRendererAPI {
   syncMicrosoftCalendarAuto(): Promise<RendererCalendarSyncResult>;
   syncMicrosoftCalendar(request: MicrosoftCalendarSyncRequest): Promise<RendererCalendarSyncResult>;
   saveMicrosoftOAuthConfig(input: MicrosoftOAuthSettingsInput): Promise<CalendarConnectionStatus>;
+  getGoogleStatus(): Promise<CalendarConnectionStatus | undefined>;
+  beginGoogleSignIn(): Promise<BeginCalendarSignInResult>;
+  completeGoogleSignIn(input: CompleteCalendarSignInInput): Promise<CalendarConnectionStatus>;
+  cancelGoogleSignIn(): Promise<void>;
+  disconnectGoogle(): Promise<CalendarConnectionStatus>;
+  syncGoogleCalendarAuto(): Promise<RendererCalendarSyncResult>;
+  saveGoogleOAuthConfig(input: GoogleOAuthSettingsInput): Promise<CalendarConnectionStatus>;
 }
 
 export type {

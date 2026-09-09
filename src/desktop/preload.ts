@@ -29,6 +29,13 @@ const calendarApi: CalendarRendererAPI = {
   syncMicrosoftCalendarAuto: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.syncMicrosoftCalendarAuto),
   syncMicrosoftCalendar: (request) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar, request),
   saveMicrosoftOAuthConfig: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.saveMicrosoftOAuthConfig, input),
+  getGoogleStatus: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.getGoogleStatus),
+  beginGoogleSignIn: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.beginGoogleSignIn),
+  completeGoogleSignIn: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.completeGoogleSignIn, input),
+  cancelGoogleSignIn: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.cancelGoogleSignIn),
+  disconnectGoogle: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.disconnectGoogle),
+  syncGoogleCalendarAuto: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.syncGoogleCalendarAuto),
+  saveGoogleOAuthConfig: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.saveGoogleOAuthConfig, input),
 };
 
 contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi });

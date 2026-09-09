@@ -1,6 +1,7 @@
 import type { CalendarProvider } from "../domain/models";
 import type { LocalFirstStore } from "../storage/LocalFirstStore";
 import { MicrosoftGraphError } from "../integrations/microsoft/MicrosoftGraphClient";
+import { GoogleApiError } from "../integrations/google/GoogleApiClient";
 import {
   assertNotAborted,
   isCalendarDeltaProvider,
@@ -210,7 +211,7 @@ export function isStaleCursorError(error: unknown): boolean {
   if (typeof error === "object" && error !== null) {
     const typed = error as { code?: unknown; status?: unknown };
     const code = typeof typed.code === "string" ? typed.code : undefined;
-    if ((code === "syncStateNotFound" || code === "SyncStateNotFound" || code === "deltaLinkNotFound") || typed.status === 410) {
+    if ((code === "syncStateNotFound" || code === "SyncStateNotFound" || code === "deltaLinkNotFound" || code === "syncTokenInvalid") || typed.status === 410) {
       return true;
     }
   }
@@ -254,15 +255,19 @@ function emptyResult(provider: CalendarProvider, startTime: string, endTime: str
 }
 
 function calendarErrorFromUnknown(error: unknown, provider: CalendarProvider, externalEventId?: string): CalendarSyncErrorInfo {
-  if (error instanceof MicrosoftGraphError) {
+  const apiError =
+    error instanceof MicrosoftGraphError ? { code: error.code, message: error.message, retryable: error.retryable, status: error.status } :
+    error instanceof GoogleApiError ? { code: error.code, message: error.message, retryable: error.retryable, status: error.status } :
+    undefined;
+  if (apiError !== undefined) {
     const info: CalendarSyncErrorInfo = {
       provider,
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
+      code: apiError.code,
+      message: apiError.message,
+      retryable: apiError.retryable,
     };
-    if (error.status !== undefined) {
-      info.status = error.status;
+    if (apiError.status !== undefined) {
+      info.status = apiError.status;
     }
     if (externalEventId !== undefined) {
       info.externalEventId = externalEventId;

@@ -9,16 +9,24 @@ import {
   saveMicrosoftOAuthConfig,
   type MicrosoftOAuthApplicationConfig,
 } from "../integrations/microsoft/MicrosoftOAuthConfig";
+import { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
+import {
+  loadGoogleOAuthConfig,
+  normalizeGoogleOAuthConfig,
+  saveGoogleOAuthConfig,
+  type GoogleOAuthApplicationConfig,
+} from "../integrations/google/GoogleOAuthConfig";
 import { ElectronSafeStorageCredentialStore } from "../security/CredentialStore";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
-import { registerCalendarIpc, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
+import { registerCalendarIpc, type GoogleOAuthConfigInput, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
 
 let runtime: StorageRuntime | undefined;
 let userDataPath = "";
 let oauthConfigPath = "";
+let googleOAuthConfigPath = "";
 let microsoftCredentialStore: ElectronSafeStorageCredentialStore | undefined;
 let mainWindow: BrowserWindow | undefined;
 let ipcRegistered = false;
@@ -29,10 +37,12 @@ async function bootstrap(): Promise<void> {
     const config = new StorageConfigService(join(userDataPath, "storage-config.json"));
     microsoftCredentialStore = new ElectronSafeStorageCredentialStore(safeStorage, join(userDataPath, "credential-vault.json"));
     oauthConfigPath = join(userDataPath, "microsoft-oauth.json");
+    googleOAuthConfigPath = join(userDataPath, "google-oauth.json");
     runtime = new StorageRuntime(config, () => new Date(), microsoftCredentialStore, {
       installationDirectory: dirname(app.getPath("exe")),
     }, {
       microsoftCalendarConnection: await createMicrosoftCalendarConnection(),
+      googleCalendarConnection: await createGoogleCalendarConnection(),
     });
   }
   const configured = await runtime.initialize();
@@ -86,8 +96,11 @@ async function bootstrap(): Promise<void> {
       openExternal: async (url: string) => {
         await shell.openExternal(url);
       },
-      saveOAuthApplicationConfig: async (input: MicrosoftOAuthConfigInput) => {
+      saveMicrosoftOAuthApplicationConfig: async (input: MicrosoftOAuthConfigInput) => {
         await saveOAuthConfig(input);
+      },
+      saveGoogleOAuthApplicationConfig: async (input: GoogleOAuthConfigInput) => {
+        await saveGoogleConfig(input);
       },
     });
     ipcRegistered = true;
@@ -107,6 +120,44 @@ async function createMicrosoftCalendarConnection(): Promise<MicrosoftCalendarCon
   }
   const config = await loadOAuthConfig(oauthConfigPath);
   return new MicrosoftCalendarConnection({ config, credentialStore: microsoftCredentialStore });
+}
+
+/**
+ * Creates the Google Calendar connection manager from the user-editable
+ * `google-oauth.json` under userData (outside DATA_ROOT). The Google OAuth
+ * client secret is optional and non-confidential (PKCE desktop client).
+ */
+async function createGoogleCalendarConnection(): Promise<GoogleCalendarConnection> {
+  if (microsoftCredentialStore === undefined) {
+    throw new Error("bootstrap order: credential store must exist before the calendar connection.");
+  }
+  const config = await loadGoogleConfig(googleOAuthConfigPath);
+  return new GoogleCalendarConnection({ config, credentialStore: microsoftCredentialStore });
+}
+
+async function loadGoogleConfig(configPath: string): Promise<GoogleOAuthApplicationConfig> {
+  try {
+    return await loadGoogleOAuthConfig(configPath);
+  } catch (error: unknown) {
+    // A corrupt config file must not prevent the app from starting; it is
+    // reported as NOT_CONFIGURED and can be corrected from Settings.
+    console.error("AI WorkMate could not read the Google OAuth config", error);
+    return {};
+  }
+}
+
+/** Validates and persists the Google OAuth settings, then swaps the live connection. */
+async function saveGoogleConfig(input: GoogleOAuthConfigInput): Promise<void> {
+  const current = await loadGoogleOAuthConfig(googleOAuthConfigPath);
+  const next: GoogleOAuthApplicationConfig = { ...current };
+  if (input.clientId !== undefined) next.clientId = input.clientId;
+  if (input.clientSecret !== undefined) next.clientSecret = input.clientSecret;
+  if (input.redirectUri !== undefined) next.redirectUri = input.redirectUri;
+  const normalized = normalizeGoogleOAuthConfig(next); // throws on invalid values
+  await saveGoogleOAuthConfig(googleOAuthConfigPath, normalized);
+  if (runtime !== undefined) {
+    await runtime.setGoogleCalendarConnection(await createGoogleCalendarConnection());
+  }
 }
 
 async function loadOAuthConfig(configPath: string): Promise<MicrosoftOAuthApplicationConfig> {

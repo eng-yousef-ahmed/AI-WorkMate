@@ -129,3 +129,9 @@ code { padding: 1px 5px; border-radius: 4px; color: #c9b2ff; background: rgba(13
   .calendar-main { flex-direction: column; align-items: flex-start; }
   .calendar-actions { justify-content: flex-start; }
 }
+
+/* Google panel + multiple calendar cards */
+.calendar-card + .calendar-card { margin-top: 16px; }
+.section-heading.compact { align-items: center; }
+.section-heading.compact p { margin-bottom: 0; }
+.calendar-provider-mark.google { background: linear-gradient(145deg, #34a853, #1a7a3d); box-shadow: 0 5px 16px rgba(52,168,83,.25); }

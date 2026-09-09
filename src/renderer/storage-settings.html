@@ -68,36 +68,40 @@
 
         <section class="section-block" id="integrations">
           <div class="section-heading">
-            <div><h2>Microsoft 365 Calendar</h2><p>Sign in with your Microsoft work or personal account to sync your calendar locally — read-only, and nothing is sent to cloud AI.</p></div>
-            <span id="calendar-badge" class="calendar-badge neutral">Checking…</span>
+            <div><h2>Calendars</h2><p>Sign in to keep your meetings in sync locally. Calendar data is read-only and never sent to cloud AI.</p></div>
+            <span class="helper-inline">Outlook &amp; Microsoft 365 · Google</span>
           </div>
+
           <div class="calendar-card">
+            <div class="section-heading compact">
+              <div><h2>Microsoft 365 Calendar</h2><p>Sync your Microsoft work or personal calendar.</p></div>
+              <span id="ms-badge" class="calendar-badge neutral">Checking…</span>
+            </div>
             <div class="calendar-main">
               <div class="calendar-identity">
                 <div class="calendar-provider-mark">M</div>
                 <div class="calendar-identity-copy">
                   <span class="label">ACCOUNT</span>
-                  <strong id="calendar-account-name">—</strong>
-                  <small id="calendar-account-email">Microsoft 365 calendar</small>
+                  <strong id="ms-account-name">—</strong>
+                  <small id="ms-account-email">Microsoft 365 calendar</small>
                 </div>
               </div>
               <div class="calendar-actions">
-                <button id="calendar-connect-button" class="button primary">Connect Microsoft 365</button>
-                <button id="calendar-sync-button" class="button secondary" disabled>Sync calendar</button>
-                <button id="calendar-cancel-button" class="button secondary" hidden>Cancel sign-in</button>
-                <button id="calendar-disconnect-button" class="button secondary danger-text" hidden>Disconnect</button>
+                <button id="ms-connect-button" class="button primary">Connect Microsoft 365</button>
+                <button id="ms-sync-button" class="button secondary" disabled>Sync calendar</button>
+                <button id="ms-cancel-button" class="button secondary" hidden>Cancel sign-in</button>
+                <button id="ms-disconnect-button" class="button secondary danger-text" hidden>Disconnect</button>
               </div>
             </div>
-            <div id="calendar-status-line" class="calendar-line" hidden></div>
-            <div id="calendar-sync-line" class="calendar-line success-line" hidden></div>
-            <div id="calendar-manual" class="calendar-manual" hidden>
+            <div id="ms-status-line" class="calendar-line" hidden></div>
+            <div id="ms-manual" class="calendar-manual" hidden>
               <p>Waiting for the browser callback. If it does not finish automatically, open the address shown in the status line above in your browser, then paste the final address here:</p>
               <div class="manual-row">
-                <input id="calendar-manual-url" type="text" spellcheck="false" placeholder="http://localhost:…/ ?code=…" />
-                <button id="calendar-manual-submit" class="button secondary">Finish sign-in</button>
+                <input id="ms-manual-url" type="text" spellcheck="false" placeholder="http://localhost:…/?code=…" />
+                <button id="ms-manual-submit" class="button secondary">Finish sign-in</button>
               </div>
             </div>
-            <details class="calendar-config">
+            <details class="calendar-config" id="ms-config">
               <summary>Microsoft app registration settings <span class="helper-inline">(advanced)</span></summary>
               <p class="helper">AI WorkMate is a public desktop client using the Authorization Code + PKCE flow — it never uses or asks for a client secret. In Azure create an app registration as a <strong>public client/native application</strong> with redirect URI <code>http://localhost</code> and delegated permissions <code>User.Read</code>, <code>Calendars.Read</code>, and <code>offline_access</code>, then paste its Application (client) ID here. Tenant may be left as <code>common</code>.</p>
               <div class="config-grid">
@@ -106,8 +110,52 @@
                 <label class="field-label" for="ms-redirect-uri">REDIRECT URI (optional)<input id="ms-redirect-uri" type="text" spellcheck="false" placeholder="http://localhost" /></label>
               </div>
               <div class="config-actions">
-                <button id="calendar-config-save" class="button primary">Save integration settings</button>
-                <span id="calendar-config-note" class="helper">Stored next to the app, never inside your data folder, and contains no secrets.</span>
+                <button id="ms-config-save" class="button primary">Save integration settings</button>
+                <span class="helper">Stored next to the app, never inside your data folder, and contains no secrets.</span>
+              </div>
+            </details>
+          </div>
+
+          <div class="calendar-card google-card">
+            <div class="section-heading compact">
+              <div><h2>Google Calendar</h2><p>Sync your Google Calendar (primary calendar of the signed-in account).</p></div>
+              <span id="google-badge" class="calendar-badge neutral">Checking…</span>
+            </div>
+            <div class="calendar-main">
+              <div class="calendar-identity">
+                <div class="calendar-provider-mark google">G</div>
+                <div class="calendar-identity-copy">
+                  <span class="label">ACCOUNT</span>
+                  <strong id="google-account-name">—</strong>
+                  <small id="google-account-email">Google Calendar</small>
+                </div>
+              </div>
+              <div class="calendar-actions">
+                <button id="google-connect-button" class="button primary">Connect Google Calendar</button>
+                <button id="google-sync-button" class="button secondary" disabled>Sync calendar</button>
+                <button id="google-cancel-button" class="button secondary" hidden>Cancel sign-in</button>
+                <button id="google-disconnect-button" class="button secondary danger-text" hidden>Disconnect</button>
+              </div>
+            </div>
+            <div id="google-status-line" class="calendar-line" hidden></div>
+            <div id="google-manual" class="calendar-manual" hidden>
+              <p>Waiting for the browser callback. If it does not finish automatically, open the address shown in the status line above in your browser, then paste the final address here:</p>
+              <div class="manual-row">
+                <input id="google-manual-url" type="text" spellcheck="false" placeholder="http://localhost:…/?code=…" />
+                <button id="google-manual-submit" class="button secondary">Finish sign-in</button>
+              </div>
+            </div>
+            <details class="calendar-config" id="google-config">
+              <summary>Google Cloud OAuth client settings <span class="helper-inline">(advanced)</span></summary>
+              <p class="helper">AI WorkMate is a desktop (installed app) OAuth client using Authorization Code + PKCE — the client secret is optional and treated as non-confidential. In Google Cloud Console, enable the <strong>Google Calendar API</strong>, create an OAuth client of type <strong>Desktop app</strong> (any localhost redirect is accepted automatically), and paste its client ID here. Requested scopes are <code>openid email profile</code> and read-only <code>calendar.readonly</code>.</p>
+              <div class="config-grid">
+                <label class="field-label" for="google-client-id">OAUTH CLIENT ID<input id="google-client-id" type="text" spellcheck="false" placeholder="…apps.googleusercontent.com" /></label>
+                <label class="field-label" for="google-client-secret">CLIENT SECRET (optional)<input id="google-client-secret" type="text" spellcheck="false" placeholder="Leave empty with PKCE" /></label>
+                <label class="field-label" for="google-redirect-uri">REDIRECT URI (optional)<input id="google-redirect-uri" type="text" spellcheck="false" placeholder="http://127.0.0.1" /></label>
+              </div>
+              <div class="config-actions">
+                <button id="google-config-save" class="button primary">Save integration settings</button>
+                <span class="helper">Stored next to the app, never inside your data folder.</span>
               </div>
             </details>
           </div>

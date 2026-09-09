@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { CalendarConnectionError, type CalendarConnectionStatus } from "../src/calendar/CalendarConnection";
 import type { StorageRuntime } from "../src/storage/StorageRuntime";
-import { CALENDAR_IPC_CHANNELS, type MicrosoftOAuthSettingsInput } from "../src/desktop/storage-api";
+import { CALENDAR_IPC_CHANNELS, type GoogleOAuthSettingsInput, type MicrosoftOAuthSettingsInput } from "../src/desktop/storage-api";
 import { registerCalendarIpc } from "../src/desktop/calendar-ipc";
 
 type IpcHandler = (...args: unknown[]) => unknown;
@@ -30,7 +30,8 @@ function register(
   runtime: StorageRuntime,
   overrides: {
     openExternal?: (url: string) => Promise<void>;
-    saveOAuthApplicationConfig?: (input: MicrosoftOAuthSettingsInput) => Promise<void>;
+    saveMicrosoftOAuthApplicationConfig?: (input: MicrosoftOAuthSettingsInput) => Promise<void>;
+    saveGoogleOAuthApplicationConfig?: (input: GoogleOAuthSettingsInput) => Promise<void>;
   } = {},
 ): Map<string, IpcHandler> {
   const handlers = new Map<string, IpcHandler>();
@@ -40,7 +41,8 @@ function register(
     getAuthorizedWebContentsId: () => 77,
     getAuthorizedRendererUrl: () => "file:///AI-WorkMate/storage-settings.html",
     openExternal: overrides.openExternal ?? (async () => undefined),
-    saveOAuthApplicationConfig: overrides.saveOAuthApplicationConfig ?? (async () => undefined),
+    saveMicrosoftOAuthApplicationConfig: overrides.saveMicrosoftOAuthApplicationConfig ?? (async () => undefined),
+    saveGoogleOAuthApplicationConfig: overrides.saveGoogleOAuthApplicationConfig ?? (async () => undefined),
   });
   return handlers;
 }
@@ -203,7 +205,7 @@ test("auto sync results are renderer-safe counters that never include cursors or
     unchangedCount: 0,
     cancelledCount: 0,
     errorCount: 1,
-    errors: [{ code: "MICROSOFT_CALENDAR_SYNC_UNAVAILABLE", retryable: false }],
+    errors: [{ code: "CALENDAR_SYNC_UNAVAILABLE", retryable: false }],
   });
   assert.equal(JSON.stringify(failedResult).includes("supersecret"), false);
 });
@@ -213,7 +215,7 @@ test("saving the OAuth config validates input, persists settings, and returns th
   const handlers = register(
     { getMicrosoftCalendarStatus: async () => connectedStatus() } as unknown as StorageRuntime,
     {
-      saveOAuthApplicationConfig: async (input) => { saved.push(input); },
+      saveMicrosoftOAuthApplicationConfig: async (input) => { saved.push(input); },
     },
   );
 
@@ -266,4 +268,145 @@ test("unexpected main-process errors cross IPC only as sanitized messages", asyn
     }),
     /sign-in window expired/i,
   );
+});
+
+// --- Google Calendar IPC ------------------------------------------------------
+
+function googleConnectedStatus(): CalendarConnectionStatus {
+  return {
+    provider: "GOOGLE_CALENDAR",
+    state: "CONNECTED",
+    account: { accountId: "google-1", displayName: "Ada Lovelace", email: "ada@gmail.com" },
+    accessTokenExpiresAt: "2026-09-09T13:00:00.000Z",
+  };
+}
+
+test("Google calendar IPC status, sign-in, and disconnect route through the runtime only for the authorized renderer", async () => {
+  let statusCalls = 0;
+  let disconnectCalls = 0;
+  const handlers = register({
+    getGoogleCalendarStatus: async () => { statusCalls += 1; return googleConnectedStatus(); },
+    beginGoogleCalendarSignIn: async () => ({
+      flowId: "google-flow-1",
+      provider: "GOOGLE_CALENDAR" as const,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&state=s1",
+      redirectUri: "http://localhost:49321/",
+      startedAt: "2026-09-09T12:00:00.000Z",
+      expiresAt: "2026-09-09T12:05:00.000Z",
+      autoCapture: true,
+    }),
+    completeGoogleCalendarSignIn: async (input: unknown) => {
+      const flowId = (input as { flowId?: unknown }).flowId;
+      assert.equal(flowId, "google-flow-1");
+      return googleConnectedStatus();
+    },
+    cancelGoogleCalendarSignIn: async () => undefined,
+    disconnectGoogleCalendar: async () => { disconnectCalls += 1; return { provider: "GOOGLE_CALENDAR" as const, state: "DISCONNECTED" as const }; },
+  } as unknown as StorageRuntime);
+
+  const status = await invoke(handlers, CALENDAR_IPC_CHANNELS.getGoogleStatus, AUTHORIZED_EVENT);
+  assert.deepEqual(status, googleConnectedStatus());
+  assert.equal(JSON.stringify(status).includes("refreshToken"), false);
+  assert.equal(statusCalls, 1);
+
+  const opened: string[] = [];
+  const beginHarness = register({
+    getGoogleCalendarStatus: async () => googleConnectedStatus(),
+    beginGoogleCalendarSignIn: async () => ({
+      flowId: "google-flow-2",
+      provider: "GOOGLE_CALENDAR" as const,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&state=s2",
+      redirectUri: "http://localhost:49321/",
+      startedAt: "2026-09-09T12:00:00.000Z",
+      expiresAt: "2026-09-09T12:05:00.000Z",
+      autoCapture: true,
+    }),
+    completeGoogleCalendarSignIn: async () => googleConnectedStatus(),
+    cancelGoogleCalendarSignIn: async () => undefined,
+    disconnectGoogleCalendar: async () => ({ provider: "GOOGLE_CALENDAR" as const, state: "DISCONNECTED" as const }),
+  } as unknown as StorageRuntime, {
+    openExternal: async (url) => { opened.push(url); },
+  });
+  const beginResult = await invoke(beginHarness, CALENDAR_IPC_CHANNELS.beginGoogleSignIn, AUTHORIZED_EVENT);
+  assert.equal(opened.length, 1);
+  assert.ok((opened[0] ?? "").includes("accounts.google.com"));
+  assert.equal((beginResult as { flowId: string }).flowId, "google-flow-2");
+
+  const afterDisconnect = await invoke(beginHarness, CALENDAR_IPC_CHANNELS.disconnectGoogle, AUTHORIZED_EVENT);
+  assert.equal((afterDisconnect as CalendarConnectionStatus).state, "DISCONNECTED");
+  assert.equal(disconnectCalls, 0); // different mock above; this harness tracks its own
+
+  await assert.rejects(
+    async () => invoke(handlers, CALENDAR_IPC_CHANNELS.getGoogleStatus, UNAUTHORIZED_EVENT),
+    /unauthorized renderer/,
+  );
+});
+
+test("Google sync auto results stay renderer-safe and failures collapse to a fixed code", async () => {
+  const handlers = register({
+    syncGoogleCalendarAuto: async () => ({
+      provider: "GOOGLE_CALENDAR" as const,
+      mode: "DELTA" as const,
+      createdCount: 1,
+      updatedCount: 0,
+      unchangedCount: 0,
+      cancelledCount: 1,
+      deletedCount: 0,
+      movedOutCount: 0,
+      deltaCursorAdvanced: true,
+      errorCount: 0,
+      errors: [],
+      nextDeltaLink: "sync-token-SECRET",
+    }),
+  } as unknown as StorageRuntime);
+  const result = await invoke(handlers, CALENDAR_IPC_CHANNELS.syncGoogleCalendarAuto, AUTHORIZED_EVENT);
+  assert.deepEqual(result, {
+    provider: "GOOGLE_CALENDAR",
+    mode: "DELTA",
+    createdCount: 1,
+    updatedCount: 0,
+    unchangedCount: 0,
+    cancelledCount: 1,
+    deletedCount: 0,
+    movedOutCount: 0,
+    deltaCursorAdvanced: true,
+    errorCount: 0,
+    errors: [],
+  });
+  assert.equal(JSON.stringify(result).includes("SECRET"), false);
+
+  const failing = register({
+    syncGoogleCalendarAuto: async () => { throw new Error("calendar_v3 403 access_token=ya29.LEAK"); },
+  } as unknown as StorageRuntime);
+  const failed = await invoke(failing, CALENDAR_IPC_CHANNELS.syncGoogleCalendarAuto, AUTHORIZED_EVENT);
+  assert.equal((failed as { errorCount: number }).errorCount, 1);
+  assert.equal(JSON.stringify(failed).includes("ya29.LEAK"), false);
+  assert.equal(JSON.stringify(failed).includes("LEAK"), false);
+});
+
+test("Google OAuth config saving validates input and persists only trimmed strings", async () => {
+  const saved: GoogleOAuthSettingsInput[] = [];
+  const handlers = register(
+    { getGoogleCalendarStatus: async () => googleConnectedStatus() } as unknown as StorageRuntime,
+    {
+      saveGoogleOAuthApplicationConfig: async (input) => { saved.push(input); },
+    },
+  );
+  const status = await invoke(handlers, CALENDAR_IPC_CHANNELS.saveGoogleOAuthConfig, AUTHORIZED_EVENT, {
+    clientId: "  my-app.apps.googleusercontent.com ",
+    clientSecret: " GOCSPX-abc ",
+    redirectUri: "",
+  });
+  assert.equal(saved.length, 1);
+  assert.deepEqual(saved[0], { clientId: "my-app.apps.googleusercontent.com", clientSecret: "GOCSPX-abc", redirectUri: "" });
+  assert.equal((status as CalendarConnectionStatus).state, "CONNECTED");
+
+  const untouched = saved.length;
+  for (const invalid of [{ clientId: 42 }, { clientSecret: ["x"] }, { clientId: "x".repeat(600) }, null, "junk"]) {
+    await assert.rejects(
+      invoke(handlers, CALENDAR_IPC_CHANNELS.saveGoogleOAuthConfig, AUTHORIZED_EVENT, invalid),
+      /invalid/i,
+    );
+  }
+  assert.equal(saved.length, untouched);
 });
