@@ -1,6 +1,6 @@
 import type { CredentialStore } from "../../security/CredentialStore";
 
-export const MICROSOFT_GRAPH_SCOPES = ["Calendars.Read", "OnlineMeetings.Read"] as const;
+export const MICROSOFT_GRAPH_SCOPES = ["User.Read", "Calendars.Read", "offline_access"] as const;
 export const MICROSOFT_CREDENTIAL_SERVICE = "microsoft-graph";
 export const MICROSOFT_TOKEN_CACHE_ACCOUNT = "msal-token-cache";
 

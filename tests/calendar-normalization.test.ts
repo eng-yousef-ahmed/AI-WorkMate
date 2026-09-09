@@ -6,6 +6,7 @@ import {
   MicrosoftGraphCalendarProvider,
   MicrosoftGraphClient,
   MicrosoftGraphError,
+  MICROSOFT_GRAPH_SCOPES,
   detectMeetingPlatform,
   normalizeGraphCalendarEvent,
   type CalendarEventProvider,
@@ -32,6 +33,10 @@ class StaticCalendarProvider implements CalendarEventProvider {
   }
 }
 
+test("uses only user-delegated Microsoft calendar scopes", () => {
+  assert.deepEqual(MICROSOFT_GRAPH_SCOPES, ["User.Read", "Calendars.Read", "offline_access"]);
+  assert.equal(MICROSOFT_GRAPH_SCOPES.some((scope) => scope.includes(".All") || scope.startsWith("OnlineMeetings.")), false);
+});
 test("normalizes Microsoft Graph events without persisting raw Graph responses", () => {
   const graphEvent: GraphCalendarEvent = {
     id: "graph-event-1",
