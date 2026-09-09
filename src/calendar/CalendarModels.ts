@@ -68,6 +68,66 @@ export interface CalendarSyncResult {
   cancelledCount: number;
   errorCount: number;
   errors: CalendarSyncErrorInfo[];
+  /** FULL = windowed fetch; DELTA = incremental from the stored cursor. */
+  mode?: "FULL" | "DELTA";
+  /** Meetings cancelled because their calendar event was deleted. */
+  deletedCount?: number;
+  /** Events reported as moved outside the sync window (informational). */
+  movedOutCount?: number;
+  /** True when the incremental cursor was persisted for the next run. */
+  deltaCursorAdvanced?: boolean;
+  /** True when the stored delta cursor expired and a full sync is required. */
+  staleCursorDetected?: boolean;
+}
+
+/**
+ * Opaque provider-issued incremental-sync cursor plus the sync window it was
+ * created for. Persisted locally in SQLite (it is a capability token, never a
+ * credential). Deterministic upserts make re-delivery after a crash safe.
+ */
+export interface CalendarSyncStateRecord {
+  provider: CalendarProvider;
+  deltaCursor?: string;
+  syncWindowStart?: string;
+  syncWindowEnd?: string;
+  lastFullSyncAt?: string;
+  lastDeltaSyncAt?: string;
+  updatedAt: string;
+}
+
+export type CalendarEventDeletionReason = "deleted" | "changed";
+
+export interface CalendarEventDeletion {
+  provider: CalendarProvider;
+  externalEventId: string;
+  reason: CalendarEventDeletionReason;
+}
+
+export interface CalendarDeltaRequest {
+  /** Opaque cursor from the previous sync; absent for the first full fetch. */
+  deltaLink?: string;
+  /** Window required when no cursor is present yet. */
+  startTime?: string;
+  endTime?: string;
+  signal?: AbortSignal;
+}
+
+export interface CalendarDeltaResult {
+  /** Added/updated events (cancelled events arrive here with isCancelled). */
+  events: NormalizedCalendarEvent[];
+  /** Events hard-deleted or moved out of the window by the provider. */
+  deletions: CalendarEventDeletion[];
+  /** Opaque cursor for the next incremental sync ("" when not available). */
+  nextDeltaLink: string;
+}
+
+/** Optional capability: providers that support incremental (delta) sync. */
+export interface CalendarDeltaProvider {
+  getDelta(request: CalendarDeltaRequest): Promise<CalendarDeltaResult>;
+}
+
+export function isCalendarDeltaProvider(provider: CalendarEventProvider): provider is CalendarEventProvider & CalendarDeltaProvider {
+  return "getDelta" in provider && typeof provider.getDelta === "function";
 }
 
 export interface RendererCalendarSyncResult {

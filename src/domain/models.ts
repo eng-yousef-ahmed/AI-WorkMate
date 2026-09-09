@@ -1,7 +1,7 @@
 export const STORAGE_VERSION = 1;
-export const DATABASE_SCHEMA_VERSION = 7;
+export const DATABASE_SCHEMA_VERSION = 8;
 
-export type CalendarProvider = "MICROSOFT_GRAPH";
+export type CalendarProvider = "MICROSOFT_GRAPH" | "GOOGLE_CALENDAR";
 
 export type MeetingPlatform = "TEAMS" | "OTHER_ONLINE" | "NONE";
 

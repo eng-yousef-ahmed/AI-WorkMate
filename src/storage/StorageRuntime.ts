@@ -216,6 +216,11 @@ export class StorageRuntime {
     return report;
   }
 
+  /**
+   * Synchronizes Microsoft 365 calendar events over the requested window.
+   * Uses the incremental delta path when a stored cursor covers the window
+   * and self-heals stale cursors with a full re-sync.
+   */
   public async syncMicrosoftCalendar(range: CalendarSyncRange): Promise<CalendarSyncResult> {
     const provider = this.integrations.microsoftCalendarProvider;
     if (provider === undefined) {
@@ -223,7 +228,7 @@ export class StorageRuntime {
         "Microsoft 365 calendar synchronization is not configured. Connect a Microsoft OAuth/MSAL provider before syncing.",
       );
     }
-    return new CalendarSyncService(provider, this.requireStore(), "MICROSOFT_GRAPH").syncRange(range);
+    return new CalendarSyncService(provider, this.requireStore(), "MICROSOFT_GRAPH").syncCalendar(range);
   }
 
   public async setAiProcessingPolicy(policy: AIProcessingPolicy): Promise<void> {

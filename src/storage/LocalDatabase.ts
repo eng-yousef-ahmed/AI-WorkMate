@@ -20,6 +20,7 @@ import {
   type RecordingMetadata,
   type RecordingVariant,
 } from "../domain/models";
+import type { CalendarSyncStateRecord } from "../calendar/CalendarModels";
 import { DuplicateMeetingError, StorageError, InvalidMeetingTransitionError } from "./errors";
 
 export interface DuplicateMeetingKeys {
@@ -152,7 +153,7 @@ CREATE INDEX IF NOT EXISTS meetings_date_index ON meetings(meeting_date);
 CREATE INDEX IF NOT EXISTS meetings_status_index ON meetings(status);
 
 CREATE TABLE IF NOT EXISTS calendar_event_associations (
-  provider TEXT NOT NULL CHECK (provider IN ('MICROSOFT_GRAPH')),
+  provider TEXT NOT NULL CHECK (provider IN ('MICROSOFT_GRAPH', 'GOOGLE_CALENDAR')),
   external_event_id TEXT NOT NULL,
   meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id) ON DELETE CASCADE,
   subject TEXT NOT NULL,
@@ -177,6 +178,17 @@ CREATE INDEX IF NOT EXISTS calendar_event_associations_start_index
   ON calendar_event_associations(start_time);
 CREATE INDEX IF NOT EXISTS calendar_event_associations_platform_index
   ON calendar_event_associations(meeting_platform);
+
+CREATE TABLE IF NOT EXISTS calendar_sync_state (
+  provider TEXT PRIMARY KEY CHECK (provider IN ('MICROSOFT_GRAPH', 'GOOGLE_CALENDAR')),
+  delta_cursor TEXT,
+  window_start TEXT,
+  window_end TEXT,
+  last_full_sync_at TEXT,
+  last_delta_sync_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS participants (
   participant_id TEXT PRIMARY KEY,
@@ -510,7 +522,7 @@ export class LocalDatabase {
     const existing = this.getCalendarEventAssociation(association.provider, association.externalEventId);
     if (existing !== undefined && existing.meetingId !== association.meetingId) {
       throw new DuplicateMeetingError(
-        `Microsoft Graph event ${association.externalEventId} is already associated with meeting ${existing.meetingId}.`,
+        `Calendar event ${association.externalEventId} is already associated with meeting ${existing.meetingId}.`,
         existing.meetingId,
       );
     }
@@ -566,6 +578,65 @@ export class LocalDatabase {
         $updatedAt: association.updatedAt,
       });
     return existing === undefined ? "CREATED" : "UPDATED";
+  }
+
+  /** Marks a stored association as cancelled (used by delta deletions). */
+  public markCalendarEventAssociationCancelled(provider: CalendarProvider, externalEventId: string): boolean {
+    this.ensureOpen();
+    const result = this.database
+      .prepare(
+        `UPDATE calendar_event_associations SET is_cancelled = 1, updated_at = $updatedAt
+         WHERE provider = $provider AND external_event_id = $externalEventId`,
+      )
+      .run({ $provider: provider, $externalEventId: externalEventId, $updatedAt: this.clock().toISOString() });
+    return result.changes > 0;
+  }
+
+  public getCalendarSyncState(provider: CalendarProvider): CalendarSyncStateRecord | undefined {
+    this.ensureOpen();
+    const row = this.database
+      .prepare("SELECT * FROM calendar_sync_state WHERE provider = $provider")
+      .get({ $provider: provider }) as SqlRow | undefined;
+    return row === undefined ? undefined : mapCalendarSyncState(row);
+  }
+
+  public saveCalendarSyncState(state: CalendarSyncStateRecord): "CREATED" | "UPDATED" {
+    this.ensureOpen();
+    const existing = this.getCalendarSyncState(state.provider);
+    const now = this.clock().toISOString();
+    this.database
+      .prepare(
+        `INSERT INTO calendar_sync_state (
+          provider, delta_cursor, window_start, window_end, last_full_sync_at,
+          last_delta_sync_at, created_at, updated_at
+        ) VALUES (
+          $provider, $deltaCursor, $windowStart, $windowEnd, $lastFullSyncAt,
+          $lastDeltaSyncAt, $createdAt, $updatedAt
+        )
+        ON CONFLICT(provider) DO UPDATE SET
+          delta_cursor = excluded.delta_cursor,
+          window_start = excluded.window_start,
+          window_end = excluded.window_end,
+          last_full_sync_at = excluded.last_full_sync_at,
+          last_delta_sync_at = excluded.last_delta_sync_at,
+          updated_at = excluded.updated_at`,
+      )
+      .run({
+        $provider: state.provider,
+        $deltaCursor: state.deltaCursor ?? null,
+        $windowStart: state.syncWindowStart ?? null,
+        $windowEnd: state.syncWindowEnd ?? null,
+        $lastFullSyncAt: state.lastFullSyncAt ?? null,
+        $lastDeltaSyncAt: state.lastDeltaSyncAt ?? null,
+        $createdAt: existing?.updatedAt ?? now,
+        $updatedAt: now,
+      });
+    return existing === undefined ? "CREATED" : "UPDATED";
+  }
+
+  public clearCalendarSyncState(provider: CalendarProvider): void {
+    this.ensureOpen();
+    this.database.prepare("DELETE FROM calendar_sync_state WHERE provider = $provider").run({ $provider: provider });
   }
 
   public updateMeetingStatus(meetingId: string, status: MeetingStatus, endedAt?: string): void {
@@ -1214,10 +1285,59 @@ export class LocalDatabase {
       if (currentVersion > 0 && currentVersion < 5) {
         this.applyRecordingMetadataMigration();
       }
+      if (currentVersion > 0 && currentVersion < 8) {
+        this.applyCalendarProviderMigration();
+      }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
         .run({ $version: DATABASE_SCHEMA_VERSION, $appliedAt: this.clock().toISOString() });
     }
+  }
+
+  /**
+   * Schema v8: widens calendar_event_associations.provider to accept
+   * GOOGLE_CALENDAR and adds the calendar_sync_state cursor table. SQLite
+   * cannot alter a CHECK constraint, so the association table is rebuilt
+   * inside one transaction; indexes are recreated for the new table.
+   */
+  private applyCalendarProviderMigration(): void {
+    const currentDdl = this.readTableDdl("calendar_event_associations");
+    if (currentDdl === undefined) {
+      return; // fresh database: SCHEMA_SQL already created the v8 shape
+    }
+    if (currentDdl.includes("GOOGLE_CALENDAR")) {
+      return; // already widened (interrupted migration completed by rerun)
+    }
+    const targetDdl = SCHEMA_SQL.match(/CREATE TABLE IF NOT EXISTS calendar_event_associations \([^]*?\);/)?.[0];
+    if (targetDdl === undefined) {
+      throw new StorageError("The calendar_event_associations schema definition is missing.");
+    }
+    const createTable = targetDdl.replace(
+      "CREATE TABLE IF NOT EXISTS calendar_event_associations",
+      "CREATE TABLE calendar_event_associations",
+    );
+    const recreateIndexes =
+      "CREATE INDEX IF NOT EXISTS calendar_event_associations_meeting_index ON calendar_event_associations(meeting_id);" +
+      "CREATE INDEX IF NOT EXISTS calendar_event_associations_start_index ON calendar_event_associations(start_time);" +
+      "CREATE INDEX IF NOT EXISTS calendar_event_associations_platform_index ON calendar_event_associations(meeting_platform);";
+    this.database.exec(
+      "PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;" +
+      "ALTER TABLE calendar_event_associations RENAME TO calendar_event_associations_legacy;" +
+      `${createTable};` +
+      "INSERT INTO calendar_event_associations SELECT * FROM calendar_event_associations_legacy;" +
+      "DROP TABLE calendar_event_associations_legacy;" +
+      // Index names are only free after the legacy table (which inherited the
+      // old indexes on rename) is dropped.
+      `${recreateIndexes}` +
+      "COMMIT; PRAGMA foreign_keys = ON;",
+    );
+  }
+
+  private readTableDdl(tableName: string): string | undefined {
+    const row = this.database
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $name")
+      .get({ $name: tableName }) as SqlRow | undefined;
+    return optionalString(row?.sql);
   }
 
   private applyRecordingMetadataMigration(): void {
@@ -1282,6 +1402,19 @@ function mapRecording(row: SqlRow): RecordingRecord {
   addOptional(record, "captureSource", optionalString(row.capture_source));
   addOptional(record, "finalStatus", optionalString(row.final_status) as RecordingFinalStatus | undefined);
   return record;
+}
+
+function mapCalendarSyncState(row: SqlRow): CalendarSyncStateRecord {
+  const state: CalendarSyncStateRecord = {
+    provider: stringValue(row.provider) as CalendarProvider,
+    updatedAt: stringValue(row.updated_at),
+  };
+  addOptional(state, "deltaCursor", optionalString(row.delta_cursor));
+  addOptional(state, "syncWindowStart", optionalString(row.window_start));
+  addOptional(state, "syncWindowEnd", optionalString(row.window_end));
+  addOptional(state, "lastFullSyncAt", optionalString(row.last_full_sync_at));
+  addOptional(state, "lastDeltaSyncAt", optionalString(row.last_delta_sync_at));
+  return state;
 }
 
 function mapCalendarEventAssociation(row: SqlRow): CalendarEventAssociation {

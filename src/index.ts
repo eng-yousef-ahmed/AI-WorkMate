@@ -38,6 +38,7 @@ export * from "./integrations/microsoft/MicrosoftGraphAuthenticator";
 export * from "./integrations/microsoft/MicrosoftCalendarConnection";
 export * from "./integrations/microsoft/MicrosoftGraphClient";
 export * from "./integrations/microsoft/MicrosoftGraphCalendarProvider";
+export * from "./integrations/microsoft/MicrosoftGraphDeltaProvider";
 export * from "./capture/CaptureEngine";
 export * from "./capture/LocalRecordingCaptureEngine";
 export * from "./capture/MeetingCaptureOrchestrator";

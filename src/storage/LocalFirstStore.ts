@@ -16,7 +16,22 @@ import type {
   TranscriptDocument,
 } from "../domain/models";
 import { STORAGE_VERSION, type TranscriptSegment } from "../domain/models";
-import type { CalendarMeetingUpsertResult, NormalizedCalendarEvent } from "../calendar/CalendarModels";
+import type {
+  CalendarEventDeletion,
+  CalendarMeetingUpsertResult,
+  CalendarSyncStateRecord,
+  NormalizedCalendarEvent,
+} from "../calendar/CalendarModels";
+import type { CalendarProvider } from "../domain/models";
+
+/** Partial updates merged onto the stored per-provider calendar sync state. */
+export interface CalendarSyncStatePatch {
+  deltaCursor?: string | null;
+  syncWindowStart?: string;
+  syncWindowEnd?: string;
+  lastFullSyncAt?: string;
+  lastDeltaSyncAt?: string;
+}
 import type { AIProvider } from "../ai/AIProvider";
 import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
 import { BackupService } from "./BackupService";
@@ -277,7 +292,7 @@ export class LocalFirstStore {
     event: NormalizedCalendarEvent & { meetingPlatform: MeetingPlatform; normalizedFingerprint: string },
   ): Promise<CalendarMeetingUpsertResult> {
     const database = this.requireDatabase();
-    if (event.provider !== "MICROSOFT_GRAPH") {
+    if (event.provider !== "MICROSOFT_GRAPH" && event.provider !== "GOOGLE_CALENDAR") {
       throw new StorageError(`Unsupported calendar provider: ${event.provider}`);
     }
     let existingAssociation = database.getCalendarEventAssociation(event.provider, event.externalEventId);
@@ -377,6 +392,78 @@ export class LocalFirstStore {
       return { action: "UPDATED", meetingId: meeting.meetingId, association: persistedAssociation };
     }
     return { action: "UNCHANGED", meetingId: meeting.meetingId, association: persistedAssociation };
+  }
+
+  /** Current application time as ISO (shared clock). */
+  public nowIso(): string {
+    return this.clock().toISOString();
+  }
+
+  public getCalendarSyncState(provider: CalendarProvider): CalendarSyncStateRecord | undefined {
+    return this.requireDatabase().getCalendarSyncState(provider);
+  }
+
+  public saveCalendarSyncState(provider: CalendarProvider, patch: CalendarSyncStatePatch): CalendarSyncStateRecord {
+    const database = this.requireDatabase();
+    const existing = database.getCalendarSyncState(provider);
+    const state: CalendarSyncStateRecord = {
+      provider,
+      updatedAt: this.clock().toISOString(),
+      ...(existing?.deltaCursor !== undefined ? { deltaCursor: existing.deltaCursor } : {}),
+      ...(existing?.syncWindowStart !== undefined ? { syncWindowStart: existing.syncWindowStart } : {}),
+      ...(existing?.syncWindowEnd !== undefined ? { syncWindowEnd: existing.syncWindowEnd } : {}),
+      ...(existing?.lastFullSyncAt !== undefined ? { lastFullSyncAt: existing.lastFullSyncAt } : {}),
+      ...(existing?.lastDeltaSyncAt !== undefined ? { lastDeltaSyncAt: existing.lastDeltaSyncAt } : {}),
+    };
+    if (patch.deltaCursor !== undefined) state.deltaCursor = patch.deltaCursor === null ? undefined : patch.deltaCursor;
+    if (patch.syncWindowStart !== undefined) state.syncWindowStart = patch.syncWindowStart;
+    if (patch.syncWindowEnd !== undefined) state.syncWindowEnd = patch.syncWindowEnd;
+    if (patch.lastFullSyncAt !== undefined) state.lastFullSyncAt = patch.lastFullSyncAt;
+    if (patch.lastDeltaSyncAt !== undefined) state.lastDeltaSyncAt = patch.lastDeltaSyncAt;
+    database.saveCalendarSyncState(state);
+    return state;
+  }
+
+  public clearCalendarSyncState(provider: CalendarProvider): void {
+    this.requireDatabase().clearCalendarSyncState(provider);
+  }
+
+  /**
+   * Applies a provider-reported event deletion. Hard deletions cancel
+   * still-scheduled local meetings (audited); anything already recorded stays
+   * as history. Returns what changed so sync results can count it.
+   */
+  public async applyCalendarEventDeletion(
+    deletion: CalendarEventDeletion,
+  ): Promise<{ cancelled: boolean; existed: boolean }> {
+    const database = this.requireDatabase();
+    const association = database.getCalendarEventAssociation(deletion.provider, deletion.externalEventId);
+    if (association === undefined) {
+      return { cancelled: false, existed: false };
+    }
+    const meeting = database.getMeeting(association.meetingId);
+    if (meeting === undefined) {
+      return { cancelled: false, existed: false };
+    }
+    if (deletion.reason === "changed") {
+      // The event moved out of the sync window; it may come back. Local
+      // meetings are intentionally left untouched.
+      return { cancelled: false, existed: true };
+    }
+    let cancelled = false;
+    database.transaction(() => {
+      if (meeting.status === "SCHEDULED") {
+        database.updateMeetingStatus(meeting.meetingId, "CANCELLED");
+        cancelled = true;
+      }
+      database.markCalendarEventAssociationCancelled(deletion.provider, deletion.externalEventId);
+      database.appendAudit(this.audit("CALENDAR_EVENT_DELETED", meeting.meetingId, {
+        provider: deletion.provider,
+        externalEventId: deletion.externalEventId,
+        cancelled,
+      }));
+    });
+    return { cancelled, existed: true };
   }
 
   public async createMeeting(input: NewMeetingInput): Promise<Meeting> {
