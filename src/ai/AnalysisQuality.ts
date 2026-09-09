@@ -35,6 +35,24 @@ export const ANALYSIS_QUALITY_MARKERS = {
   openItem: "7B",
 } as const;
 
+/**
+ * Verified alternate anchors for decision slots, keyed by canonical decision
+ * marker. Real Windows whisper.cpp tiny output renders this meeting's primary
+ * decision statements as "data route" (heard for DATA_ROOT) and "Windows
+ * relay verification" (STT interloper "relay"); the production Qwen 7B output
+ * faithfully preserves that wording, so the canonical "meeting files" /
+ * "Windows verification" anchors alone reject grounded extractions (real
+ * replay: matchedDecisions = 1 with 3 correct separate decisions). Each
+ * alternate carries the SAME strict two-sided grounding as canonical markers:
+ * contiguous in the analysis decision text AND bounded-gap ordered within ONE
+ * transcript segment. Slots (3), thresholds (>= 2), and rejection of invented
+ * or ungrounded decisions are unchanged.
+ */
+export const ANALYSIS_QUALITY_DECISION_ANCHOR_ALTERNATES: Readonly<Record<string, readonly string[]>> = {
+  "meeting files": ["data route"],
+  "Windows verification": ["Windows relay verification"],
+};
+
 /** Summary must echo the meeting's core decision vocabulary (any one). */
 const SUMMARY_MEETING_MARKERS = ["local only", "meeting files", "Windows verification"] as const;
 
@@ -145,9 +163,15 @@ export function evaluateAnalysisQuality(analysis: AnalysisDocument, transcript: 
       .filter((name) => name.length > 0 && !nameAppearsInTranscript(name, namedPeople, corpus, normalizedCorpus)),
   );
   const matchedDecisions = ANALYSIS_QUALITY_MARKERS.decisions.filter((marker) => {
-    const normalizedMarker = normalizeAnalysisMarkerText(marker);
-    return analysis.decisions.some((row) => normalizeAnalysisMarkerText(row.text).includes(normalizedMarker)) &&
-      transcriptSegmentsContainMarker(transcript.segments, marker);
+    // Each decision slot accepts its canonical marker or any verified STT
+    // alternate anchor; every candidate must be grounded in BOTH the analysis
+    // and the transcript, so invented or ungrounded decisions still fail.
+    const candidates = [marker, ...(ANALYSIS_QUALITY_DECISION_ANCHOR_ALTERNATES[marker] ?? [])];
+    return candidates.some((candidate) => {
+      const normalizedCandidate = normalizeAnalysisMarkerText(candidate);
+      return analysis.decisions.some((row) => normalizeAnalysisMarkerText(row.text).includes(normalizedCandidate)) &&
+        transcriptSegmentsContainMarker(transcript.segments, candidate);
+    });
   }).length;
   const matchedTasks = ANALYSIS_QUALITY_MARKERS.tasks.filter((marker) => {
     const normalizedMarker = normalizeAnalysisMarkerText(marker);

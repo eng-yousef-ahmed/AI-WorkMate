@@ -21,12 +21,13 @@ const PROVIDER_ID = "local-llama-cpp";
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_TIMEOUT_MS = 900_000;
 /**
- * Quality-valid minified AnalysisDocument is ~1056 bytes (~333 Qwen tokens at
- * the Windows 3.18 bytes/token rate). Pretty JSON is ~1339 bytes (~422 tokens).
- * 480 is ~44% over minified and ~14% over pretty. The 1528-byte truncated 7B
- * run was unbounded string fields, not a missing schema member.
+ * Real Windows replay evidence (production Qwen2.5-7B-Instruct Q4_K_M,
+ * constrained JSON schema): `-n 480` truncated real output into invalid JSON,
+ * while `-n 960` and `-n 1024` both produced complete valid JSON (3 separate
+ * decisions + 3 tasks). 1024 is the replay-proven value with headroom over
+ * 960, still bounded inside the 2048 context window alongside the prompt.
  */
-export const LOCAL_LLM_MAX_PREDICT_TOKENS = 480;
+export const LOCAL_LLM_MAX_PREDICT_TOKENS = 1024;
 const CONTEXT_TOKENS = 2048;
 const CPU_BATCH_SIZE = 256;
 const MAX_CPU_THREADS = 8;
