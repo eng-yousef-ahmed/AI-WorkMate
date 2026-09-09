@@ -4,6 +4,12 @@ import type {
   StorageSnapshot,
 } from "../domain/models";
 import type { RendererCalendarSyncResult } from "../calendar/CalendarModels";
+import type {
+  BeginCalendarSignInResult,
+  CalendarConnectionStatus,
+  CompleteCalendarSignInInput,
+} from "../calendar/CalendarConnection";
+
 export interface LocationChangeResult {
   migrated: boolean;
   verified?: boolean;
@@ -25,6 +31,23 @@ export const STORAGE_IPC_CHANNELS = {
   setAiProcessingPolicy: "storage:set-ai-processing-policy",
   syncMicrosoftCalendar: "calendar:sync-microsoft",
 } as const;
+
+export const CALENDAR_IPC_CHANNELS = {
+  getMicrosoftStatus: "calendar:microsoft-status",
+  beginMicrosoftSignIn: "calendar:microsoft-begin-sign-in",
+  completeMicrosoftSignIn: "calendar:microsoft-complete-sign-in",
+  cancelMicrosoftSignIn: "calendar:microsoft-cancel-sign-in",
+  disconnectMicrosoft: "calendar:microsoft-disconnect",
+  syncMicrosoftCalendarAuto: "calendar:sync-microsoft-auto",
+  saveMicrosoftOAuthConfig: "calendar:microsoft-save-oauth-config",
+} as const;
+
+/** Renderer-sendable Microsoft OAuth application settings (no secrets). */
+export interface MicrosoftOAuthSettingsInput {
+  clientId?: string;
+  tenant?: string;
+  redirectUri?: string;
+}
 
 export interface LocationChangePreview {
   canceled: boolean;
@@ -57,4 +80,28 @@ export interface StorageRendererAPI {
   syncMicrosoftCalendar(request: MicrosoftCalendarSyncRequest): Promise<RendererCalendarSyncResult>;
 }
 
-export type { AIProcessingPolicy, IntegrityReport, RendererCalendarSyncResult, StorageSnapshot };
+/**
+ * Calendar connection surface. Every payload is sanitized in the main
+ * process: no tokens, verifiers, state values, cursor URLs, or provider
+ * error bodies cross this boundary.
+ */
+export interface CalendarRendererAPI {
+  getMicrosoftStatus(): Promise<CalendarConnectionStatus | undefined>;
+  beginMicrosoftSignIn(): Promise<BeginCalendarSignInResult>;
+  completeMicrosoftSignIn(input: CompleteCalendarSignInInput): Promise<CalendarConnectionStatus>;
+  cancelMicrosoftSignIn(): Promise<void>;
+  disconnectMicrosoft(): Promise<CalendarConnectionStatus>;
+  syncMicrosoftCalendarAuto(): Promise<RendererCalendarSyncResult>;
+  syncMicrosoftCalendar(request: MicrosoftCalendarSyncRequest): Promise<RendererCalendarSyncResult>;
+  saveMicrosoftOAuthConfig(input: MicrosoftOAuthSettingsInput): Promise<CalendarConnectionStatus>;
+}
+
+export type {
+  AIProcessingPolicy,
+  BeginCalendarSignInResult,
+  CalendarConnectionStatus,
+  CompleteCalendarSignInInput,
+  IntegrityReport,
+  RendererCalendarSyncResult,
+  StorageSnapshot,
+};

@@ -94,3 +94,38 @@ select:focus { border-color: rgba(139,123,255,.6); }.helper { margin-top: 10px; 
 .privacy-footnote { display: flex; align-items: center; gap: 8px; margin-top: 30px; padding-top: 19px; border-top: 1px solid var(--line); color: #5f6b7e; font-size: 10px; }.privacy-footnote strong { color: #8692a5; font-weight: 600; }.privacy-footnote span:last-child { margin-left: 7px; }
 @media (max-width: 900px) { .sidebar { width: 190px; flex-basis: 190px; }.content { padding: 35px 27px; }.stat-grid { grid-template-columns: 1fr 1fr; }.stat-total { grid-column: span 2; } }
 @media (max-width: 680px) { .sidebar { display: none; }.content { padding: 28px 18px; }.hero-card, .section-heading { align-items: flex-start; flex-direction: column; }.hero-pill { align-self: flex-start; }.lower-grid { grid-template-columns: 1fr; } }
+/* Microsoft 365 calendar integration */
+input[type="text"] { width: 100%; padding: 10px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; outline: none; color: #c8d0dc; background: #202631; font-size: 11px; }
+input[type="text"]:focus { border-color: rgba(139,123,255,.6); }
+.button:disabled { opacity: .45; cursor: default; transform: none; }
+.calendar-card { padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.calendar-main { display: flex; align-items: center; gap: 16px; }
+.calendar-identity { display: flex; gap: 13px; align-items: center; flex: 1; min-width: 0; }
+.calendar-provider-mark { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; color: #fff; font-size: 17px; font-weight: 800; background: linear-gradient(145deg, #2b8cf0, #0b5cab); box-shadow: 0 5px 16px rgba(43,140,240,.28); }
+.calendar-identity-copy { min-width: 0; }
+.calendar-identity-copy strong { display: block; margin-top: 4px; color: #e1e6ef; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calendar-identity-copy small { display: block; margin-top: 3px; color: #667286; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calendar-badge { padding: 6px 10px; border: 1px solid var(--line); border-radius: 15px; color: #9aa5b6; background: rgba(255,255,255,.03); font-size: 9px; font-weight: 750; letter-spacing: .11em; white-space: nowrap; }
+.calendar-badge.ok { color: #9ce2bd; border-color: rgba(103,214,160,.28); background: rgba(103,214,160,.08); }
+.calendar-badge.warn { color: #f0c08a; border-color: rgba(232,170,105,.32); background: rgba(232,170,105,.09); }
+.calendar-actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+.button.danger-text { color: #f0a5a5; border-color: rgba(232,134,134,.32); background: rgba(232,134,134,.05); }
+.calendar-line { margin-top: 13px; padding: 9px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 7px; background: rgba(255,255,255,.03); color: #a9b4c5; font-size: 11px; line-height: 1.55; word-break: break-word; }
+.calendar-line.error-line { border-color: rgba(232,134,134,.25); color: #f0aaaa; background: rgba(232,134,134,.06); }
+.calendar-manual { margin-top: 12px; padding: 12px 13px; border: 1px dashed rgba(139,123,255,.32); border-radius: 8px; background: rgba(139,123,255,.05); }
+.calendar-manual p { color: #93a0b3; font-size: 11px; line-height: 1.55; }
+.manual-row { display: flex; gap: 9px; margin-top: 10px; }
+.calendar-config { margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--line); }
+.calendar-config summary { cursor: pointer; color: #9aa7ba; font-size: 11px; font-weight: 600; user-select: none; }
+.calendar-config .helper { margin-top: 11px; max-width: 780px; }
+code { padding: 1px 5px; border-radius: 4px; color: #c9b2ff; background: rgba(139,123,255,.1); font-size: 10px; }
+.helper-inline { color: #6d7890; font-weight: 500; }
+.config-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 14px; }
+.field-label { display: block; color: #6e7890; font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+.field-label input { margin-top: 6px; letter-spacing: .02em; }
+.config-actions { display: flex; gap: 13px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .config-grid { grid-template-columns: 1fr; }
+  .calendar-main { flex-direction: column; align-items: flex-start; }
+  .calendar-actions { justify-content: flex-start; }
+}

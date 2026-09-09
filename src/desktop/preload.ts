@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
-import { STORAGE_IPC_CHANNELS, type StorageRendererAPI } from "./storage-api";
+import { CALENDAR_IPC_CHANNELS, STORAGE_IPC_CHANNELS, type CalendarRendererAPI, type StorageRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {
   getSnapshot: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getSnapshot),
@@ -20,4 +20,15 @@ const storageApi: StorageRendererAPI = {
   syncMicrosoftCalendar: (request) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar, request),
 };
 
-contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi });
+const calendarApi: CalendarRendererAPI = {
+  getMicrosoftStatus: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.getMicrosoftStatus),
+  beginMicrosoftSignIn: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.beginMicrosoftSignIn),
+  completeMicrosoftSignIn: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.completeMicrosoftSignIn, input),
+  cancelMicrosoftSignIn: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.cancelMicrosoftSignIn),
+  disconnectMicrosoft: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.disconnectMicrosoft),
+  syncMicrosoftCalendarAuto: () => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.syncMicrosoftCalendarAuto),
+  syncMicrosoftCalendar: (request) => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.syncMicrosoftCalendar, request),
+  saveMicrosoftOAuthConfig: (input) => ipcRenderer.invoke(CALENDAR_IPC_CHANNELS.saveMicrosoftOAuthConfig, input),
+};
+
+contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi });

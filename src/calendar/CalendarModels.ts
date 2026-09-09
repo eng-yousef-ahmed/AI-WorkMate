@@ -138,6 +138,11 @@ export interface RendererCalendarSyncResult {
   cancelledCount: number;
   errorCount: number;
   errors: Array<{ code: string; retryable: boolean; status?: number }>;
+  mode?: "FULL" | "DELTA";
+  deletedCount?: number;
+  movedOutCount?: number;
+  deltaCursorAdvanced?: boolean;
+  staleCursorDetected?: boolean;
 }
 
 export type CalendarMeetingUpsertAction = "CREATED" | "UPDATED" | "UNCHANGED" | "CANCELLED_SKIPPED";
@@ -181,7 +186,7 @@ export function createCalendarEventFingerprint(event: NormalizedCalendarEvent): 
 }
 
 export function toRendererCalendarSyncResult(result: CalendarSyncResult): RendererCalendarSyncResult {
-  return {
+  const safe: RendererCalendarSyncResult = {
     provider: result.provider,
     createdCount: result.createdCount,
     updatedCount: result.updatedCount,
@@ -189,16 +194,23 @@ export function toRendererCalendarSyncResult(result: CalendarSyncResult): Render
     cancelledCount: result.cancelledCount,
     errorCount: result.errorCount,
     errors: result.errors.map((error) => {
-      const safe: { code: string; retryable: boolean; status?: number } = {
+      const safeError: { code: string; retryable: boolean; status?: number } = {
         code: error.code,
         retryable: error.retryable,
       };
       if (error.status !== undefined) {
-        safe.status = error.status;
+        safeError.status = error.status;
       }
-      return safe;
+      return safeError;
     }),
   };
+  // Renderer-safe scalars only: never cursors, tokens, or URLs.
+  if (result.mode !== undefined) safe.mode = result.mode;
+  if (result.deletedCount !== undefined) safe.deletedCount = result.deletedCount;
+  if (result.movedOutCount !== undefined) safe.movedOutCount = result.movedOutCount;
+  if (result.deltaCursorAdvanced !== undefined) safe.deltaCursorAdvanced = result.deltaCursorAdvanced;
+  if (result.staleCursorDetected !== undefined) safe.staleCursorDetected = result.staleCursorDetected;
+  return safe;
 }
 
 export function assertNotAborted(signal: AbortSignal | undefined): void {

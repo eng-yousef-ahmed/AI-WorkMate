@@ -167,7 +167,7 @@ export function registerStorageIpc({
   });
 }
 
-function secureHandler(
+export function secureHandler(
   listener: (...args: unknown[]) => unknown,
   getAuthorizedWebContentsId: () => number | undefined,
   getAuthorizedRendererUrl: () => string,
@@ -178,7 +178,7 @@ function secureHandler(
   };
 }
 
-function assertAuthorizedSender(event: unknown, authorizedWebContentsId: number | undefined, authorizedRendererUrl: string): void {
+export function assertAuthorizedSender(event: unknown, authorizedWebContentsId: number | undefined, authorizedRendererUrl: string): void {
   if (
     authorizedWebContentsId === undefined ||
     typeof event !== "object" ||

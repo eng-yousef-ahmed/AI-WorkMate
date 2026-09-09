@@ -2,30 +2,38 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electro
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { MicrosoftAuthenticationRequiredProvider } from "../integrations/microsoft/MicrosoftAuth";
-import { MicrosoftGraphCalendarProvider } from "../integrations/microsoft/MicrosoftGraphCalendarProvider";
-import { MicrosoftGraphClient } from "../integrations/microsoft/MicrosoftGraphClient";
+import { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
+import {
+  loadMicrosoftOAuthConfig,
+  normalizeMicrosoftOAuthConfig,
+  saveMicrosoftOAuthConfig,
+  type MicrosoftOAuthApplicationConfig,
+} from "../integrations/microsoft/MicrosoftOAuthConfig";
 import { ElectronSafeStorageCredentialStore } from "../security/CredentialStore";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
+import { registerCalendarIpc, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
 
 let runtime: StorageRuntime | undefined;
+let userDataPath = "";
+let oauthConfigPath = "";
+let microsoftCredentialStore: ElectronSafeStorageCredentialStore | undefined;
 let mainWindow: BrowserWindow | undefined;
 let ipcRegistered = false;
 
 async function bootstrap(): Promise<void> {
   if (runtime === undefined) {
-    const userDataPath = app.getPath("userData");
+    userDataPath = app.getPath("userData");
     const config = new StorageConfigService(join(userDataPath, "storage-config.json"));
-    const credentialStore = new ElectronSafeStorageCredentialStore(safeStorage, join(userDataPath, "credential-vault.json"));
-    const microsoftCalendarProvider = new MicrosoftGraphCalendarProvider(
-      new MicrosoftGraphClient(new MicrosoftAuthenticationRequiredProvider()),
-    );
-    runtime = new StorageRuntime(config, () => new Date(), credentialStore, {
+    microsoftCredentialStore = new ElectronSafeStorageCredentialStore(safeStorage, join(userDataPath, "credential-vault.json"));
+    oauthConfigPath = join(userDataPath, "microsoft-oauth.json");
+    runtime = new StorageRuntime(config, () => new Date(), microsoftCredentialStore, {
       installationDirectory: dirname(app.getPath("exe")),
-    }, { microsoftCalendarProvider });
+    }, {
+      microsoftCalendarConnection: await createMicrosoftCalendarConnection(),
+    });
   }
   const configured = await runtime.initialize();
   if (!configured) {
@@ -70,9 +78,66 @@ async function bootstrap(): Promise<void> {
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
       getAuthorizedRendererUrl: () => rendererUrl,
     });
+    registerCalendarIpc({
+      ipcMain: ipcMain as unknown as IpcMainLike,
+      runtime,
+      getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
+      getAuthorizedRendererUrl: () => rendererUrl,
+      openExternal: async (url: string) => {
+        await shell.openExternal(url);
+      },
+      saveOAuthApplicationConfig: async (input: MicrosoftOAuthConfigInput) => {
+        await saveOAuthConfig(input);
+      },
+    });
     ipcRegistered = true;
   }
   await mainWindow.loadFile(rendererPath);
+}
+
+/**
+ * Creates the Microsoft 365 connection manager. The application (client) ID
+ * comes from the user-editable `microsoft-oauth.json` under userData (outside
+ * DATA_ROOT); `AI_WORKMATE_MICROSOFT_CLIENT_ID` fills it in only when the file
+ * has none (e.g. first-run development). The file is the source of truth.
+ */
+async function createMicrosoftCalendarConnection(): Promise<MicrosoftCalendarConnection> {
+  if (microsoftCredentialStore === undefined) {
+    throw new Error("bootstrap order: credential store must exist before the calendar connection.");
+  }
+  const config = await loadOAuthConfig(oauthConfigPath);
+  return new MicrosoftCalendarConnection({ config, credentialStore: microsoftCredentialStore });
+}
+
+async function loadOAuthConfig(configPath: string): Promise<MicrosoftOAuthApplicationConfig> {
+  let config: MicrosoftOAuthApplicationConfig;
+  try {
+    config = await loadMicrosoftOAuthConfig(configPath);
+  } catch (error: unknown) {
+    // A corrupt config file must not prevent the app from starting; it is
+    // reported as NOT_CONFIGURED and can be corrected from Settings.
+    console.error("AI WorkMate could not read the Microsoft OAuth config", error);
+    config = {};
+  }
+  const environmentClientId = process.env.AI_WORKMATE_MICROSOFT_CLIENT_ID?.trim();
+  if (config.clientId === undefined && environmentClientId !== undefined && environmentClientId.length > 0) {
+    config.clientId = environmentClientId;
+  }
+  return normalizeMicrosoftOAuthConfig(config);
+}
+
+/** Validates and persists the OAuth settings, then swaps the live connection. */
+async function saveOAuthConfig(input: MicrosoftOAuthConfigInput): Promise<void> {
+  const current = await loadMicrosoftOAuthConfig(oauthConfigPath);
+  const next: MicrosoftOAuthApplicationConfig = { ...current };
+  if (input.clientId !== undefined) next.clientId = input.clientId;
+  if (input.tenant !== undefined) next.tenant = input.tenant;
+  if (input.redirectUri !== undefined) next.redirectUri = input.redirectUri;
+  const normalized = normalizeMicrosoftOAuthConfig(next); // throws on invalid values
+  await saveMicrosoftOAuthConfig(oauthConfigPath, normalized);
+  if (runtime !== undefined) {
+    await runtime.setMicrosoftCalendarConnection(await createMicrosoftCalendarConnection());
+  }
 }
 
 function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): void {

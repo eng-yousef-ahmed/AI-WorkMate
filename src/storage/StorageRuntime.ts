@@ -51,9 +51,13 @@ export interface ChangeDataRootResult {
 }
 
 import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
+import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
+import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
 
 export interface StorageRuntimeIntegrations {
   microsoftCalendarProvider?: CalendarEventProvider;
+  /** Main-process Microsoft 365 OAuth connection manager (PKCE, vault tokens). */
+  microsoftCalendarConnection?: MicrosoftCalendarConnection;
   nativeCaptureAdapter?: NativeCaptureAdapter;
   nativeCapturePolicy?: Partial<NativeCapturePolicy>;
   transcriptionEngine?: TranscriptionEngine;
@@ -216,19 +220,114 @@ export class StorageRuntime {
     return report;
   }
 
+  /** Default rolling sync window used by the renderer "sync now" action. */
+  public static readonly DEFAULT_CALENDAR_WINDOW_DAYS_BACK = 30;
+  public static readonly DEFAULT_CALENDAR_WINDOW_DAYS_AHEAD = 120;
+
   /**
    * Synchronizes Microsoft 365 calendar events over the requested window.
    * Uses the incremental delta path when a stored cursor covers the window
    * and self-heals stale cursors with a full re-sync.
    */
   public async syncMicrosoftCalendar(range: CalendarSyncRange): Promise<CalendarSyncResult> {
-    const provider = this.integrations.microsoftCalendarProvider;
-    if (provider === undefined) {
+    const provider = this.getMicrosoftCalendarProvider();
+    return new CalendarSyncService(provider, this.requireStore(), "MICROSOFT_GRAPH").syncCalendar(range);
+  }
+
+  /**
+   * Renderer-safe "sync now": runs the incremental delta when the stored
+   * window still covers the near future and otherwise refreshes the whole
+   * rolling window (which renews the delta cursor).
+   */
+  public async syncMicrosoftCalendarAuto(): Promise<CalendarSyncResult> {
+    const store = this.requireStore();
+    const state = store.getCalendarSyncState("MICROSOFT_GRAPH");
+    const provider = this.getMicrosoftCalendarProvider();
+    const service = new CalendarSyncService(provider, store, "MICROSOFT_GRAPH");
+    const now = this.clock();
+    const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    if (
+      state?.deltaCursor !== undefined && state.syncWindowStart !== undefined && state.syncWindowEnd !== undefined &&
+      new Date(state.syncWindowEnd).getTime() >= horizon.getTime()
+    ) {
+      // Covered by the stored cursor's window: reuse the stored window.
+      return service.syncCalendar({ startTime: state.syncWindowStart, endTime: state.syncWindowEnd });
+    }
+    const range = defaultCalendarWindow(this.clock());
+    return service.syncCalendar(range);
+  }
+
+  /** Calendar connection status (sanitized; never contains tokens). */
+  public async getMicrosoftCalendarStatus(): Promise<CalendarConnectionStatus | undefined> {
+    return this.integrations.microsoftCalendarConnection?.getStatus();
+  }
+
+  /** Begins an interactive Microsoft 365 sign-in; returns the URL to open. */
+  public async beginMicrosoftCalendarSignIn(): Promise<BeginCalendarSignInResult> {
+    const connection = this.requireMicrosoftCalendarConnection();
+    return connection.beginSignIn();
+  }
+
+  public async completeMicrosoftCalendarSignIn(input: CompleteCalendarSignInInput): Promise<CalendarConnectionStatus> {
+    const connection = this.requireMicrosoftCalendarConnection();
+    return connection.completeSignIn(input);
+  }
+
+  public async cancelMicrosoftCalendarSignIn(): Promise<void> {
+    await this.requireMicrosoftCalendarConnection().cancelSignIn();
+  }
+
+  public async disconnectMicrosoftCalendar(): Promise<CalendarConnectionStatus> {
+    const connection = this.requireMicrosoftCalendarConnection();
+    const status = await connection.disconnect();
+    // A fresh sign-in may use a different account/calendar; drop the stale
+    // cursor so the next sync starts from a clean full fetch.
+    if (this.store !== undefined) {
+      this.store.clearCalendarSyncState("MICROSOFT_GRAPH");
+    }
+    return status;
+  }
+
+  /**
+   * Swaps the Microsoft 365 connection manager (used after the OAuth config is
+   * saved). The previous connection's pending sign-in is cancelled; sessions
+   * live in the shared vault so a connected account survives the swap.
+   */
+  public async setMicrosoftCalendarConnection(connection: MicrosoftCalendarConnection | undefined): Promise<void> {
+    const previous = this.integrations.microsoftCalendarConnection;
+    if (previous !== undefined && previous !== connection) {
+      await previous.cancelSignIn().catch(() => undefined);
+    }
+    this.integrations.microsoftCalendarConnection = connection;
+    this.microsoftProviderCache = undefined;
+  }
+
+  private microsoftProviderCache: CalendarEventProvider | undefined;
+
+  private getMicrosoftCalendarProvider(): CalendarEventProvider {
+    if (this.integrations.microsoftCalendarProvider !== undefined) {
+      return this.integrations.microsoftCalendarProvider;
+    }
+    const connection = this.integrations.microsoftCalendarConnection;
+    if (connection === undefined) {
       throw new StorageError(
         "Microsoft 365 calendar synchronization is not configured. Connect a Microsoft OAuth/MSAL provider before syncing.",
       );
     }
-    return new CalendarSyncService(provider, this.requireStore(), "MICROSOFT_GRAPH").syncCalendar(range);
+    if (this.microsoftProviderCache === undefined) {
+      this.microsoftProviderCache = connection.createCalendarProvider();
+    }
+    return this.microsoftProviderCache;
+  }
+
+  private requireMicrosoftCalendarConnection(): MicrosoftCalendarConnection {
+    const connection = this.integrations.microsoftCalendarConnection;
+    if (connection === undefined) {
+      throw new StorageError(
+        "Microsoft 365 calendar integration is not configured in this build.",
+      );
+    }
+    return connection;
   }
 
   public async setAiProcessingPolicy(policy: AIProcessingPolicy): Promise<void> {
@@ -477,4 +576,10 @@ function samePath(left: string, right: string): boolean {
     return left.toLowerCase() === right.toLowerCase();
   }
   return left === right;
+}
+
+export function defaultCalendarWindow(now: Date): CalendarSyncRange {
+  const start = new Date(now.getTime() - StorageRuntime.DEFAULT_CALENDAR_WINDOW_DAYS_BACK * 24 * 60 * 60 * 1000);
+  const end = new Date(now.getTime() + StorageRuntime.DEFAULT_CALENDAR_WINDOW_DAYS_AHEAD * 24 * 60 * 60 * 1000);
+  return { startTime: start.toISOString(), endTime: end.toISOString() };
 }

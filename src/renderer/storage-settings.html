@@ -66,6 +66,53 @@
           <div class="panel actions-panel"><div class="panel-heading"><div class="panel-icon">⚙</div><div><h2>Protect your workspace</h2><p>Portable, verifiable, and recoverable.</p></div></div><div class="action-list"><button id="verify-button" class="action-row"><span class="action-symbol">✓</span><span><strong>Verify storage</strong><small>Check hashes and relationships</small></span><span>›</span></button><button id="repair-button" class="action-row"><span class="action-symbol">⌁</span><span><strong>Repair index</strong><small>Re-index known orphaned files</small></span><span>›</span></button><button id="backup-button" class="action-row"><span class="action-symbol">↓</span><span><strong>Create backup</strong><small>Standard ZIP, locally selected</small></span><span>›</span></button><button id="restore-button" class="action-row"><span class="action-symbol">↑</span><span><strong>Restore backup</strong><small>Restore into a separate folder</small></span><span>›</span></button></div></div>
         </section>
 
+        <section class="section-block" id="integrations">
+          <div class="section-heading">
+            <div><h2>Microsoft 365 Calendar</h2><p>Sign in with your Microsoft work or personal account to sync your calendar locally — read-only, and nothing is sent to cloud AI.</p></div>
+            <span id="calendar-badge" class="calendar-badge neutral">Checking…</span>
+          </div>
+          <div class="calendar-card">
+            <div class="calendar-main">
+              <div class="calendar-identity">
+                <div class="calendar-provider-mark">M</div>
+                <div class="calendar-identity-copy">
+                  <span class="label">ACCOUNT</span>
+                  <strong id="calendar-account-name">—</strong>
+                  <small id="calendar-account-email">Microsoft 365 calendar</small>
+                </div>
+              </div>
+              <div class="calendar-actions">
+                <button id="calendar-connect-button" class="button primary">Connect Microsoft 365</button>
+                <button id="calendar-sync-button" class="button secondary" disabled>Sync calendar</button>
+                <button id="calendar-cancel-button" class="button secondary" hidden>Cancel sign-in</button>
+                <button id="calendar-disconnect-button" class="button secondary danger-text" hidden>Disconnect</button>
+              </div>
+            </div>
+            <div id="calendar-status-line" class="calendar-line" hidden></div>
+            <div id="calendar-sync-line" class="calendar-line success-line" hidden></div>
+            <div id="calendar-manual" class="calendar-manual" hidden>
+              <p>Waiting for the browser callback. If it does not finish automatically, open the address shown in the status line above in your browser, then paste the final address here:</p>
+              <div class="manual-row">
+                <input id="calendar-manual-url" type="text" spellcheck="false" placeholder="http://localhost:…/ ?code=…" />
+                <button id="calendar-manual-submit" class="button secondary">Finish sign-in</button>
+              </div>
+            </div>
+            <details class="calendar-config">
+              <summary>Microsoft app registration settings <span class="helper-inline">(advanced)</span></summary>
+              <p class="helper">AI WorkMate is a public desktop client using the Authorization Code + PKCE flow — it never uses or asks for a client secret. In Azure create an app registration as a <strong>public client/native application</strong> with redirect URI <code>http://localhost</code> and delegated permissions <code>User.Read</code>, <code>Calendars.Read</code>, and <code>offline_access</code>, then paste its Application (client) ID here. Tenant may be left as <code>common</code>.</p>
+              <div class="config-grid">
+                <label class="field-label" for="ms-client-id">APPLICATION (CLIENT) ID<input id="ms-client-id" type="text" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+                <label class="field-label" for="ms-tenant">TENANT<input id="ms-tenant" type="text" spellcheck="false" placeholder="common" /></label>
+                <label class="field-label" for="ms-redirect-uri">REDIRECT URI (optional)<input id="ms-redirect-uri" type="text" spellcheck="false" placeholder="http://localhost" /></label>
+              </div>
+              <div class="config-actions">
+                <button id="calendar-config-save" class="button primary">Save integration settings</button>
+                <span id="calendar-config-note" class="helper">Stored next to the app, never inside your data folder, and contains no secrets.</span>
+              </div>
+            </details>
+          </div>
+        </section>
+
         <div id="notice" class="notice" role="status" aria-live="polite"></div>
         <footer class="privacy-footnote"><span class="status-dot"></span><strong>Privacy by architecture</strong><span>DATA_ROOT is controlled by the desktop process. The web renderer receives authorized operations only.</span></footer>
       </main>
