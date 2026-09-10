@@ -202,22 +202,25 @@ export class LocalFirstStore {
     const hadDatabase = await this.storage.exists("Database/ai-workmate.sqlite");
     await this.storage.initialize();
     this.databaseWasMissingAtOpen = hadStorageManifest && !hadDatabase;
-    this.database = new LocalDatabase(this.storage.databasePath, this.clock);
-    this.database.setMetadata("storageVersion", String(STORAGE_VERSION));
-    this.recoverInterruptedRecordings();
-    this.recoverInterruptedCaptureFlows();
-    await this.recoverArtifactOperations();
-    this.recoverInterruptedTranscriptions();
-    this.recoverInterruptedAnalyses();
-    this.refreshServices();
-    this.initialized = true;
+    try {
+      this.database = new LocalDatabase(this.storage.databasePath, this.clock);
+      this.database.setMetadata("storageVersion", String(STORAGE_VERSION));
+      this.recoverInterruptedRecordings();
+      this.recoverInterruptedCaptureFlows();
+      await this.recoverArtifactOperations();
+      this.recoverInterruptedTranscriptions();
+      this.recoverInterruptedAnalyses();
+      this.refreshServices();
+      this.initialized = true;
+    } catch (error: unknown) {
+      this.close();
+      throw error;
+    }
   }
 
   public close(): void {
-    if (this.initialized) {
-      this.database.close();
-      this.initialized = false;
-    }
+    this.database?.close();
+    this.initialized = false;
   }
 
   public getMeeting(meetingId: string): Meeting | undefined {

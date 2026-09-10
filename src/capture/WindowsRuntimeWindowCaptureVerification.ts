@@ -119,7 +119,7 @@ export async function runWindowsRuntimeWindowCaptureVerification(
 ): Promise<WindowsRuntimeWindowCaptureVerificationResult> {
   const durationMs = options.durationMs ?? WINDOWS_RUNTIME_WINDOW_CAPTURE_VERIFY_DURATION_MS;
   const platform = options.platform ?? process.platform;
-  const helperPath = await resolveWindowsScreenHelperPath();
+  const helperPath = platform === "win32" ? await resolveWindowsScreenHelperPath() : undefined;
   const base: Omit<WindowsRuntimeWindowCaptureVerificationResult, "success" | "windowsVerified" | "abort"> = {
     platform,
     helperFound: helperPath !== undefined,

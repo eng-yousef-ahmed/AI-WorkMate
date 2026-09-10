@@ -152,8 +152,13 @@ export class StorageRuntime {
       return false;
     }
     const store = new LocalFirstStore(dataRoot, { ...this.storageOptions, clock: this.clock });
-    await store.initialize();
-    this.attachStore(store);
+    try {
+      await store.initialize();
+      this.attachStore(store);
+    } catch (error: unknown) {
+      store.close();
+      throw error;
+    }
     await this.config.setLastOpenedAppVersion(this.appVersion);
     return true;
   }
@@ -169,6 +174,7 @@ export class StorageRuntime {
       updatedAt: this.clock().toISOString(),
     };
     await this.config.setFirstRunJournal(journal);
+    let store: LocalFirstStore | undefined;
     try {
       const probe = new LocalStorageService(normalized, this.storageOptions);
       const validation = await probe.validateDataRoot(normalized, FIRST_RUN_MINIMUM_FREE_BYTES);
@@ -187,7 +193,7 @@ export class StorageRuntime {
             }
           : async () => injectedAvailableBytes(),
       );
-      const store = new LocalFirstStore(normalized, { ...this.storageOptions, clock: this.clock });
+      store = new LocalFirstStore(normalized, { ...this.storageOptions, clock: this.clock });
       await store.initialize();
       await this.config.setFirstRunJournal({
         ...journal,
@@ -199,6 +205,7 @@ export class StorageRuntime {
       await this.config.clearFirstRunJournal();
       this.attachStore(store);
     } catch (error: unknown) {
+      store?.close();
       try {
         await this.config.setFirstRunJournal({
           ...journal,

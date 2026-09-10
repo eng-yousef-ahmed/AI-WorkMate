@@ -29,6 +29,15 @@ export async function discoverLocalLlmRuntime(options: {
   localAppData?: string;
 } = {}): Promise<LocalLlmRuntimeDiscovery> {
   const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    return {
+      platform,
+      helperFound: false,
+      modelFound: false,
+      failureCode: "ANALYSIS_ENGINE_UNAVAILABLE",
+      failureMessage: `Local llama.cpp verification requires win32, not ${platform}.`,
+    };
+  }
   const helperPath = await resolveWindowsLlamaCliPath(undefined, options.localAppData);
   const modelPath = await resolveWindowsLlamaModelPath(undefined, options.localAppData);
   const discovery: LocalLlmRuntimeDiscovery = {

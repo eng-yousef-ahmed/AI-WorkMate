@@ -526,8 +526,10 @@ test("meeting capture: abort stops sources, never claims COMPLETED, and keeps th
 
 test("meeting capture: crash during RECORDING is detected and recovered as INCOMPLETE on next startup", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-workmate-flow-crash-"));
+  let first: LocalFirstStore | undefined;
+  let second: LocalFirstStore | undefined;
   try {
-    const first = new LocalFirstStore(root);
+    first = new LocalFirstStore(root);
     await first.initialize();
     const adapter = new ScriptedNativeAdapter();
     const { orchestrator, coordinator } = orchestratorStack(adapter, first);
@@ -541,7 +543,7 @@ test("meeting capture: crash during RECORDING is detected and recovered as INCOM
     assert.equal(first.getMeeting(started.meetingId)?.status, "RECORDING");
     first.close();
 
-    const second = new LocalFirstStore(root);
+    second = new LocalFirstStore(root);
     await second.initialize();
     const meeting = second.getMeeting(started.meetingId);
     assert.equal(meeting?.status, "INCOMPLETE");
@@ -559,14 +561,18 @@ test("meeting capture: crash during RECORDING is detected and recovered as INCOM
     assert.equal(recordingIssue, true);
     assert.equal(second.database.listArtifacts(started.meetingId).filter((artifact) => artifact.artifactType !== "MEETING_MANIFEST").length, 0);
   } finally {
+    second?.close();
+    first?.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("meeting capture: crash during STARTING and STOPPING phases is recovered via the flow journal", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-workmate-flow-phases-"));
+  let first: LocalFirstStore | undefined;
+  let second: LocalFirstStore | undefined;
   try {
-    const first = new LocalFirstStore(root);
+    first = new LocalFirstStore(root);
     await first.initialize();
     const meetingId = randomUUID();
     await first.createMeeting({ meetingId, title: "Phase crash" });
@@ -586,7 +592,7 @@ test("meeting capture: crash during STARTING and STOPPING phases is recovered vi
     assert.equal(first.getMeeting(meetingId)?.status, "FINALIZING");
     first.close();
 
-    const second = new LocalFirstStore(root);
+    second = new LocalFirstStore(root);
     await second.initialize();
     const meeting = second.getMeeting(meetingId);
     assert.equal(meeting?.status, "INCOMPLETE");
@@ -599,6 +605,8 @@ test("meeting capture: crash during STARTING and STOPPING phases is recovered vi
     assert.ok(audits.some((record) => record.action === "CAPTURE_FLOW_STOPPING"));
     assert.ok(audits.some((record) => record.action === "RECORDING_RECOVERED_INCOMPLETE"));
   } finally {
+    second?.close();
+    first?.close();
     await rm(root, { recursive: true, force: true });
   }
 });

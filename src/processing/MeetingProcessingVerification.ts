@@ -311,7 +311,7 @@ export async function runMeetingProcessingVerification(
     }
 
     const captureEngine = new LocalRecordingCaptureEngine(store);
-    const coordinator = new NativeCaptureCoordinator(createNativeCaptureAdapter(), captureEngine, {
+    const coordinator = new NativeCaptureCoordinator(createNativeCaptureAdapter({ platform }), captureEngine, {
       policy: { MICROPHONE_AUDIO: "ALLOW", SYSTEM_AUDIO: "ALLOW", SCREEN: "ALLOW", WINDOW: "ALLOW" },
     });
     const meetingCapture = new MeetingCaptureOrchestrator({ store, coordinator, engine: captureEngine });

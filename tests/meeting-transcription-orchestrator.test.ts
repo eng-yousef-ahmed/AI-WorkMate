@@ -137,6 +137,11 @@ async function createTestEnv() {
   return { root, store, transcriptionEngine, analysisProvider, orchestrator };
 }
 
+async function disposeTestEnv(store: LocalFirstStore, root: string): Promise<void> {
+  store.close();
+  await rm(root, { recursive: true, force: true });
+}
+
 async function setupMeetingAndRecordings(store: LocalFirstStore, mic: boolean, sys: boolean) {
   const meetingId = randomUUID();
   rawDb(store).exec(`
@@ -187,7 +192,7 @@ test("Processing Orchestrator 1 - happy path: two sources and analysis", async (
   assert.strictEqual(jobs.length, 3);
   assert.ok(jobs.every(j => j.state === "COMPLETED"));
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 2 - happy path: missing mic is allowed if sys present", async () => {
@@ -197,7 +202,7 @@ test("Processing Orchestrator 2 - happy path: missing mic is allowed if sys pres
   await orchestrator.processCompletedMeeting(meetingId);
   assert.strictEqual(transcriptionEngine.transcribeCalls.length, 1);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 3 - missing sys is allowed if mic present", async () => {
@@ -207,7 +212,7 @@ test("Processing Orchestrator 3 - missing sys is allowed if mic present", async 
   await orchestrator.processCompletedMeeting(meetingId);
   assert.strictEqual(transcriptionEngine.transcribeCalls.length, 1);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 4 - throws if no eligible recordings", async () => {
@@ -215,7 +220,7 @@ test("Processing Orchestrator 4 - throws if no eligible recordings", async () =>
   const meetingId = await setupMeetingAndRecordings(store, false, false);
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /No completed microphone or system/);
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 6 - hard transcription failure leaves meeting FAILED", async () => {
@@ -229,7 +234,7 @@ test("Processing Orchestrator 6 - hard transcription failure leaves meeting FAIL
   const jobs = store.database.listProcessingJobs(meetingId);
   assert.strictEqual(jobs.find(j => j.jobType === "TRANSCRIPTION")?.state, "FAILED");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 7 - retryable transcription failure leaves meeting INCOMPLETE", async () => {
@@ -243,7 +248,7 @@ test("Processing Orchestrator 7 - retryable transcription failure leaves meeting
   const jobs = store.database.listProcessingJobs(meetingId);
   assert.strictEqual(jobs.find(j => j.jobType === "TRANSCRIPTION")?.state, "INCOMPLETE");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 8 - reuses valid transcripts", async () => {
@@ -259,7 +264,7 @@ test("Processing Orchestrator 8 - reuses valid transcripts", async () => {
   assert.strictEqual(transcriptionEngine.transcribeCalls.length, 1); // no new calls
   assert.strictEqual(analysisProvider.processCalls.length, 1); // no new calls
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 9 - stale analysis invalidation", async () => {
@@ -277,7 +282,7 @@ test("Processing Orchestrator 9 - stale analysis invalidation", async () => {
   
   assert.strictEqual(analysisProvider.processCalls.length, 2); // Analysis reran
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Source Attribution 1 - unified document retains labels", () => {
@@ -317,7 +322,7 @@ test("Processing Orchestrator 12 - unique mic/sys artifact paths", async () => {
   assert.ok(micJson, "Microphone transcript artifact should end with _mic.json");
   assert.ok(sysJson, "System audio transcript artifact should end with _sys.json");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 13 - corrupt source artifact fails transcription", async () => {
@@ -332,7 +337,7 @@ test("Processing Orchestrator 13 - corrupt source artifact fails transcription",
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording SHA verification failed/);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 17 - analysis quality rejection", async () => {
@@ -361,7 +366,7 @@ test("Processing Orchestrator 17 - analysis quality rejection", async () => {
 
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Analysis quality rejected/);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 19 - invalid meeting transition throws error", async () => {
@@ -373,7 +378,7 @@ test("Processing Orchestrator 19 - invalid meeting transition throws error", asy
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Meeting is not ready for processing/);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 22 - final COMPLETED only after all commits", async () => {
@@ -392,7 +397,7 @@ test("Processing Orchestrator 22 - final COMPLETED only after all commits", asyn
   const finalMeeting = store.getMeeting(meetingId);
   assert.strictEqual(finalMeeting?.status, "COMPLETED", "Meeting should transition to COMPLETED at the end");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 27 - missing json artifact fails transcript reuse", async () => {
@@ -416,7 +421,7 @@ test("Processing Orchestrator 27 - missing json artifact fails transcript reuse"
   const newTranscripts = store.database.listTranscripts(meetingId);
   assert.notStrictEqual(newTranscripts[0]?.transcriptId, t.transcriptId, "Transcript should have been regenerated");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 11 - legacy transcript without capability or SHA is not reused", async () => {
@@ -437,7 +442,7 @@ test("Processing Orchestrator 11 - legacy transcript without capability or SHA i
   const transcripts = store.database.listTranscripts(meetingId);
   assert.strictEqual(transcripts.length, 2, "Should create a new transcript instead of reusing the legacy one");
 
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 14 - source recording SHA mismatch fails processing", async () => {
@@ -452,7 +457,7 @@ test("Processing Orchestrator 14 - source recording SHA mismatch fails processin
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording SHA verification failed/);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 15 - concurrent source transcription", async () => {
@@ -475,7 +480,7 @@ test("Processing Orchestrator 15 - concurrent source transcription", async () =>
   await orchestrator.processCompletedMeeting(meetingId);
   assert.strictEqual(maxConcurrent, 2, "Transcriptions should run concurrently via Promise.all");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 16 - interrupted transcription recovery", async () => {
@@ -490,7 +495,7 @@ test("Processing Orchestrator 16 - interrupted transcription recovery", async ()
   await orchestrator.processCompletedMeeting(meetingId);
   assert.strictEqual(store.getMeeting(meetingId)?.status, "COMPLETED");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 18 - processing jobs and audit rows are properly populated", async () => {
@@ -506,7 +511,7 @@ test("Processing Orchestrator 18 - processing jobs and audit rows are properly p
   
   // Audits are tested implicitly via storage service usage.
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 20 - no absolute path leakage in returned objects", async () => {
@@ -517,7 +522,7 @@ test("Processing Orchestrator 20 - no absolute path leakage in returned objects"
   const jsonStr = JSON.stringify(store.getMeeting(meetingId));
   assert.ok(!jsonStr.includes(store.getDataRoot()), "No absolute paths should leak");
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 21 - no cloud usage (respects LOCAL_ONLY)", async () => {
@@ -528,7 +533,7 @@ test("Processing Orchestrator 21 - no cloud usage (respects LOCAL_ONLY)", async 
   assert.strictEqual(analysisProvider.descriptor.dataTransmission, "LOCAL_ONLY");
   await orchestrator.processCompletedMeeting(meetingId);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 23 - analysis artifact SHA integrity", async () => {
@@ -543,7 +548,7 @@ test("Processing Orchestrator 23 - analysis artifact SHA integrity", async () =>
     assert.ok(artifact.sha256 && artifact.sha256.length === 64, "Should have valid SHA256");
   }
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 24 - idempotent repeated processing", async () => {
@@ -560,7 +565,7 @@ test("Processing Orchestrator 24 - idempotent repeated processing", async () => 
   assert.strictEqual(transcriptionEngine.transcribeCalls.length, 1);
   assert.strictEqual(analysisProvider.processCalls.length, 1);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 25 - path traversal rejection", async () => {
@@ -571,7 +576,7 @@ test("Processing Orchestrator 25 - path traversal rejection", async () => {
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Unsafe/i);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 26 - verifies artifact exists before processing", async () => {
@@ -583,7 +588,7 @@ test("Processing Orchestrator 26 - verifies artifact exists before processing", 
   
   await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Source recording artifact missing/);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 28 - missing text artifact fails transcript reuse", async () => {
@@ -598,7 +603,7 @@ test("Processing Orchestrator 28 - missing text artifact fails transcript reuse"
   const newT = store.database.listTranscripts(meetingId)[0]!;
   assert.notStrictEqual(newT.transcriptId, t.transcriptId);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });
 
 test("Processing Orchestrator 30 - analysis artifact SHA missing fails reuse", async () => {
@@ -619,5 +624,5 @@ test("Processing Orchestrator 30 - analysis artifact SHA missing fails reuse", a
   const newA = store.database.listAnalysis(meetingId)[0]!;
   assert.notStrictEqual(newA.analysisId, a.analysisId);
   
-  await rm(root, { recursive: true, force: true });
+  await disposeTestEnv(store, root);
 });

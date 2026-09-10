@@ -32,6 +32,15 @@ export async function discoverWhisperRuntime(options: {
   localAppData?: string;
 } = {}): Promise<WhisperRuntimeDiscovery> {
   const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    return {
+      platform,
+      helperFound: false,
+      modelFound: false,
+      failureCode: "TRANSCRIPTION_ENGINE_UNAVAILABLE",
+      failureMessage: `Local whisper.cpp verification requires win32, not ${platform}.`,
+    };
+  }
   const helperPath = await resolveWindowsWhisperCliPath(undefined, options.localAppData);
   const modelPath = await resolveWindowsWhisperModelPath(undefined, options.localAppData);
   const discovery: WhisperRuntimeDiscovery = {

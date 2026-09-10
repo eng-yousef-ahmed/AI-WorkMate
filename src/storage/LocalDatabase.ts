@@ -444,8 +444,13 @@ export class LocalDatabase {
       enableForeignKeyConstraints: true,
       timeout: 5_000,
     });
-    this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
-    this.applyMigrations();
+    try {
+      this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
+      this.applyMigrations();
+    } catch (error: unknown) {
+      this.close();
+      throw error;
+    }
   }
 
   public get path(): string {

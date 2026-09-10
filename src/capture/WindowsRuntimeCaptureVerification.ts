@@ -80,7 +80,7 @@ export async function runWindowsRuntimeCaptureVerification(
 ): Promise<WindowsRuntimeCaptureVerificationResult> {
   const durationMs = options.durationMs ?? WINDOWS_RUNTIME_CAPTURE_VERIFY_DURATION_MS;
   const platform = options.platform ?? process.platform;
-  const helperPath = await resolveWindowsAudioHelperPath();
+  const helperPath = platform === "win32" ? await resolveWindowsAudioHelperPath() : undefined;
   const base: Omit<WindowsRuntimeCaptureVerificationResult, "success" | "windowsVerified" | "abort" | "captures"> = {
     platform,
     helperFound: helperPath !== undefined,

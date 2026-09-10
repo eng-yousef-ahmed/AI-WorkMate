@@ -113,13 +113,16 @@ export type CreateNativeCaptureAdapterOptions = WindowsCaptureAdapterOptions;
 export function createNativeCaptureAdapter(options: CreateNativeCaptureAdapterOptions = {}): NativeCaptureAdapter {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
+    const audioHelperPath = options.audioHelperPath ?? options.helperPath;
+    const screenHelperPath = options.screenHelperPath ?? options.helperPath;
     return new WindowsCaptureAdapter({
       ...options,
       platform,
       provider: options.provider ?? new WindowsCompositeNativeCaptureProvider({
         platform,
         clock: options.clock,
-        ...(options.helperPath === undefined ? {} : { audioHelperPath: options.helperPath }),
+        ...(audioHelperPath === undefined ? {} : { audioHelperPath }),
+        ...(screenHelperPath === undefined ? {} : { screenHelperPath }),
       }),
     });
   }

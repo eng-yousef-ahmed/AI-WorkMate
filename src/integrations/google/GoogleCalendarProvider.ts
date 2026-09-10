@@ -213,22 +213,20 @@ function addPageToken(path: string, pageToken: string): string {
   return `${path}${separator}pageToken=${encodeURIComponent(pageToken)}`;
 }
 
+function hasExplicitTimeZone(dateTime: string): boolean {
+  return /Z$/i.test(dateTime) || /[+-]\d{2}:\d{2}$/.test(dateTime);
+}
+
 function normalizeGoogleDateTime(value: GoogleEventDateTime | undefined, field: string): string {
   const dateTime = cleanString(value?.dateTime);
   if (dateTime !== undefined) {
-    const parsed = new Date(dateTime);
+    // List/get requests pin timeZone=UTC. Zone-less RFC3339 wall-clock values
+    // must be interpreted as UTC — `new Date("…T09:00:00")` is local time and
+    // would shift the stored instant by the host offset (e.g. Asia/Riyadh).
+    const parseable = hasExplicitTimeZone(dateTime) ? dateTime : `${dateTime}Z`;
+    const parsed = new Date(parseable);
     if (!Number.isNaN(parsed.getTime())) {
       return parsed.toISOString();
-    }
-    // Some clients emit zone-less wall-clock times; the timeZone field of the
-    // item or the response disambiguates them. Fall back to treating them as
-    // UTC (the request pins timeZone=UTC) rather than storing an ambiguous
-    // local time.
-    if (value?.timeZone === undefined) {
-      const utcCandidate = new Date(`${dateTime}Z`);
-      if (!Number.isNaN(utcCandidate.getTime())) {
-        return utcCandidate.toISOString();
-      }
     }
     throw new Error(`A Google Calendar event is missing a parseable ${field} dateTime.`);
   }
