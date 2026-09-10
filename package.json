@@ -10,7 +10,7 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-renderer.mjs",
+    "build": "tsc && node scripts/copy-renderer.mjs && node scripts/bundle-sandboxed-preload.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests scripts --max-warnings=0",
     "test": "npm run build && node --expose-gc --test \"dist/tests/*.test.js\"",

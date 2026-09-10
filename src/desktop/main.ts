@@ -93,15 +93,25 @@ async function bootstrap(): Promise<void> {
 
   const rendererPath = join(__dirname, "../renderer/storage-settings.html");
   const rendererUrl = pathToFileURL(rendererPath).toString();
-  mainWindow = new BrowserWindow({
+  const preloadPath = join(__dirname, "preload.js");
+  const browserWindow = new BrowserWindow({
     width: 1220,
     height: 820,
     minWidth: 900,
     minHeight: 650,
     title: "AI WorkMate",
-    webPreferences: createSecureRendererPreferences(join(__dirname, "preload.js")),
+    webPreferences: createSecureRendererPreferences(preloadPath),
   });
-  configureWindowSecurity(mainWindow, rendererUrl);
+  mainWindow = browserWindow;
+  browserWindow.webContents.on("preload-error", (_event, _failedPreloadPath, error) => {
+    console.error("AI WorkMate desktop bridge preload failed", error instanceof Error ? error.message : error);
+    void dialog.showMessageBox(browserWindow, {
+      type: "error",
+      title: "AI WorkMate desktop bridge",
+      message: "The desktop workspace bridge failed to load. Restart AI WorkMate.",
+    });
+  });
+  configureWindowSecurity(browserWindow, rendererUrl);
   if (!ipcRegistered) {
     registerStorageIpc({
       ipcMain: ipcMain as unknown as IpcMainLike,
