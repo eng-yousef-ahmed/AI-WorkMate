@@ -3,7 +3,7 @@ import { open } from "node:fs/promises";
 import { basename } from "node:path";
 
 import { isGgufModelMagic } from "./LocalLlmModelFormat";
-import { assertUsableLocalLlmModelFile, hashLocalLlmFile, resolveWindowsLlamaCliPath, resolveWindowsLlamaModelPath } from "./LocalLlmProvider";
+import { assertReadyLocalLlmModelFile, resolveWindowsLlamaCliPath, resolveWindowsLlamaModelPath } from "./LocalLlmProvider";
 import { getLocalLlmModelCatalogEntry } from "./LocalLlmRuntimeCatalog";
 
 export interface LocalLlmRuntimeDiscovery {
@@ -62,21 +62,17 @@ export async function discoverLocalLlmRuntime(options: {
       discovery.failureCode = "ANALYSIS_ENGINE_UNAVAILABLE";
       discovery.failureMessage = "Located model is not a GGUF file.";
     } else if (catalog !== undefined) {
+      // Snapshot status uses size + GGUF magic only. Hashing the 4.7 GB
+      // production Qwen shards on every Settings refresh would stall the UI;
+      // SHA-256 is enforced at install (`installVerifiedFile`) and must not
+      // be re-run here. Engine use still fail-closes on size/magic mismatch.
       try {
-        const verified = await assertUsableLocalLlmModelFile(modelPath);
-        discovery.modelSha256 = verified.sha256;
-        discovery.modelBytes = verified.bytes;
+        await assertReadyLocalLlmModelFile(modelPath);
+        discovery.modelBytes = catalog.files.find((file) => file.filename === catalog.filename)?.bytes;
         discovery.modelChecksumOk = true;
       } catch {
-        const hashed = await hashLocalLlmFile(modelPath);
-        discovery.modelSha256 = hashed.sha256;
-        discovery.modelBytes = hashed.bytes;
         discovery.modelChecksumOk = false;
       }
-    } else {
-      const hashed = await hashLocalLlmFile(modelPath);
-      discovery.modelSha256 = hashed.sha256;
-      discovery.modelBytes = hashed.bytes;
     }
   }
   if (platform !== "win32") {

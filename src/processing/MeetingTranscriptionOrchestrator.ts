@@ -115,7 +115,7 @@ export class MeetingTranscriptionOrchestrator {
       // Stale or missing/corrupt - delete old records/files to allow overwrite
       for (const t of existingAll) {
         if (t === reusable) continue;
-        (this.store.database as unknown as { database: { exec: (q: string) => void } }).database.exec(`DELETE FROM transcripts WHERE transcript_id = '${t.transcriptId}'`);
+        this.store.database.deleteTranscript(t.transcriptId);
         const relatedArtifacts = [t.jsonArtifactId, t.textArtifactId, t.vttArtifactId, t.srtArtifactId].filter(Boolean) as string[];
         for (const fileId of relatedArtifacts) {
           const a = this.store.database.getArtifact(fileId);
@@ -124,7 +124,7 @@ export class MeetingTranscriptionOrchestrator {
                const absPath = this.store.resolveArtifactAbsolutePath(a.relativePath);
                await rm(absPath, { force: true });
              } catch { /* ignore */ }
-             (this.store.database as unknown as { database: { exec: (q: string) => void } }).database.exec(`DELETE FROM artifacts WHERE file_id = '${fileId}'`);
+             this.store.database.deleteArtifactRow(fileId);
           }
         }
       }
@@ -184,7 +184,7 @@ export class MeetingTranscriptionOrchestrator {
       const isRetryable = /interrupted|abort/i.test(e.message);
       this.store.database.updateProcessingJob(jobId, {
         state: isRetryable ? "INCOMPLETE" : "FAILED",
-        error: e.message,
+        error: sanitizeStoredJobError(e.message),
         updatedAt: this.clock().toISOString()
       });
       throw e;
@@ -264,7 +264,7 @@ export class MeetingTranscriptionOrchestrator {
                const absPath = this.store.resolveArtifactAbsolutePath(a.relativePath);
                await rm(absPath, { force: true });
              } catch { /* ignore */ }
-             (this.store.database as unknown as { database: { exec: (q: string) => void } }).database.exec(`DELETE FROM artifacts WHERE file_id = '${r.artifactId}'`);
+             this.store.database.deleteArtifactRow(r.artifactId);
           }
         }
       }
@@ -298,10 +298,17 @@ export class MeetingTranscriptionOrchestrator {
       const isRetryable = /interrupted|abort/i.test(e.message);
       this.store.database.updateProcessingJob(jobId, {
         state: isRetryable ? "INCOMPLETE" : "FAILED",
-        error: e.message,
+        error: sanitizeStoredJobError(e.message),
         updatedAt: this.clock().toISOString()
       });
       throw e;
     }
   }
+}
+
+const STORED_JOB_ERROR_LEAK =
+  /(?:[A-Za-z]:(?:\\+|\/(?!\/))|\\\\|\/home\/|\/Users\/|\/tmp\/|\/var\/|file:\/\/|DATA_ROOT|Program Files|AppData|LOCALAPPDATA)/i;
+
+function sanitizeStoredJobError(message: string): string {
+  return STORED_JOB_ERROR_LEAK.test(message) ? "The processing step failed." : message;
 }

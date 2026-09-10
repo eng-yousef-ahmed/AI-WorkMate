@@ -584,6 +584,28 @@ test("meeting hub: the storage runtime binds the hub to the active store and cap
   }
 });
 
+test("meeting hub: processing job errors with filesystem details are redacted for the renderer", async () => {
+  await withTempStore(async (store) => {
+    const meetingId = await seedPastMeetingWithArtifacts(store);
+    store.database.registerProcessingJob({
+      jobId: randomUUID(),
+      meetingId,
+      jobType: "TRANSCRIPTION",
+      state: "FAILED",
+      error: "whisper-cli.exe missing under C:\\\\Users\\\\ada\\\\AppData\\\\Local\\\\AI-WorkMate\\\\native\\\\",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const hub = new MeetingHubService({ store });
+    const detail = hub.getMeetingDetail(meetingId);
+    assert.equal(detail.processingJobs.length, 1);
+    assert.equal(detail.processingJobs[0]?.error, "Details were withheld.");
+    const serialized = JSON.stringify(detail);
+    assert.equal(serialized.includes("C:"), false);
+    assert.equal(serialized.includes("AppData"), false);
+  });
+});
+
 test("meeting hub: empty transcript search does not throw when many meetings exist", async () => {
   await withTempStore(async (store) => {
     for (let index = 0; index < 3; index += 1) {

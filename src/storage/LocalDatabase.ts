@@ -1137,6 +1137,16 @@ export class LocalDatabase {
     return record;
   }
 
+  public deleteTranscript(transcriptId: string): void {
+    this.ensureOpen();
+    this.database.prepare("DELETE FROM transcripts WHERE transcript_id = $transcriptId").run({ $transcriptId: transcriptId });
+  }
+
+  public deleteArtifactRow(fileId: string): void {
+    this.ensureOpen();
+    this.database.prepare("DELETE FROM artifacts WHERE file_id = $fileId").run({ $fileId: fileId });
+  }
+
   public listProcessingJobs(meetingId: string): ProcessingJobRecord[] {
     const rows = this.database.prepare("SELECT * FROM processing_jobs WHERE meeting_id = $meetingId ORDER BY created_at").all({ $meetingId: meetingId }) as SqlRow[];
     return rows.map((row) => {

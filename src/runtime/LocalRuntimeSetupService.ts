@@ -89,6 +89,8 @@ export class LocalRuntimeSetupService {
       discoverWhisperRuntime({ platform: this.platform, localAppData: this.localAppData }),
       discoverLocalLlmRuntime({ platform: this.platform, localAppData: this.localAppData }),
     ]);
+    // checksumVerified here is catalog size + magic (snapshot must not hash
+    // multi-GB Qwen shards). SHA-256 remains the install closer.
     const transcriptionReady = whisper.helperFound && whisper.modelFound === true && whisper.modelChecksumOk === true;
     const analysisReady = llm.helperFound && llm.modelFound === true && llm.modelChecksumOk === true;
     return {

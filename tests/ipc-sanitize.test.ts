@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { rendererErrorContainsFilesystemLeak, sanitizeRendererIpcError } from "../src/desktop/ipc-sanitize";
+import { rendererErrorContainsFilesystemLeak, sanitizeRendererIpcError, sanitizeRendererVisibleText } from "../src/desktop/ipc-sanitize";
 import { MeetingHubError } from "../src/meetings/MeetingHubService";
 import {
   ArchiveSecurityError,
@@ -40,6 +40,9 @@ test("IPC sanitizer withholds filesystem paths and unsafe-path details", () => {
 
   const unexpected = sanitizeRendererIpcError(new Error("ENOENT: /tmp/db"), "The storage action could not be completed. Please try again.");
   assert.equal(unexpected.message.includes("/tmp"), false);
+
+  assert.equal(sanitizeRendererVisibleText("C:\\\\Users\\\\ada\\\\AI-WorkMate", "Details were withheld."), "Details were withheld.");
+  assert.equal(sanitizeRendererVisibleText("The processing step failed.", "Details were withheld."), "The processing step failed.");
 
   const httpsSignIn = sanitizeRendererIpcError(
     new StorageError("Open this address in your browser: https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=abc"),

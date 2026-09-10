@@ -202,6 +202,37 @@ test("storage backup IPC sanitizes unsafe-path errors so DATA_ROOT never reaches
   );
 });
 
+test("lifecycle IPC returns workspace flags without filesystem paths", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const runtime = {
+    getLifecycleSnapshot: async () => ({
+      workspaceReady: true,
+      firstRunRequired: false,
+      firstRunRecoveryRequired: false,
+      appVersion: "0.1.0",
+      storageVersion: 11,
+      schemaVersion: 11,
+      upgradeBlocked: false,
+      migrationRecoveryRequired: false,
+      dataLocation: { type: "LOCAL", label: "Local workspace (path hidden)", pathExposed: false },
+    }),
+  } as unknown as StorageRuntime;
+  registerStorageIpc({
+    ipcMain: { handle: (channel, listener) => handlers.set(channel, listener) },
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+    shell: { openPath: async () => "" },
+    runtime,
+    getAuthorizedWebContentsId: () => 77,
+    getAuthorizedRendererUrl: () => "file:///AI-WorkMate/storage-settings.html",
+  });
+  const event = { sender: { id: 77 }, senderFrame: { url: "file:///AI-WorkMate/storage-settings.html" } };
+  const snapshot = await handlers.get(STORAGE_IPC_CHANNELS.getLifecycle)?.(event);
+  const serialized = JSON.stringify(snapshot);
+  assert.equal(serialized.includes("C:"), false);
+  assert.equal(serialized.includes("/home/"), false);
+  assert.equal(serialized.includes("pathExposed\":false"), true);
+});
+
 test("does not expose local recording capture controls or output paths through renderer IPC", () => {
   const channelNames = Object.keys(STORAGE_IPC_CHANNELS);
   const channelValues = Object.values(STORAGE_IPC_CHANNELS);

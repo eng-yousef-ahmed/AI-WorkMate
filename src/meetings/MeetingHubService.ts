@@ -251,7 +251,7 @@ export class MeetingHubService {
         jobType: job.jobType,
         state: job.state,
         createdAt: job.createdAt,
-        ...(job.error === undefined ? {} : { error: job.error }),
+        ...(job.error === undefined ? {} : { error: redactRendererVisibleText(job.error) }),
       } satisfies HubProcessingJobInfo));
     return {
       meeting: summary,
@@ -630,6 +630,13 @@ function toCaptureSnapshot(snapshot: MeetingCaptureFlowSnapshot): HubCaptureSnap
     };
   }
   return result;
+}
+
+const RENDERER_FS_LEAK =
+  /(?:[A-Za-z]:(?:\\+|\/(?!\/))|\\\\|\/home\/|\/Users\/|\/tmp\/|\/var\/|file:\/\/|DATA_ROOT|Program Files|AppData|LOCALAPPDATA)/i;
+
+function redactRendererVisibleText(message: string): string {
+  return RENDERER_FS_LEAK.test(message) ? "Details were withheld." : message;
 }
 
 function artifactTypeLabel(type: ArtifactType): string {

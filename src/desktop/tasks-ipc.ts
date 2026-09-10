@@ -119,9 +119,8 @@ function readCreateInput(value: unknown): HubTaskCreateInput {
   if (record.dueDate !== undefined) {
     input.dueDate = readOptionalDate(record.dueDate, "due date");
   }
-  if (record.sourceArtifactId !== undefined) {
-    input.sourceArtifactId = readId(record.sourceArtifactId, "source artifact");
-  }
+  // Provenance is owned by analysis conversion in the main process. The
+  // renderer cannot attach an arbitrary artifact id to a manual task.
   return input;
 }
 

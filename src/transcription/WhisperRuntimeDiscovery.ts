@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 
 import { isWhisperCppModelMagic } from "./WhisperModelFormat";
@@ -41,24 +41,32 @@ export async function discoverWhisperRuntime(options: {
   };
   if (helperPath !== undefined) {
     discovery.helperName = basename(helperPath);
-    discovery.relativeHelperLocation = `%LOCALAPPDATA%\\\\AI-WorkMate\\\\native\\\\${basename(helperPath)}`;
+    discovery.relativeHelperLocation = `%LOCALAPPDATA%\\AI-WorkMate\\native\\${basename(helperPath)}`;
     if (platform === "win32") {
       discovery.engineVersion = await readWhisperVersion(helperPath);
     }
   }
   if (modelPath !== undefined) {
-    const contents = await readFile(modelPath);
-    const sha256 = createHash("sha256").update(contents).digest("hex");
+    const fileStat = await stat(modelPath);
+    const header = Buffer.alloc(4);
+    const handle = await open(modelPath, "r");
+    try {
+      await handle.read(header, 0, 4, 0);
+    } finally {
+      await handle.close();
+    }
     const catalog = getWhisperModelCatalogEntry(basename(modelPath));
     discovery.modelFound = true;
     discovery.modelName = basename(modelPath);
-    discovery.modelSha256 = sha256;
-    discovery.modelBytes = contents.byteLength;
-    discovery.relativeModelLocation = `%LOCALAPPDATA%\\\\AI-WorkMate\\\\models\\\\whisper\\\\${basename(modelPath)}`;
+    discovery.modelBytes = fileStat.size;
+    discovery.relativeModelLocation = `%LOCALAPPDATA%\\AI-WorkMate\\models\\whisper\\${basename(modelPath)}`;
+    // Snapshot status uses size + magic only. SHA-256 of ggml-tiny (~78 MB)
+    // is enforced at install; Settings must not re-hash the file on every
+    // refresh. Engine use still fail-closes on a catalog mismatch.
     if (catalog !== undefined) {
-      discovery.modelChecksumOk = catalog.sha256 === sha256 && catalog.bytes === contents.byteLength;
+      discovery.modelChecksumOk = catalog.bytes === fileStat.size && isWhisperCppModelMagic(header);
     }
-    if (!isWhisperCppModelMagic(contents)) {
+    if (!isWhisperCppModelMagic(header)) {
       discovery.modelFound = false;
       discovery.failureCode = "TRANSCRIPTION_ENGINE_UNAVAILABLE";
       discovery.failureMessage = "Located model is not a whisper.cpp ggml/gguf file (little-endian GGML_FILE_MAGIC or GGUF).";

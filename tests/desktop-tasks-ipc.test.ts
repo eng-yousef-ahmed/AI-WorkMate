@@ -55,8 +55,8 @@ function createStubs(options: TasksStubOptions = {}): {
     },
     getTask: (id: string) => { calls.push(`getTask:${id}`); return options.task ?? taskStub({ taskId: id }); },
     createTask: (input: unknown) => {
-      const record = input as { text: string };
-      calls.push(`createTask:${record.text}`);
+      const record = input as { text: string; sourceArtifactId?: string };
+      calls.push(`createTask:${record.text}:${record.sourceArtifactId ?? ""}`);
       if (options.createError !== undefined) throw options.createError;
       return { ...task, text: record.text };
     },
@@ -165,13 +165,14 @@ test("tasks IPC create and update validate text, assignee and due date", async (
     text: "  Verify restore  ",
     assignee: "Ada",
     dueDate: "2026-10-01",
+    sourceArtifactId: "forged-artifact",
   });
   assert.equal((created as HubTaskItem).text, "Verify restore");
-  assert.deepEqual(calls, ["createTask:Verify restore"]);
+  assert.deepEqual(calls, ["createTask:Verify restore:"]);
 
   await invoke(handlers, TASKS_IPC_CHANNELS.updateTask, AUTHORIZED_EVENT, "task-1", { assignee: null });
   await invoke(handlers, TASKS_IPC_CHANNELS.setTaskStatus, AUTHORIZED_EVENT, "task-1", "DONE");
-  assert.deepEqual(calls, ["createTask:Verify restore", "updateTask:task-1", "setTaskStatus:task-1:DONE"]);
+  assert.deepEqual(calls, ["createTask:Verify restore:", "updateTask:task-1", "setTaskStatus:task-1:DONE"]);
 });
 
 test("tasks IPC sanitizes service failures", async () => {

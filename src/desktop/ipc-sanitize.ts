@@ -16,6 +16,11 @@ export function rendererErrorContainsFilesystemLeak(message: string): boolean {
   return FILESYSTEM_LEAK_PATTERN.test(message);
 }
 
+/** Strips filesystem/DATA_ROOT details from a successful DTO string field. */
+export function sanitizeRendererVisibleText(value: string, fallback: string): string {
+  return rendererErrorContainsFilesystemLeak(value) ? fallback : value;
+}
+
 export interface SanitizeRendererIpcErrorOptions {
   /** Extra application errors that may reach the renderer when path-free. */
   isAllowed?: (error: unknown) => boolean;
