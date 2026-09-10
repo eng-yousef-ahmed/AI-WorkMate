@@ -386,6 +386,11 @@ export interface BackupManifest {
   formatVersion: 1;
   storageVersion: number;
   createdAt: string;
+  /**
+   * Never an absolute filesystem path. Historical backups may contain a path;
+   * current backups store the sentinel `LOCAL` so a shared ZIP cannot leak
+   * DATA_ROOT.
+   */
   sourceDataRoot: string;
   includes: string[];
   fileCount: number;

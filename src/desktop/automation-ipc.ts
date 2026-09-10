@@ -3,6 +3,7 @@ import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
 import type { HubAutomationPreferences } from "../domain/hub";
 import { normalizeAutomationPreferences } from "../automation/AutomationPreferences";
+import { sanitizeRendererIpcError } from "./ipc-sanitize";
 import { secureHandler, type IpcMainLike } from "./storage-ipc";
 
 export interface AutomationIpcDependencies {
@@ -29,7 +30,7 @@ export function registerAutomationIpc({
       try {
         return await listener(...args);
       } catch (error: unknown) {
-        throw sanitizeAutomationIpcError(error);
+        throw sanitizeRendererIpcError(error, "The notification action could not be completed. Please try again.");
       }
     }, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
   };
@@ -89,12 +90,3 @@ function readNotificationQuery(value: unknown): { unreadOnly?: boolean; limit?: 
   return query;
 }
 
-function sanitizeAutomationIpcError(error: unknown): Error {
-  if (error instanceof StorageError) {
-    return error;
-  }
-  if (error instanceof Error) {
-    console.error("Automation IPC error", error);
-  }
-  return new StorageError("The notification action could not be completed. Please try again.");
-}

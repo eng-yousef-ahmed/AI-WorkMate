@@ -6,6 +6,7 @@ import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
 import { assertOfficeExportKind } from "../office/OfficeExportService";
 import { STORAGE_IPC_CHANNELS, type LocationChangePreview } from "./storage-api";
+import { sanitizeRendererIpcError } from "./ipc-sanitize";
 
 export interface IpcMainLike {
   handle(channel: string, listener: (...args: unknown[]) => unknown): void;
@@ -47,7 +48,16 @@ export function registerStorageIpc({
 }: StorageIpcDependencies): void {
   const pendingLocationChanges = new Map<string, string>();
   const handle = (channel: string, listener: (...args: unknown[]) => unknown): void => {
-    ipcMain.handle(channel, secureHandler(listener, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
+    ipcMain.handle(
+      channel,
+      secureHandler(async (...args: unknown[]) => {
+        try {
+          return await listener(...args);
+        } catch (error: unknown) {
+          throw sanitizeRendererIpcError(error, "The storage action could not be completed. Please try again.");
+        }
+      }, getAuthorizedWebContentsId, getAuthorizedRendererUrl),
+    );
   };
 
   handle(STORAGE_IPC_CHANNELS.getSnapshot, async (): Promise<StorageSnapshot> => runtime.getSnapshot());

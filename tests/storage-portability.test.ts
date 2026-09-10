@@ -29,6 +29,15 @@ test("creates and restores a standard local backup with a consistent SQLite snap
       assert.ok(names.includes("Database/ai-workmate.sqlite"));
       assert.ok(names.includes(audio.relativePath));
       assert.ok(names.includes(transcript.json.relativePath));
+      const manifestEntry = entries.files.find((entry) => entry.path === "BackupManifest.json");
+      assert.ok(manifestEntry);
+      const manifestChunks: Buffer[] = [];
+      for await (const chunk of manifestEntry.stream()) {
+        manifestChunks.push(Buffer.from(chunk as Uint8Array));
+      }
+      const manifestText = Buffer.concat(manifestChunks).toString("utf8");
+      assert.match(manifestText, /"sourceDataRoot": "LOCAL"/);
+      assert.equal(manifestText.includes(store.storage.dataRoot), false);
 
       const restoredRoot = join(external, "restored");
       const restored = await store.backups.restore(backup.path, restoredRoot);

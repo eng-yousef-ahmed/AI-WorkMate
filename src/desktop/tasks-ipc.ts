@@ -2,6 +2,7 @@ import { TASKS_IPC_CHANNELS } from "./storage-api";
 import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
 import type { HubTaskCreateInput, HubTaskStatus, HubTaskUpdateInput } from "../domain/hub";
+import { sanitizeRendererIpcError } from "./ipc-sanitize";
 import { secureHandler, type IpcMainLike } from "./storage-ipc";
 
 export interface TasksIpcDependencies {
@@ -35,7 +36,7 @@ export function registerTasksIpc({
       try {
         return await listener(...args);
       } catch (error: unknown) {
-        throw sanitizeTasksIpcError(error);
+        throw sanitizeRendererIpcError(error, "The task action could not be completed. Please try again.");
       }
     }, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
   };
@@ -180,12 +181,4 @@ function readOptionalDate(value: unknown, label: string): string | undefined {
   return date;
 }
 
-function sanitizeTasksIpcError(error: unknown): Error {
-  if (error instanceof StorageError) {
-    return error;
-  }
-  if (error instanceof Error) {
-    console.error("Tasks IPC error", error);
-  }
-  return new StorageError("The task action could not be completed. Please try again.");
-}
+

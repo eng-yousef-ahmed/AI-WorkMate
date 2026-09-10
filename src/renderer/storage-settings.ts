@@ -525,5 +525,7 @@ function showNotice(message: string, error = false): void {
 }
 
 function showError(error: unknown): void {
-  showNotice(error instanceof Error ? error.message : String(error), true);
+  const message = error instanceof Error ? error.message : String(error);
+  const looksLikePath = /(?:[A-Za-z]:[\\/]|\\\\|\/home\/|\/Users\/|file:\/\/|DATA_ROOT)/i.test(message);
+  showNotice(looksLikePath ? "The storage action could not be completed. Please try again." : message, true);
 }

@@ -3,6 +3,7 @@ import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
 import { MeetingHubError } from "../meetings/MeetingHubService";
 import type { HubCaptureRequest } from "../domain/hub";
+import { sanitizeRendererIpcError } from "./ipc-sanitize";
 import { secureHandler, type IpcMainLike } from "./storage-ipc";
 
 export interface MeetingsIpcDependencies {
@@ -36,7 +37,11 @@ export function registerMeetingsIpc({
       try {
         return await listener(...args);
       } catch (error: unknown) {
-        throw sanitizeMeetingsIpcError(error);
+        throw sanitizeRendererIpcError(
+          error,
+          "The meeting action could not be completed. Please try again.",
+          { isAllowed: (candidate) => candidate instanceof MeetingHubError },
+        );
       }
     }, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
   };
@@ -240,12 +245,4 @@ function readCaptureRequest(value: unknown): HubCaptureRequest {
   return request;
 }
 
-function sanitizeMeetingsIpcError(error: unknown): Error {
-  if (error instanceof MeetingHubError || error instanceof StorageError) {
-    return error;
-  }
-  if (error instanceof Error) {
-    console.error("Meeting Hub IPC error", error);
-  }
-  return new StorageError("The meeting action could not be completed. Please try again.");
-}
+

@@ -5,6 +5,7 @@ import type { StorageSnapshot } from "../src/domain/models";
 import type { StorageRuntime } from "../src/storage/StorageRuntime";
 import { STORAGE_IPC_CHANNELS } from "../src/desktop/storage-api";
 import { registerStorageIpc } from "../src/desktop/storage-ipc";
+import { UnsafePathError } from "../src/storage/errors";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "../src/desktop/window-security";
 
 type IpcHandler = (...args: unknown[]) => unknown;
@@ -165,6 +166,39 @@ test("authorizes storage IPC only for the active application webContents and exa
   assert.deepEqual(
     await handler({ sender: { id: 77 }, senderFrame: { url: "file:///AI-WorkMate/storage-settings.html" } }),
     snapshot,
+  );
+});
+
+test("storage backup IPC sanitizes unsafe-path errors so DATA_ROOT never reaches the renderer", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const runtime = {
+    store: {
+      backups: {
+        createBackup: async () => {
+          throw new UnsafePathError("C:\\\\Users\\\\ada\\\\AI-WorkMate");
+        },
+      },
+    },
+  } as unknown as StorageRuntime;
+  registerStorageIpc({
+    ipcMain: { handle: (channel, listener) => handlers.set(channel, listener) },
+    dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ["C:\\\\Users\\\\ada\\\\Backups"] }) },
+    shell: { openPath: async () => "" },
+    runtime,
+    getAuthorizedWebContentsId: () => 77,
+    getAuthorizedRendererUrl: () => "file:///AI-WorkMate/storage-settings.html",
+  });
+  const event = { sender: { id: 77 }, senderFrame: { url: "file:///AI-WorkMate/storage-settings.html" } };
+  await assert.rejects(
+    async () => handlers.get(STORAGE_IPC_CHANNELS.createBackup)?.(event),
+    (error: unknown) => {
+      assert.equal(error instanceof Error, true);
+      const message = (error as Error).message;
+      assert.equal(message.includes("C:"), false);
+      assert.equal(message.includes("Users"), false);
+      assert.match(message, /not allowed/);
+      return true;
+    },
   );
 });
 

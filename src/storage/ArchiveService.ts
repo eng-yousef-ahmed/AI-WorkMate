@@ -39,7 +39,7 @@ export class ArchiveService {
     const destination = normalizeAbsolutePath(destinationPath);
     await mkdir(dirname(destination), { recursive: true });
     if (await exists(destination)) {
-      throw new DataRootValidationError(`Refusing to overwrite an existing archive: ${destination}`);
+      throw new DataRootValidationError("Refusing to overwrite an existing archive.");
     }
     validateEntries(entries);
 

@@ -5,6 +5,7 @@ import { GoogleOAuthConfigurationError } from "../integrations/google/GoogleOAut
 import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
 import { CALENDAR_IPC_CHANNELS } from "./storage-api";
+import { sanitizeRendererIpcError } from "./ipc-sanitize";
 import { secureHandler, type IpcMainLike } from "./storage-ipc";
 
 /**
@@ -129,7 +130,16 @@ export function registerCalendarIpc({
       try {
         return await listener(...args);
       } catch (error: unknown) {
-        throw sanitizeCalendarIpcError(error);
+        throw sanitizeRendererIpcError(
+          error,
+          "The calendar action could not be completed. Please try again.",
+          {
+            isAllowed: (candidate) =>
+              candidate instanceof CalendarConnectionError ||
+              candidate instanceof MicrosoftOAuthConfigurationError ||
+              candidate instanceof GoogleOAuthConfigurationError,
+          },
+        );
       }
     }, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
   };
@@ -244,22 +254,4 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
-/**
- * Known errors carry fixed, non-sensitive messages from the main-process
- * connection layer. Anything unexpected becomes a generic message so raw
- * filesystem or network details never reach the renderer.
- */
-function sanitizeCalendarIpcError(error: unknown): Error {
-  if (
-    error instanceof CalendarConnectionError ||
-    error instanceof MicrosoftOAuthConfigurationError ||
-    error instanceof GoogleOAuthConfigurationError ||
-    error instanceof StorageError
-  ) {
-    return error;
-  }
-  if (error instanceof Error) {
-    console.error("Calendar IPC error", error);
-  }
-  return new StorageError("The calendar action could not be completed. Please try again.");
-}
+

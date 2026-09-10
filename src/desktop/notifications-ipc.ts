@@ -2,6 +2,7 @@ import { NOTIFICATIONS_IPC_CHANNELS } from "./storage-api";
 import type { StorageRuntime } from "../storage/StorageRuntime";
 import { StorageError } from "../storage/errors";
 import type { HubNotificationSettingsInput } from "../domain/hub";
+import { sanitizeRendererIpcError } from "./ipc-sanitize";
 import { secureHandler, type IpcMainLike } from "./storage-ipc";
 
 export interface NotificationsIpcDependencies {
@@ -34,7 +35,7 @@ export function registerNotificationsIpc({
       try {
         return await listener(...args);
       } catch (error: unknown) {
-        throw sanitizeNotificationsIpcError(error);
+        throw sanitizeRendererIpcError(error, "The notification action could not be completed. Please try again.");
       }
     }, getAuthorizedWebContentsId, getAuthorizedRendererUrl));
   };
@@ -124,12 +125,4 @@ function readSettingsInput(value: unknown): HubNotificationSettingsInput {
   return input;
 }
 
-function sanitizeNotificationsIpcError(error: unknown): Error {
-  if (error instanceof StorageError) {
-    return error;
-  }
-  if (error instanceof Error) {
-    console.error("Notifications IPC error", error);
-  }
-  return new StorageError("The notification action could not be completed. Please try again.");
-}
+

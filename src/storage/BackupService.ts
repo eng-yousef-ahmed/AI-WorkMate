@@ -5,11 +5,17 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import unzipper from "unzipper";
 
-import { STORAGE_VERSION, type BackupManifest } from "../domain/models";
-import { ArchiveSecurityError, DataRootValidationError } from "./errors";
-import { ArchiveService, normalizeArchiveEntryName, type CreatedArchive } from "./ArchiveService";
+import { STORAGE_VERSION, type BackupManifest, type StorageManifest } from "../domain/models";
+import { ArchiveSecurityError, DataRootValidationError, InsufficientDiskSpaceError, StorageError } from "./errors";
+import { ArchiveService, normalizeArchiveEntryName, type ArchiveEntry, type CreatedArchive } from "./ArchiveService";
 import type { LocalDatabase } from "./LocalDatabase";
-import { isPathInside, LocalStorageService, normalizeAbsolutePath } from "./LocalStorageService";
+import { getAvailableBytes, isPathInside, LocalStorageService, normalizeAbsolutePath } from "./LocalStorageService";
+import { assertDirectoryHasSpace, type AvailableBytesForDirectory } from "./disk-space";
+
+/** Staging folders left when a restore is interrupted (crash / kill). */
+export const RESTORE_STAGING_PREFIX = ".ai-workmate-restore-";
+/** Sentinel stored in new archives so a shared ZIP cannot leak DATA_ROOT. */
+export const LOCAL_BACKUP_ORIGIN = "LOCAL";
 
 export interface RestoreResult {
   destination: string;
@@ -25,82 +31,126 @@ export interface RestoreResult {
  */
 export class BackupService {
   private readonly archiveService = new ArchiveService();
+  private readonly availableBytesForDirectory: AvailableBytesForDirectory;
+  private busy = false;
 
   public constructor(
     private readonly storage: LocalStorageService,
     private readonly database: LocalDatabase,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+    availableBytesForDirectory?: AvailableBytesForDirectory,
+  ) {
+    this.availableBytesForDirectory = availableBytesForDirectory ?? getAvailableBytes;
+  }
+
+  private beginExclusive(): void {
+    if (this.busy) {
+      throw new StorageError("A backup or restore is already in progress.");
+    }
+    this.busy = true;
+  }
 
   public async createBackup(backupDirectory: string): Promise<CreatedArchive> {
-    const directory = await this.validateBackupDirectory(backupDirectory);
-    this.database.checkpoint();
-
+    this.beginExclusive();
     const snapshotPath = join(tmpdir(), `ai-workmate-db-${randomUUID()}.sqlite`);
     try {
+      const directory = await this.validateBackupDirectory(backupDirectory);
+      this.database.checkpoint();
       await this.database.createConsistentCopy(snapshotPath);
+      const snapshotStat = await stat(snapshotPath);
       const sourceFiles = await this.storage.listFiles();
       const dataFiles = sourceFiles.filter((file) => !isExcludedFromBackup(file.relativePath));
       const databaseEntry = "Database/ai-workmate.sqlite";
+      let requiredBytes = snapshotStat.size;
       const databaseHash = await this.storage.hashFile(snapshotPath);
       const sha256ByPath: Record<string, string> = { [databaseEntry]: databaseHash };
+      const fileEntries: ArchiveEntry[] = [];
       for (const file of dataFiles) {
         if (file.relativePath === databaseEntry) {
           continue;
         }
+        requiredBytes += file.size;
+        if (file.relativePath === "storage.json") {
+          const rewritten = rewriteStorageManifestForBackup(await this.storage.readJson<StorageManifest>("storage.json"));
+          const contents = `${JSON.stringify(rewritten, null, 2)}\n`;
+          sha256ByPath[file.relativePath] = this.storage.hashBytes(contents);
+          fileEntries.push({ name: file.relativePath, contents });
+          continue;
+        }
         sha256ByPath[file.relativePath] = await this.storage.hashFile(file.absolutePath);
+        fileEntries.push({ name: file.relativePath, source: this.storage.createReadStream(file.relativePath) });
       }
+      await assertDirectoryHasSpace(
+        directory,
+        requiredBytes,
+        this.storage.spaceSafetyMarginBytes,
+        this.availableBytesForDirectory,
+      );
 
       const manifest: BackupManifest = {
         format: "AI_WORKMATE_BACKUP",
         formatVersion: 1,
         storageVersion: STORAGE_VERSION,
         createdAt: this.clock().toISOString(),
-        sourceDataRoot: this.storage.dataRoot,
+        sourceDataRoot: LOCAL_BACKUP_ORIGIN,
         includes: ["database", "meetings", "recordings", "audio", "transcripts", "analysis", "attachments", "exports", "metadata"],
         fileCount: Object.keys(sha256ByPath).length,
         sha256ByPath,
       };
       const filename = `ai-workmate-backup-${formatTimestamp(this.clock())}-${randomUUID()}.aiwm.zip`;
       const destination = join(directory, filename);
-      const entries = [
+      const entries: ArchiveEntry[] = [
         { name: "BackupManifest.json", contents: `${JSON.stringify(manifest, null, 2)}\n` },
-        ...dataFiles
-          .filter((file) => file.relativePath !== databaseEntry)
-          .map((file) => ({ name: file.relativePath, source: this.storage.createReadStream(file.relativePath) })),
+        ...fileEntries,
         { name: databaseEntry, source: createReadStream(snapshotPath) },
       ];
       const created = await this.archiveService.createZip(destination, entries);
       this.database.appendAudit({
         auditId: randomUUID(),
         action: "BACKUP_CREATED",
-        details: { path: created.path, fileCount: manifest.fileCount, format: manifest.format },
+        details: { fileCount: manifest.fileCount, format: manifest.format, size: created.size },
         createdAt: this.clock().toISOString(),
       });
       return created;
     } finally {
       await rm(snapshotPath, { force: true }).catch(() => undefined);
+      this.busy = false;
     }
   }
 
   public async restore(archivePath: string, destinationRoot: string): Promise<RestoreResult> {
-    const archive = normalizeAbsolutePath(archivePath);
-    const destination = normalizeAbsolutePath(destinationRoot);
-    if (isPathInside(this.storage.dataRoot, destination) || isPathInside(destination, this.storage.dataRoot)) {
-      throw new DataRootValidationError("A restore destination cannot contain or be contained by the active DATA_ROOT.");
-    }
-    const archiveStat = await stat(archive);
-    if (!archiveStat.isFile()) {
-      throw new DataRootValidationError("The selected backup is not a file.");
-    }
-    await ensureEmptyOrMissingDirectory(destination);
-
-    const staging = join(dirname(destination), `.ai-workmate-restore-${randomUUID()}`);
-    await mkdir(staging, { recursive: true });
-    const restoredStorage = new LocalStorageService(staging, { spaceSafetyMarginBytes: 0 });
-    const restoredPaths = new Set<string>();
+    this.beginExclusive();
+    let staging: string | undefined;
     try {
-      const archiveDirectory = await unzipper.Open.file(archive);
+      const archive = normalizeAbsolutePath(archivePath);
+      const destination = normalizeAbsolutePath(destinationRoot);
+      if (isPathInside(this.storage.dataRoot, destination) || isPathInside(destination, this.storage.dataRoot)) {
+        throw new DataRootValidationError("A restore destination cannot contain or be contained by the active DATA_ROOT.");
+      }
+      const archiveStat = await stat(archive);
+      if (!archiveStat.isFile() || archiveStat.size === 0) {
+        throw new ArchiveSecurityError("The selected backup is not a readable archive.");
+      }
+      await ensureEmptyOrMissingDirectory(destination);
+      const parent = dirname(destination);
+      await cleanupInterruptedRestoreStaging(parent);
+      await assertDirectoryHasSpace(
+        parent,
+        archiveStat.size,
+        this.storage.spaceSafetyMarginBytes,
+        this.availableBytesForDirectory,
+      );
+
+      staging = join(parent, `${RESTORE_STAGING_PREFIX}${randomUUID()}`);
+      await mkdir(staging, { recursive: true });
+      const restoredStorage = new LocalStorageService(staging, { spaceSafetyMarginBytes: 0 });
+      const restoredPaths = new Set<string>();
+      let archiveDirectory;
+      try {
+        archiveDirectory = await unzipper.Open.file(archive);
+      } catch (error: unknown) {
+        throw new ArchiveSecurityError("The backup archive is corrupted or not a valid ZIP.", { cause: error });
+      }
       for (const entry of archiveDirectory.files) {
         const rawName = entry.path.replaceAll("\\", "/");
         if (rawName.endsWith("/")) {
@@ -127,10 +177,15 @@ export class BackupService {
           `Backup file count mismatch: manifest has ${manifest.fileCount}, restore has ${actualDataFiles.length}.`,
         );
       }
+      for (const file of actualDataFiles) {
+        if (manifest.sha256ByPath[file.relativePath] === undefined) {
+          throw new ArchiveSecurityError(`Backup contains an unexpected file: ${file.relativePath}.`);
+        }
+      }
       for (const [relativePath, expectedHash] of Object.entries(manifest.sha256ByPath)) {
         const verification = await restoredStorage.inspectFile(relativePath, expectedHash);
         if (verification.status !== "AVAILABLE") {
-          throw new ArchiveSecurityError(`Backup verification failed for ${relativePath}.`);
+          throw new ArchiveSecurityError(`Backup SHA-256 verification failed for ${relativePath}.`);
         }
       }
       if (!restoredPaths.has("storage.json") || !restoredPaths.has("Database/ai-workmate.sqlite")) {
@@ -141,22 +196,31 @@ export class BackupService {
         await rename(destination, `${destination}.previous-${randomUUID()}`);
       }
       await rename(staging, destination);
+      staging = undefined;
       this.database.appendAudit({
         auditId: randomUUID(),
         action: "BACKUP_RESTORED",
-        details: { sourceArchive: archive, destination, fileCount: manifest.fileCount },
+        details: { fileCount: manifest.fileCount, verified: true },
         createdAt: this.clock().toISOString(),
       });
       return { destination, verified: true, restoredFiles: manifest.fileCount, sourceArchive: archive };
     } catch (error: unknown) {
-      await rm(staging, { recursive: true, force: true });
-      if (error instanceof ArchiveSecurityError || error instanceof DataRootValidationError) {
+      if (staging !== undefined) {
+        await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      }
+      if (
+        error instanceof ArchiveSecurityError ||
+        error instanceof DataRootValidationError ||
+        error instanceof InsufficientDiskSpaceError ||
+        error instanceof StorageError
+      ) {
         throw error;
       }
-      throw new ArchiveSecurityError(
-        `Backup restore was not completed: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
+      throw new ArchiveSecurityError("Backup restore was not completed because the archive could not be verified.", {
+        cause: error,
+      });
+    } finally {
+      this.busy = false;
     }
   }
 
@@ -200,6 +264,31 @@ export class BackupService {
     }
     return directory;
   }
+}
+
+export function rewriteStorageManifestForBackup(manifest: StorageManifest): StorageManifest {
+  return { ...manifest, dataRootLabel: LOCAL_BACKUP_ORIGIN };
+}
+
+export async function cleanupInterruptedRestoreStaging(parentDirectory: string): Promise<number> {
+  const parent = normalizeAbsolutePath(parentDirectory);
+  let removed = 0;
+  let entries;
+  try {
+    entries = await readdir(parent, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (isMissingFileError(error)) {
+      return 0;
+    }
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.startsWith(RESTORE_STAGING_PREFIX)) {
+      await rm(join(parent, entry.name), { recursive: true, force: true });
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 function isExcludedFromBackup(relativePath: string): boolean {

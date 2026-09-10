@@ -5,6 +5,7 @@ import type { AnalysisDocument, CalendarEventAssociation, Meeting } from "../dom
 import type { HubOfficeExportKind, HubOfficeExportResult } from "../domain/hub";
 import { DataRootValidationError, StorageError } from "../storage/errors";
 import { isPathInside, normalizeAbsolutePath } from "../storage/LocalStorageService";
+import { assertDirectoryHasSpace } from "../storage/disk-space";
 import type { LocalFirstStore } from "../storage/LocalFirstStore";
 import { HUB_MAX_ANALYSIS_READ_BYTES } from "../domain/hub";
 
@@ -82,6 +83,7 @@ export class OfficeExportService {
       throw new DataRootValidationError("Office exports must be written outside DATA_ROOT.");
     }
     const payload = Buffer.from(contents, "utf8");
+    await assertDirectoryHasSpace(directory, payload.byteLength, this.store.storage.spaceSafetyMarginBytes);
     await writeFile(target, payload, { flag: "wx" });
     return { kind: mimeType === "text/csv" ? "EXCEL_TASKS" : mimeType === "application/msword" ? "WORD_SUMMARY" : "POWERPOINT_BRIEFING", filename, size: payload.byteLength, mimeType };
   }

@@ -7,6 +7,7 @@ import type { LocalDatabase } from "./LocalDatabase";
 import { DataRootValidationError, StorageError } from "./errors";
 import { isPathInside, normalizeAbsolutePath } from "./LocalStorageService";
 import type { LocalStorageService } from "./LocalStorageService";
+import { assertDirectoryHasSpace } from "./disk-space";
 
 export interface MeetingExportMetadata {
   meeting: Meeting;
@@ -34,6 +35,8 @@ export class ExportService {
     const directory = await this.validateExportDirectory(exportDirectory);
     const folderPrefix = `${meeting.folderRelativePath}/`;
     const artifacts = this.database.listArtifacts(meetingId);
+    const requiredBytes = artifacts.reduce((total, artifact) => total + artifact.size, 0);
+    await assertDirectoryHasSpace(directory, requiredBytes, this.storage.spaceSafetyMarginBytes);
     const files: string[] = [];
     const entries: ArchiveEntry[] = [];
 
