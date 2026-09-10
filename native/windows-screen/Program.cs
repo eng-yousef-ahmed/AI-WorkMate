@@ -268,16 +268,18 @@ static async Task<int> CaptureWindowAsync(string? sourceId)
         using (adapter)
         using (output)
         {
+            // D3D11CreateDevice may yield a null device even after a successful HRESULT.
             D3D11.D3D11CreateDevice(
                 adapter,
                 DriverType.Unknown,
                 DeviceCreationFlags.BgraSupport,
                 new[] { FeatureLevel.Level_11_0, FeatureLevel.Level_10_0 },
-                out d3dDevice).CheckError();
-            if (d3dDevice is null)
+                out var createdDevice).CheckError();
+            if (createdDevice is null)
             {
                 throw new CaptureException("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", "Direct3D 11 could not be initialised for Windows Graphics Capture.", false);
             }
+            d3dDevice = createdDevice;
         }
     }
     catch (CaptureException)
