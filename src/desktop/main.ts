@@ -26,6 +26,8 @@ import { NOTIFICATIONS_CHANGED_EVENT } from "./storage-api";
 import { registerMeetingsIpc } from "./meetings-ipc";
 import { registerNotificationsIpc } from "./notifications-ipc";
 import { registerTasksIpc } from "./tasks-ipc";
+import { LocalRuntimeSetupService } from "../runtime/LocalRuntimeSetupService";
+import { registerRuntimeIpc } from "./runtime-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
 import type { HubNotification } from "../domain/hub";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
@@ -151,6 +153,14 @@ async function bootstrap(): Promise<void> {
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
       getAuthorizedRendererUrl: () => rendererUrl,
       broadcastChanged: broadcastNotificationChange,
+    });
+    registerRuntimeIpc({
+      ipcMain: ipcMain as unknown as IpcMainLike,
+      setup: new LocalRuntimeSetupService({
+        localAppData: process.env.LOCALAPPDATA ?? app.getPath("userData"),
+      }),
+      getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
+      getAuthorizedRendererUrl: () => rendererUrl,
     });
     ipcRegistered = true;
   }

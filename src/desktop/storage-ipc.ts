@@ -61,6 +61,7 @@ export function registerStorageIpc({
   };
 
   handle(STORAGE_IPC_CHANNELS.getSnapshot, async (): Promise<StorageSnapshot> => runtime.getSnapshot());
+  handle(STORAGE_IPC_CHANNELS.getLifecycle, async () => runtime.getLifecycleSnapshot());
 
   handle(STORAGE_IPC_CHANNELS.chooseInitialLocation, async (): Promise<StorageSnapshot | null> => {
     const selected = await chooseDirectory(dialog, "Choose where AI WorkMate should store your data.");

@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
+import { RUNTIME_IPC_CHANNELS, type RuntimeRendererAPI } from "./runtime-ipc";
 import { AUTOMATION_IPC_CHANNELS, CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, NOTIFICATIONS_CHANGED_EVENT, NOTIFICATIONS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type AutomationRendererAPI, type CalendarRendererAPI, type MeetingsRendererAPI, type NotificationsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {
   getSnapshot: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getSnapshot),
+  getLifecycle: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getLifecycle),
   chooseInitialLocation: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.chooseInitialLocation),
   prepareLocationChange: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.prepareLocationChange),
   confirmLocationChange: (requestId, migrateExistingData) =>
@@ -80,6 +82,12 @@ const automationApi: AutomationRendererAPI = {
   runTick: () => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.runTick),
 };
 
+const runtimeApi: RuntimeRendererAPI = {
+  getSnapshot: () => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.getSnapshot),
+  install: (component, replaceCorrupted) =>
+    ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.install, component, replaceCorrupted === true),
+};
+
 const notificationsApi: NotificationsRendererAPI = {
   list: () => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.list),
   markRead: (notificationId) => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.markRead, notificationId),
@@ -103,4 +111,5 @@ contextBridge.exposeInMainWorld("aiWorkMate", {
   tasks: tasksApi,
   automation: automationApi,
   notifications: notificationsApi,
+  runtime: runtimeApi,
 });

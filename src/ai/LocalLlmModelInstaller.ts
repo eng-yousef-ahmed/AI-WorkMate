@@ -1,10 +1,6 @@
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
+import { isAbsolute, join, resolve } from "node:path";
 
+import { installVerifiedFile, ManagedInstallError } from "../runtime/ManagedModelInstall";
 import { getLocalLlmModelCatalogEntry, isAllowlistedLocalLlmModelUrl, type LocalLlmModelCatalogEntry, type LocalLlmModelFile } from "./LocalLlmRuntimeCatalog";
 import { LocalLlmError } from "./LocalLlmErrors";
 
@@ -17,6 +13,7 @@ export interface LocalLlmModelInstallOptions {
   localAppData?: string;
   transport?: LocalLlmDownloadTransport;
   destinationRoot?: string;
+  replaceCorrupted?: boolean;
 }
 
 export interface InstalledLocalLlmModelFile {
@@ -33,6 +30,7 @@ export interface LocalLlmModelInstallResult {
   files: InstalledLocalLlmModelFile[];
   relativeLocation: string;
   splitGguf: boolean;
+  alreadyVerified?: boolean;
 }
 
 const RELATIVE_MODEL_DIR = join("AI-WorkMate", "models", "llm");
@@ -59,11 +57,15 @@ export async function installLocalLlmModel(options: LocalLlmModelInstallOptions)
   const directory = options.destinationRoot === undefined
     ? localLlmManagedModelDirectory(localAppData)
     : assertManagedLocalLlmDestination(options.destinationRoot, localAppData);
-  await mkdir(directory, { recursive: true });
   const transport = options.transport ?? httpsTransport();
   const installed: InstalledLocalLlmModelFile[] = [];
+  let alreadyVerified = true;
   for (const file of entry.files) {
-    installed.push(await installCatalogFile(directory, file, transport));
+    const result = await installCatalogFile(directory, file, transport, options.replaceCorrupted === true);
+    installed.push({ filename: result.filename, sha256: result.sha256, bytes: result.bytes });
+    if (result.alreadyVerified !== true) {
+      alreadyVerified = false;
+    }
   }
   const primary = installed[0];
   if (primary === undefined) {
@@ -75,8 +77,9 @@ export async function installLocalLlmModel(options: LocalLlmModelInstallOptions)
     sha256: primary.sha256,
     bytes: primary.bytes,
     files: installed,
-    relativeLocation: `%LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\${primary.filename}`,
+    relativeLocation: `%LOCALAPPDATA%\\\\AI-WorkMate\\\\models\\\\llm\\\\${primary.filename}`,
     splitGguf: entry.splitGguf,
+    alreadyVerified,
   };
 }
 
@@ -100,65 +103,60 @@ async function installCatalogFile(
   directory: string,
   file: LocalLlmModelFile,
   transport: LocalLlmDownloadTransport,
-): Promise<InstalledLocalLlmModelFile> {
-  const destination = join(directory, file.filename);
-  if (basename(destination) !== file.filename) {
-    throw new LocalLlmError("ANALYSIS_PATH_REJECTED", "Local LLM model filename escaped the managed directory.", false);
-  }
-  const temporary = `${destination}.tmp-download`;
-  await rm(temporary, { force: true }).catch(() => undefined);
-  const response = await transport.get(file.url);
-  if (response.status !== 200) {
-    throw new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", `Local LLM model download failed with HTTP ${response.status}.`, true);
-  }
-  const hash = createHash("sha256");
-  let bytes = 0;
+  replaceCorrupted: boolean,
+): Promise<InstalledLocalLlmModelFile & { alreadyVerified: boolean }> {
   try {
-    const output = createWriteStream(temporary, { flags: "wx", mode: 0o600 });
-    await pipeline(Readable.from(hashingBody(response.body, hash, (chunk) => {
-      bytes += chunk.byteLength;
-    })), output);
-    const handle = await open(temporary, "r+");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    const sha256 = hash.digest("hex");
-    if (bytes !== file.bytes || sha256 !== file.sha256) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw new LocalLlmError(
-        "ANALYSIS_ENGINE_UNAVAILABLE",
-        `Local LLM model SHA-256 or size mismatch for ${file.filename}.`,
-        false,
-      );
-    }
-    await rename(temporary, destination);
-    return { filename: file.filename, sha256, bytes };
+    return await installVerifiedFile({
+      directory,
+      file: { filename: file.filename, sha256: file.sha256, bytes: file.bytes, url: file.url },
+      transport,
+      ...(replaceCorrupted ? { replaceCorrupted: true } : {}),
+    });
   } catch (error: unknown) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    if (error instanceof LocalLlmError) {
-      throw error;
-    }
-    throw new LocalLlmError(
-      "ANALYSIS_ENGINE_UNAVAILABLE",
-      `Local LLM model install was interrupted: ${error instanceof Error ? error.message : String(error)}`,
-      true,
-      { cause: error },
-    );
+    throw wrapLocalLlmInstallError(error, file.filename);
   }
 }
 
-async function* hashingBody(
-  body: AsyncIterable<Uint8Array>,
-  hash: ReturnType<typeof createHash>,
-  onChunk: (chunk: Uint8Array) => void,
-): AsyncIterable<Uint8Array> {
-  for await (const chunk of body) {
-    hash.update(chunk);
-    onChunk(chunk);
-    yield chunk;
+function wrapLocalLlmInstallError(error: unknown, filename: string): LocalLlmError {
+  if (error instanceof LocalLlmError) {
+    return error;
   }
+  if (error instanceof ManagedInstallError) {
+    if (error.code === "PATH") {
+      return new LocalLlmError("ANALYSIS_PATH_REJECTED", error.message, false, { cause: error });
+    }
+    if (error.code === "CHECKSUM") {
+      return new LocalLlmError(
+        "ANALYSIS_ENGINE_UNAVAILABLE",
+        `Local LLM model SHA-256 or size mismatch for ${filename}.`,
+        false,
+        { cause: error },
+      );
+    }
+    if (error.code === "HTTP") {
+      return new LocalLlmError(
+        "ANALYSIS_ENGINE_UNAVAILABLE",
+        error.message.replace("Model download", "Local LLM model download"),
+        true,
+        { cause: error },
+      );
+    }
+    if (error.code === "INTERRUPTED") {
+      return new LocalLlmError(
+        "ANALYSIS_ENGINE_UNAVAILABLE",
+        `Local LLM model install was interrupted: ${error.message.replace(/^Model install was interrupted: /, "")}`,
+        true,
+        { cause: error },
+      );
+    }
+    return new LocalLlmError("ANALYSIS_ENGINE_UNAVAILABLE", error.message, error.retryable, { cause: error });
+  }
+  return new LocalLlmError(
+    "ANALYSIS_ENGINE_UNAVAILABLE",
+    `Local LLM model install was interrupted: ${error instanceof Error ? error.message : String(error)}`,
+    true,
+    { cause: error },
+  );
 }
 
 function httpsTransport(): LocalLlmDownloadTransport {

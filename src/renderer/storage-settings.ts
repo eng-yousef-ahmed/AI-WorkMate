@@ -5,6 +5,7 @@ import type { StorageSnapshot } from "../domain/models";
 
 const storage = window.aiWorkMate.storage;
 const calendar = window.aiWorkMate.calendar;
+const runtime = window.aiWorkMate.runtime;
 const $ = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
   if (element === null) throw new Error(`Missing renderer element: ${id}`);
@@ -19,6 +20,7 @@ const policyDescriptions: Record<string, string> = {
 };
 
 void loadSnapshot();
+void loadRuntimeSnapshot();
 refreshAllCalendarStatus();
 
 $("refresh-button").addEventListener("click", () => void loadSnapshot());
@@ -28,6 +30,8 @@ $("repair-button").addEventListener("click", () => void verify(true));
 $("backup-button").addEventListener("click", () => void createBackup());
 $("restore-button").addEventListener("click", () => void restoreBackup());
 $("change-location-button").addEventListener("click", () => void changeLocation());
+$("runtime-install-transcription").addEventListener("click", () => void installRuntimeComponent("transcription-tiny"));
+$("runtime-install-analysis").addEventListener("click", () => void installRuntimeComponent("analysis-production"));
 $("ai-policy").addEventListener("change", (event) => {
   const policy = (event.target as HTMLSelectElement).value as "LOCAL_ONLY" | "CLOUD_ALLOWED" | "ASK_EACH_TIME";
   void runAction(storage.setAiProcessingPolicy(policy), "AI processing policy updated.").then(() => updatePolicyDescription(policy));
@@ -397,6 +401,80 @@ async function loadSnapshot(): Promise<void> {
     showNotice("Storage statistics refreshed.");
   } catch (error: unknown) {
     showError(error);
+  }
+}
+
+async function loadRuntimeSnapshot(): Promise<void> {
+  try {
+    const snapshot = await runtime.getSnapshot();
+    renderRuntimeSnapshot(snapshot);
+  } catch (error: unknown) {
+    showError(error);
+  }
+}
+
+function renderRuntimeSnapshot(snapshot: Awaited<ReturnType<typeof runtime.getSnapshot>>): void {
+  const transcriptionReady = snapshot.transcription.ready;
+  const analysisReady = snapshot.analysis.ready;
+  $("runtime-transcription-status").textContent = describeRuntimeComponent(snapshot.transcription);
+  $("runtime-analysis-status").textContent = describeRuntimeComponent(snapshot.analysis);
+  $<HTMLButtonElement>("runtime-install-transcription").textContent = snapshot.transcription.modelPresent && !snapshot.transcription.checksumVerified
+    ? "Replace corrupted transcription"
+    : transcriptionReady
+      ? "Verified"
+      : "Install transcription";
+  $<HTMLButtonElement>("runtime-install-analysis").textContent = snapshot.analysis.modelPresent && !snapshot.analysis.checksumVerified
+    ? "Replace corrupted analysis"
+    : analysisReady
+      ? "Verified"
+      : "Install analysis";
+  $<HTMLButtonElement>("runtime-install-transcription").disabled = snapshot.busy || transcriptionReady;
+  $<HTMLButtonElement>("runtime-install-analysis").disabled = snapshot.busy || analysisReady;
+  const badge = $("runtime-badge");
+  badge.className = "calendar-badge";
+  if (transcriptionReady && analysisReady) {
+    badge.textContent = "Ready";
+    badge.classList.add("ok");
+  } else {
+    badge.textContent = "Setup required";
+    badge.classList.add("warn");
+  }
+  $("runtime-status").textContent = snapshot.cloudFallbackEnabled
+    ? "Cloud fallback is disabled."
+    : "Models stay on this device. There is no cloud fallback.";
+}
+
+function describeRuntimeComponent(component: { ready: boolean; modelPresent: boolean; checksumVerified: boolean; helperReady: boolean }): string {
+  if (component.ready) {
+    return "Installed and checksum-verified";
+  }
+  if (component.modelPresent && !component.checksumVerified) {
+    return "Present but failed verification";
+  }
+  if (component.helperReady && !component.modelPresent) {
+    return "Helper present · model not installed";
+  }
+  return "Not installed on this computer";
+}
+
+async function installRuntimeComponent(component: "transcription-tiny" | "analysis-production"): Promise<void> {
+  try {
+    const snapshot = await runtime.getSnapshot();
+    const current = component === "transcription-tiny" ? snapshot.transcription : snapshot.analysis;
+    const replaceCorrupted = current.modelPresent && !current.checksumVerified;
+    if (replaceCorrupted) {
+      const approved = window.confirm("Replace the corrupted local model file? A verified file is never overwritten.");
+      if (!approved) {
+        return;
+      }
+    }
+    $("runtime-status").textContent = "Installing the local model. This can take several minutes and stays on this device.";
+    const result = await runtime.install(component, replaceCorrupted);
+    await loadRuntimeSnapshot();
+    showNotice(result.alreadyVerified ? "The local model was already verified and was not replaced." : "Local model installed and checksum-verified.");
+  } catch (error: unknown) {
+    showError(error);
+    await loadRuntimeSnapshot();
   }
 }
 

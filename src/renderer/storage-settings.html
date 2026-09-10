@@ -250,6 +250,37 @@
           <div class="location-card"><div class="folder-icon">⌁</div><div class="location-copy"><span class="label">DATA LOCATION</span><strong id="data-location">Loading…</strong><small id="last-check">Integrity has not been checked yet</small></div><button id="open-folder-button" class="button secondary">Open folder</button></div>
         </section>
 
+        <section class="section-block" id="local-runtime">
+          <div class="section-heading">
+            <div>
+              <h2>Local AI runtime</h2>
+              <p>Whisper and Qwen install into this computer’s app data, never into your workspace folder. Nothing is sent to the cloud.</p>
+            </div>
+            <span id="runtime-badge" class="calendar-badge neutral">Checking…</span>
+          </div>
+          <div class="panel">
+            <div class="location-card">
+              <div class="folder-icon">◎</div>
+              <div class="location-copy">
+                <span class="label">TRANSCRIPTION</span>
+                <strong id="runtime-transcription-status">Loading…</strong>
+                <small>Allowlisted tiny Whisper model · SHA-256 verified · local only</small>
+              </div>
+              <button id="runtime-install-transcription" class="button primary" type="button">Install transcription</button>
+            </div>
+            <div class="location-card">
+              <div class="folder-icon">✦</div>
+              <div class="location-copy">
+                <span class="label">ANALYSIS</span>
+                <strong id="runtime-analysis-status">Loading…</strong>
+                <small>Allowlisted Qwen 7B instruct · SHA-256 verified · local only</small>
+              </div>
+              <button id="runtime-install-analysis" class="button primary" type="button">Install analysis</button>
+            </div>
+            <p id="runtime-status" class="helper" role="status">Models are not packaged in the installer. Install them here after setup.</p>
+          </div>
+        </section>
+
         <section class="section-block">
           <div class="section-heading"><div><h2>Storage overview</h2><p>Live size information from the local filesystem.</p></div><span id="availability" class="availability">Checking space…</span></div>
           <div class="stat-grid">

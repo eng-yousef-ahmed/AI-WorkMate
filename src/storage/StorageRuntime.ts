@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 
-import { STORAGE_VERSION } from "../domain/models";
+import { APP_VERSION, assertAppVersionCompatible } from "../app-version";
+import { DATABASE_SCHEMA_VERSION, STORAGE_VERSION } from "../domain/models";
 import { CalendarSyncService } from "../calendar/CalendarSyncService";
 import type {
   AIProcessingPolicy,
+  FirstRunJournal,
   IntegrityReport,
   MigrationJournal,
   MigrationPlan,
   MigrationResult,
   StorageSnapshot,
+  WorkspaceLifecycleSnapshot,
 } from "../domain/models";
 import type { CalendarEventProvider, CalendarSyncRange, CalendarSyncResult } from "../calendar/CalendarModels";
 import {
@@ -37,12 +41,17 @@ import {
   type AnalysisPersistResult,
 } from "../ai/LocalAnalysisService";
 import type { StorageConfigService } from "./StorageConfigService";
+import { assertDirectoryHasSpace } from "./disk-space";
 import { DataRootValidationError, StorageError } from "./errors";
 import {
+  getAvailableBytes,
   LocalStorageService,
   normalizeAbsolutePath,
   type LocalStorageServiceOptions,
 } from "./LocalStorageService";
+
+/** Minimum free bytes required to create an empty DATA_ROOT on first run. */
+export const FIRST_RUN_MINIMUM_FREE_BYTES = 64 * 1024 * 1024;
 
 export interface ChangeDataRootResult {
   migrated: boolean;
@@ -111,6 +120,7 @@ export class StorageRuntime {
   private readonly config: StorageConfigService;
   private readonly storageOptions: LocalStorageServiceOptions;
   private readonly nativeAdapter: NativeCaptureAdapter;
+  private readonly appVersion: string;
 
   public constructor(
     config: StorageConfigService,
@@ -118,16 +128,25 @@ export class StorageRuntime {
     credentialStore?: CredentialStore,
     storageOptions: LocalStorageServiceOptions = {},
     private readonly integrations: StorageRuntimeIntegrations = {},
+    appVersion: string = APP_VERSION,
   ) {
     this.config = config;
     this.credentialStore = credentialStore;
     this.storageOptions = storageOptions;
+    this.appVersion = appVersion;
     this.nativeAdapter = integrations.nativeCaptureAdapter ?? createNativeCaptureAdapter({ clock: this.clock });
   }
 
   public async initialize(): Promise<boolean> {
     const initialConfig = await this.config.read();
-    await this.recoverPendingMigration(initialConfig.pendingMigration);
+    assertAppVersionCompatible(initialConfig.lastOpenedAppVersion, this.appVersion);
+    if (initialConfig.dataRoot === undefined) {
+      await this.recoverPendingFirstRun(initialConfig.pendingFirstRun);
+    } else if (initialConfig.pendingFirstRun !== undefined) {
+      await this.config.clearFirstRunJournal();
+    }
+    const afterFirstRun = await this.config.read();
+    await this.recoverPendingMigration(afterFirstRun.pendingMigration);
     const dataRoot = await this.config.getDataRoot();
     if (dataRoot === undefined) {
       return false;
@@ -135,6 +154,7 @@ export class StorageRuntime {
     const store = new LocalFirstStore(dataRoot, { ...this.storageOptions, clock: this.clock });
     await store.initialize();
     this.attachStore(store);
+    await this.config.setLastOpenedAppVersion(this.appVersion);
     return true;
   }
 
@@ -143,15 +163,54 @@ export class StorageRuntime {
       throw new StorageError("DATA_ROOT is already configured.");
     }
     const normalized = normalizeAbsolutePath(dataRoot);
-    const probe = new LocalStorageService(normalized, this.storageOptions);
-    const validation = await probe.validateDataRoot(normalized);
-    if (!validation.valid) {
-      throw new DataRootValidationError(validation.errors.join(" "));
+    const journal: FirstRunJournal = {
+      destination: normalized,
+      state: "STARTED",
+      updatedAt: this.clock().toISOString(),
+    };
+    await this.config.setFirstRunJournal(journal);
+    try {
+      const probe = new LocalStorageService(normalized, this.storageOptions);
+      const validation = await probe.validateDataRoot(normalized, FIRST_RUN_MINIMUM_FREE_BYTES);
+      if (!validation.valid) {
+        throw new DataRootValidationError(validation.errors.join(" "));
+      }
+      const injectedAvailableBytes = this.storageOptions.availableBytesProvider;
+      await assertDirectoryHasSpace(
+        normalized,
+        FIRST_RUN_MINIMUM_FREE_BYTES,
+        this.storageOptions.spaceSafetyMarginBytes ?? 0,
+        injectedAvailableBytes === undefined
+          ? async (directory) => {
+              const direct = await getAvailableBytes(directory);
+              return direct === null ? getAvailableBytes(dirname(directory)) : direct;
+            }
+          : async () => injectedAvailableBytes(),
+      );
+      const store = new LocalFirstStore(normalized, { ...this.storageOptions, clock: this.clock });
+      await store.initialize();
+      await this.config.setFirstRunJournal({
+        ...journal,
+        state: "INITIALIZED",
+        updatedAt: this.clock().toISOString(),
+      });
+      await this.config.setDataRoot(normalized);
+      await this.config.setLastOpenedAppVersion(this.appVersion);
+      await this.config.clearFirstRunJournal();
+      this.attachStore(store);
+    } catch (error: unknown) {
+      try {
+        await this.config.setFirstRunJournal({
+          ...journal,
+          state: "INCOMPLETE",
+          error: error instanceof Error ? error.message : String(error),
+          updatedAt: this.clock().toISOString(),
+        });
+      } catch {
+        // Preserve the original first-run error if the journal cannot be updated.
+      }
+      throw error;
     }
-    const store = new LocalFirstStore(normalized, { ...this.storageOptions, clock: this.clock });
-    await store.initialize();
-    await this.config.setDataRoot(normalized);
-    this.attachStore(store);
   }
 
   public async prepareDataRootChange(destination: string): Promise<MigrationPlan> {
@@ -230,13 +289,38 @@ export class StorageRuntime {
       stats: await store.getStorageStats(),
       storageVersion: STORAGE_VERSION,
       aiProcessingPolicy: config.aiProcessingPolicy,
+      appVersion: this.appVersion,
+      schemaVersion: DATABASE_SCHEMA_VERSION,
     };
     if (config.pendingMigration !== undefined) {
       snapshot.migrationRecoveryRequired = config.pendingMigration.state === "INCOMPLETE" || config.pendingMigration.state === "FAILED";
     }
+    if (config.pendingFirstRun?.state === "INCOMPLETE") {
+      snapshot.firstRunRecoveryRequired = true;
+    }
     const lastIntegrityCheckAt = store.database.getLastIntegrityCheckAt() ?? config.lastIntegrityCheckAt;
     if (lastIntegrityCheckAt !== undefined) {
       snapshot.lastIntegrityCheckAt = lastIntegrityCheckAt;
+    }
+    return snapshot;
+  }
+
+  public async getLifecycleSnapshot(): Promise<WorkspaceLifecycleSnapshot> {
+    const config = await this.config.read();
+    const ready = this.store !== undefined;
+    const snapshot: WorkspaceLifecycleSnapshot = {
+      workspaceReady: ready,
+      firstRunRequired: !ready && config.dataRoot === undefined,
+      firstRunRecoveryRequired: config.pendingFirstRun?.state === "INCOMPLETE",
+      appVersion: this.appVersion,
+      upgradeBlocked: false,
+      migrationRecoveryRequired:
+        config.pendingMigration?.state === "INCOMPLETE" || config.pendingMigration?.state === "FAILED",
+      dataLocation: { type: "LOCAL", label: "Local workspace (path hidden)", pathExposed: false },
+    };
+    if (ready) {
+      snapshot.storageVersion = STORAGE_VERSION;
+      snapshot.schemaVersion = DATABASE_SCHEMA_VERSION;
     }
     return snapshot;
   }
@@ -577,6 +661,37 @@ export class StorageRuntime {
 
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
+  }
+
+  private async recoverPendingFirstRun(journal: FirstRunJournal | undefined): Promise<void> {
+    if (journal === undefined || journal.state === "INCOMPLETE") {
+      return;
+    }
+    const destinationReady = await this.isFirstRunDestinationReady(journal.destination);
+    if (destinationReady) {
+      await this.config.setDataRoot(journal.destination);
+      await this.config.clearFirstRunJournal();
+      return;
+    }
+    await this.config.setFirstRunJournal({
+      ...journal,
+      state: "INCOMPLETE",
+      error: "First-run setup was interrupted before the workspace could be activated.",
+      updatedAt: this.clock().toISOString(),
+    });
+  }
+
+  private async isFirstRunDestinationReady(destination: string): Promise<boolean> {
+    try {
+      const storage = new LocalStorageService(destination, this.storageOptions);
+      if (!(await storage.exists("storage.json")) || !(await storage.exists("Database/ai-workmate.sqlite"))) {
+        return false;
+      }
+      const manifest = await storage.readJson<{ storageVersion?: unknown }>("storage.json");
+      return manifest.storageVersion === STORAGE_VERSION;
+    } catch {
+      return false;
+    }
   }
 
   private async recoverPendingMigration(journal: MigrationJournal | undefined): Promise<void> {

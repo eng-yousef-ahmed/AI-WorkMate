@@ -2,6 +2,7 @@ import type {
   AIProcessingPolicy,
   IntegrityReport,
   StorageSnapshot,
+  WorkspaceLifecycleSnapshot,
 } from "../domain/models";
 import type { RendererCalendarSyncResult } from "../calendar/CalendarModels";
 import type {
@@ -48,6 +49,7 @@ export interface LocationChangeResult {
 
 export const STORAGE_IPC_CHANNELS = {
   getSnapshot: "storage:get-snapshot",
+  getLifecycle: "storage:get-lifecycle",
   chooseInitialLocation: "storage:choose-initial-location",
   prepareLocationChange: "storage:prepare-location-change",
   confirmLocationChange: "storage:confirm-location-change",
@@ -164,6 +166,7 @@ export interface MicrosoftCalendarSyncRequest {
 
 export interface StorageRendererAPI {
   getSnapshot(): Promise<StorageSnapshot>;
+  getLifecycle(): Promise<WorkspaceLifecycleSnapshot>;
   chooseInitialLocation(): Promise<StorageSnapshot | null>;
   prepareLocationChange(): Promise<LocationChangePreview>;
   confirmLocationChange(requestId: string, migrateExistingData: boolean): Promise<LocationChangeResult>;
@@ -310,4 +313,5 @@ export type {
   RendererCalendarSyncResult,
   StorageSnapshot,
   TranscriptSearchResults,
+  WorkspaceLifecycleSnapshot,
 };

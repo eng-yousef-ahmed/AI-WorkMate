@@ -1,10 +1,6 @@
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
+import { isAbsolute, join, resolve } from "node:path";
 
+import { installVerifiedFile, ManagedInstallError } from "../runtime/ManagedModelInstall";
 import { getWhisperModelCatalogEntry, type WhisperModelCatalogEntry } from "./WhisperRuntimeCatalog";
 import { TranscriptionError } from "./TranscriptionEngine";
 
@@ -17,6 +13,7 @@ export interface WhisperModelInstallOptions {
   localAppData?: string;
   transport?: WhisperDownloadTransport;
   destinationRoot?: string;
+  replaceCorrupted?: boolean;
 }
 
 export interface WhisperModelInstallResult {
@@ -25,6 +22,7 @@ export interface WhisperModelInstallResult {
   sha256: string;
   bytes: number;
   relativeLocation: string;
+  alreadyVerified?: boolean;
 }
 
 const RELATIVE_MODEL_DIR = join("AI-WorkMate", "models", "whisper");
@@ -51,60 +49,67 @@ export async function installWhisperModel(options: WhisperModelInstallOptions): 
   const directory = options.destinationRoot === undefined
     ? whisperManagedModelDirectory(localAppData)
     : assertManagedDestination(options.destinationRoot, localAppData);
-  await mkdir(directory, { recursive: true });
-  const destination = join(directory, entry.filename);
-  if (basename(destination) !== entry.filename) {
-    throw new TranscriptionError("TRANSCRIPTION_PATH_REJECTED", "Whisper model filename escaped the managed directory.", false);
-  }
-  const temporary = `${destination}.tmp-download`;
-  await rm(temporary, { force: true }).catch(() => undefined);
   const transport = options.transport ?? httpsTransport();
-  const response = await transport.get(entry.url);
-  if (response.status !== 200) {
-    throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model download failed with HTTP ${response.status}.`, true);
-  }
-  const hash = createHash("sha256");
-  let bytes = 0;
   try {
-    const output = createWriteStream(temporary, { flags: "wx", mode: 0o600 });
-    await pipeline(Readable.from(hashingBody(response.body, hash, (chunk) => {
-      bytes += chunk.byteLength;
-    })), output);
-    const handle = await open(temporary, "r+");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    const sha256 = hash.digest("hex");
-    if (bytes !== entry.bytes || sha256 !== entry.sha256) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw new TranscriptionError(
-        "TRANSCRIPTION_ENGINE_UNAVAILABLE",
-        `Whisper model SHA-256 or size mismatch for ${entry.filename}.`,
-        false,
-      );
-    }
-    await rename(temporary, destination);
+    const installed = await installVerifiedFile({
+      directory,
+      file: { filename: entry.filename, sha256: entry.sha256, bytes: entry.bytes, url: entry.url },
+      transport,
+      ...(options.replaceCorrupted === true ? { replaceCorrupted: true } : {}),
+    });
     return {
       installed: true,
-      filename: entry.filename,
-      sha256,
-      bytes,
-      relativeLocation: `%LOCALAPPDATA%\\AI-WorkMate\\models\\whisper\\${entry.filename}`,
+      filename: installed.filename,
+      sha256: installed.sha256,
+      bytes: installed.bytes,
+      relativeLocation: `%LOCALAPPDATA%\\\\AI-WorkMate\\\\models\\\\whisper\\\\${installed.filename}`,
+      alreadyVerified: installed.alreadyVerified,
     };
   } catch (error: unknown) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    if (error instanceof TranscriptionError) {
-      throw error;
-    }
-    throw new TranscriptionError(
-      "TRANSCRIPTION_ENGINE_UNAVAILABLE",
-      `Whisper model install was interrupted: ${error instanceof Error ? error.message : String(error)}`,
-      true,
-      { cause: error },
-    );
+    throw wrapWhisperInstallError(error, entry.filename);
   }
+}
+
+function wrapWhisperInstallError(error: unknown, filename: string): TranscriptionError {
+  if (error instanceof TranscriptionError) {
+    return error;
+  }
+  if (error instanceof ManagedInstallError) {
+    if (error.code === "PATH") {
+      return new TranscriptionError("TRANSCRIPTION_PATH_REJECTED", error.message, false, { cause: error });
+    }
+    if (error.code === "CHECKSUM") {
+      return new TranscriptionError(
+        "TRANSCRIPTION_ENGINE_UNAVAILABLE",
+        `Whisper model SHA-256 or size mismatch for ${filename}.`,
+        false,
+        { cause: error },
+      );
+    }
+    if (error.code === "HTTP") {
+      return new TranscriptionError(
+        "TRANSCRIPTION_ENGINE_UNAVAILABLE",
+        error.message.replace("Model download", "Whisper model download"),
+        true,
+        { cause: error },
+      );
+    }
+    if (error.code === "INTERRUPTED") {
+      return new TranscriptionError(
+        "TRANSCRIPTION_ENGINE_UNAVAILABLE",
+        `Whisper model install was interrupted: ${error.message.replace(/^Model install was interrupted: /, "")}`,
+        true,
+        { cause: error },
+      );
+    }
+    return new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", error.message, error.retryable, { cause: error });
+  }
+  return new TranscriptionError(
+    "TRANSCRIPTION_ENGINE_UNAVAILABLE",
+    `Whisper model install was interrupted: ${error instanceof Error ? error.message : String(error)}`,
+    true,
+    { cause: error },
+  );
 }
 
 export function assertManagedDestination(destinationRoot: string, localAppData: string): string {
@@ -121,18 +126,6 @@ export function assertManagedDestination(destinationRoot: string, localAppData: 
 
 export function catalogChecksumMatches(entry: WhisperModelCatalogEntry, sha256: string, bytes: number): boolean {
   return entry.sha256 === sha256.toLowerCase() && entry.bytes === bytes;
-}
-
-async function* hashingBody(
-  body: AsyncIterable<Uint8Array>,
-  hash: ReturnType<typeof createHash>,
-  onChunk: (chunk: Uint8Array) => void,
-): AsyncIterable<Uint8Array> {
-  for await (const chunk of body) {
-    hash.update(chunk);
-    onChunk(chunk);
-    yield chunk;
-  }
 }
 
 function httpsTransport(): WhisperDownloadTransport {
@@ -161,4 +154,3 @@ async function* readableWebToAsync(body: ReadableStream<Uint8Array>): AsyncItera
     reader.releaseLock();
   }
 }
-

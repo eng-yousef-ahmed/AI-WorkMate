@@ -310,6 +310,16 @@ export interface MigrationJournal {
   error?: string;
 }
 
+export type FirstRunJournalState = "STARTED" | "INITIALIZED" | "INCOMPLETE";
+
+/** Interrupted first-run journal. Destination is main-process-only. */
+export interface FirstRunJournal {
+  destination: string;
+  state: FirstRunJournalState;
+  updatedAt: string;
+  error?: string;
+}
+
 export type ArtifactOperationState =
   | "STARTED"
   | "WRITING"
@@ -377,6 +387,22 @@ export interface StorageSnapshot {
   aiProcessingPolicy: AIProcessingPolicy;
   lastIntegrityCheckAt?: string;
   migrationRecoveryRequired?: boolean;
+  appVersion?: string;
+  schemaVersion?: number;
+  firstRunRecoveryRequired?: boolean;
+}
+
+/** Renderer-safe first-run / upgrade status. Never includes DATA_ROOT. */
+export interface WorkspaceLifecycleSnapshot {
+  workspaceReady: boolean;
+  firstRunRequired: boolean;
+  firstRunRecoveryRequired: boolean;
+  appVersion: string;
+  storageVersion?: number;
+  schemaVersion?: number;
+  upgradeBlocked: false;
+  migrationRecoveryRequired: boolean;
+  dataLocation: StorageLocationMetadata;
 }
 
 export type AIProcessingPolicy = "LOCAL_ONLY" | "CLOUD_ALLOWED" | "ASK_EACH_TIME";

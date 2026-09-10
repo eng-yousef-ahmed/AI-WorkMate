@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { AIProcessingPolicy, MigrationJournal } from "../domain/models";
+import type { AIProcessingPolicy, FirstRunJournal, MigrationJournal } from "../domain/models";
 import { DataRootValidationError } from "./errors";
 import { normalizeAbsolutePath } from "./LocalStorageService";
 
@@ -12,6 +12,8 @@ export interface AppStorageConfig {
   aiProcessingPolicy: AIProcessingPolicy;
   lastIntegrityCheckAt?: string;
   pendingMigration?: MigrationJournal;
+  pendingFirstRun?: FirstRunJournal;
+  lastOpenedAppVersion?: string;
   updatedAt: string;
 }
 
@@ -55,6 +57,15 @@ export class StorageConfigService {
           throw new DataRootValidationError("The pending DATA_ROOT migration journal is invalid.");
         }
         config.pendingMigration = value.pendingMigration;
+      }
+      if (value.pendingFirstRun !== undefined) {
+        if (!isFirstRunJournal(value.pendingFirstRun)) {
+          throw new DataRootValidationError("The pending first-run journal is invalid.");
+        }
+        config.pendingFirstRun = value.pendingFirstRun;
+      }
+      if (typeof value.lastOpenedAppVersion === "string") {
+        config.lastOpenedAppVersion = value.lastOpenedAppVersion;
       }
       return config;
     } catch (error: unknown) {
@@ -110,6 +121,29 @@ export class StorageConfigService {
     return this.write(next);
   }
 
+  public async setFirstRunJournal(pendingFirstRun: FirstRunJournal): Promise<AppStorageConfig> {
+    if (!isFirstRunJournal(pendingFirstRun)) {
+      throw new DataRootValidationError("The first-run journal is invalid.");
+    }
+    const current = await this.read();
+    return this.write({ ...current, pendingFirstRun });
+  }
+
+  public async clearFirstRunJournal(): Promise<AppStorageConfig> {
+    const current = await this.read();
+    const next = { ...current };
+    delete next.pendingFirstRun;
+    return this.write(next);
+  }
+
+  public async setLastOpenedAppVersion(lastOpenedAppVersion: string): Promise<AppStorageConfig> {
+    if (typeof lastOpenedAppVersion !== "string" || lastOpenedAppVersion.length === 0) {
+      throw new DataRootValidationError("The application version is invalid.");
+    }
+    const current = await this.read();
+    return this.write({ ...current, lastOpenedAppVersion });
+  }
+
   private async write(config: AppStorageConfig): Promise<AppStorageConfig> {
     const next: AppStorageConfig = {
       ...config,
@@ -139,6 +173,20 @@ export class StorageConfigService {
 
 function isProcessingPolicy(value: unknown): value is AIProcessingPolicy {
   return value === "LOCAL_ONLY" || value === "CLOUD_ALLOWED" || value === "ASK_EACH_TIME";
+}
+
+function isFirstRunJournal(value: unknown): value is FirstRunJournal {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<FirstRunJournal>;
+  return (
+    typeof candidate.destination === "string" &&
+    candidate.destination.length > 0 &&
+    typeof candidate.updatedAt === "string" &&
+    (candidate.state === "STARTED" || candidate.state === "INITIALIZED" || candidate.state === "INCOMPLETE") &&
+    (candidate.error === undefined || typeof candidate.error === "string")
+  );
 }
 
 function isMigrationJournal(value: unknown): value is MigrationJournal {

@@ -13,6 +13,7 @@ interface PackageJson {
       allowToChangeInstallationDirectory?: boolean;
       deleteAppDataOnUninstall?: boolean;
       runAfterFinish?: boolean;
+      include?: string;
     };
     extraResources?: Array<{ from?: string; to?: string }>;
   };
@@ -25,6 +26,7 @@ test("NSIS packaging contract matches package.json and never ships models", asyn
   assert.equal(nsis?.allowToChangeInstallationDirectory, WINDOWS_RELEASE_CONTRACT.allowToChangeInstallationDirectory);
   assert.equal(nsis?.deleteAppDataOnUninstall, WINDOWS_RELEASE_CONTRACT.deleteAppDataOnUninstall);
   assert.equal(nsis?.runAfterFinish, WINDOWS_RELEASE_CONTRACT.runAfterFinish);
+  assert.equal(nsis?.include, WINDOWS_RELEASE_CONTRACT.nsisInclude);
 
   const extras = pkg.build?.extraResources ?? [];
   const destinations = extras.map((entry) => entry.to ?? "");

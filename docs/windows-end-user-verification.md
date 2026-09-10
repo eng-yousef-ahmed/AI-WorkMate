@@ -7,8 +7,9 @@ Off-Linux CI and this Linux sandbox cannot execute NSIS, WASAPI, whisper.cpp, or
 1. Build with `npm run package:win` on Windows after `build:native:win` succeeds.
 2. Confirm the installer is not one-click: destination folder can be changed.
 3. Install to a custom directory (not the default) and launch.
-4. Uninstall: application binaries are removed; `%LOCALAPPDATA%\AI-WorkMate` user data, DATA_ROOT, models, and credential vault remain (`deleteAppDataOnUninstall: false`).
-5. Confirm the installer payload does **not** contain Whisper/Qwen model files. Models install separately via first-run / Settings into `%LOCALAPPDATA%\AI-WorkMate\models\…`.
+4. Uninstall: application binaries are removed; `%LOCALAPPDATA%\AI-WorkMate` user data, DATA_ROOT, models, backups, exports, and credential vault remain (`deleteAppDataOnUninstall: false`, `installer/nsis.nsh` does not `RMDir` user data).
+5. Confirm the installer payload does **not** contain Whisper/Qwen model files. Models install separately via Settings → Local AI runtime into `%LOCALAPPDATA%\AI-WorkMate\models\…`.
+6. Upgrade over an existing install: DATA_ROOT, calendar credentials, backups, and models remain. A downgrade onto a workspace last opened by a newer build must refuse to open.
 
 ## First run
 
@@ -35,8 +36,8 @@ Off-Linux CI and this Linux sandbox cannot execute NSIS, WASAPI, whisper.cpp, or
 ## Capture, transcription, analysis
 
 1. Native audio (`AIWorkMate.WindowsAudioCapture.exe`) and screen helpers start from extraResources.
-2. Whisper CLI / model missing: UI explains local install; no cloud fallback.
-3. llama.cpp / Qwen missing: grounded chat and analysis refuse rather than calling a cloud API.
+2. Whisper CLI / model missing: Settings → Local AI runtime offers in-app install; no cloud fallback. A verified model is never silently replaced.
+3. llama.cpp / Qwen missing: grounded chat and analysis refuse rather than calling a cloud API. Install the production Qwen 7B from Settings (not the NSIS payload).
 4. Low-disk during recording: capture stops INCOMPLETE; no truncated file is marked COMPLETED.
 
 ## Update / migration

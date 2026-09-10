@@ -20,6 +20,8 @@ export const WINDOWS_RELEASE_CONTRACT = {
   dataRootCannotBeProgramFiles: true,
   credentialStoreUsesOsSafeStorage: true,
   uninstallPreservesUserData: true,
+  nsisInclude: "installer/nsis.nsh",
+  nsisDoesNotDeleteDataRootOnUninstall: true,
 } as const;
 
 export type WindowsReleaseContract = typeof WINDOWS_RELEASE_CONTRACT;

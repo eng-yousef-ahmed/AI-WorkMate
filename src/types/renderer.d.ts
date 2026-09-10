@@ -1,3 +1,4 @@
+import type { RuntimeRendererAPI } from "../desktop/runtime-ipc";
 import type { AutomationRendererAPI } from "../desktop/storage-api";
 import type { CalendarRendererAPI } from "../desktop/storage-api";
 import type { MeetingsRendererAPI } from "../desktop/storage-api";
@@ -14,6 +15,7 @@ declare global {
       tasks: TasksRendererAPI;
       automation: AutomationRendererAPI;
       notifications: NotificationsRendererAPI;
+      runtime: RuntimeRendererAPI;
     };
   }
 }
