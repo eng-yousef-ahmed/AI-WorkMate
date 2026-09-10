@@ -8,21 +8,10 @@ import {
 import { StorageError } from "../storage/errors";
 import { TranscriptionError } from "../transcription/TranscriptionEngine";
 import { sanitizeRendererIpcError } from "./ipc-sanitize";
+import { RUNTIME_IPC_CHANNELS } from "./runtime-api";
 import { secureHandler, type IpcMainLike } from "./storage-ipc";
 
-/**
- * Runtime-setup channels. Names deliberately omit llama/llm/openai/model-url/
- * helper-path so those never appear on the renderer storage boundary.
- */
-export const RUNTIME_IPC_CHANNELS = {
-  getSnapshot: "runtime:get-snapshot",
-  install: "runtime:install-component",
-} as const;
-
-export interface RuntimeRendererAPI {
-  getSnapshot(): Promise<RuntimeSetupSnapshot>;
-  install(component: string, replaceCorrupted?: boolean): Promise<RuntimeInstallResult>;
-}
+export { RUNTIME_IPC_CHANNELS, type RuntimeRendererAPI } from "./runtime-api";
 
 export interface RuntimeIpcDependencies {
   ipcMain: IpcMainLike;

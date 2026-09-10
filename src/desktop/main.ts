@@ -109,13 +109,13 @@ async function bootstrap(): Promise<void> {
       shell: shell as unknown as ShellLike,
       runtime,
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
     });
     registerCalendarIpc({
       ipcMain: ipcMain as unknown as IpcMainLike,
       runtime,
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
       openExternal: async (url: string) => {
         await shell.openExternal(url);
       },
@@ -130,7 +130,7 @@ async function bootstrap(): Promise<void> {
       ipcMain: ipcMain as unknown as IpcMainLike,
       runtime,
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
       openExternal: async (url: string) => {
         await shell.openExternal(url);
       },
@@ -139,19 +139,19 @@ async function bootstrap(): Promise<void> {
       ipcMain: ipcMain as unknown as IpcMainLike,
       runtime,
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
     });
     registerAutomationIpc({
       ipcMain: ipcMain as unknown as IpcMainLike,
       runtime,
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
     });
     registerNotificationsIpc({
       ipcMain: ipcMain as unknown as IpcMainLike,
       runtime,
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
       broadcastChanged: broadcastNotificationChange,
     });
     registerRuntimeIpc({
@@ -160,7 +160,7 @@ async function bootstrap(): Promise<void> {
         localAppData: process.env.LOCALAPPDATA ?? app.getPath("userData"),
       }),
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
-      getAuthorizedRendererUrl: () => rendererUrl,
+      getAuthorizedRendererUrl: () => currentAuthorizedRendererUrl(rendererUrl),
     });
     ipcRegistered = true;
   }
@@ -290,6 +290,19 @@ async function saveOAuthConfig(input: MicrosoftOAuthConfigInput): Promise<void> 
   if (runtime !== undefined) {
     await runtime.setMicrosoftCalendarConnection(await createMicrosoftCalendarConnection());
   }
+}
+
+/**
+ * Prefer the URL Chromium actually assigned after `loadFile` so packaged
+ * Windows `senderFrame.url` matches (drive-letter case, percent-encoding).
+ * Fall back to the intended `file:` URL before the window has loaded.
+ */
+function currentAuthorizedRendererUrl(fallback: string): string {
+  const loaded = mainWindow?.webContents.getURL();
+  if (typeof loaded === "string" && loaded.startsWith("file:")) {
+    return loaded;
+  }
+  return fallback;
 }
 
 function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): void {

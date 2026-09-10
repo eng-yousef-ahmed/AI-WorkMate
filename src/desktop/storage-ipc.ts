@@ -7,6 +7,7 @@ import { StorageError } from "../storage/errors";
 import { assertOfficeExportKind } from "../office/OfficeExportService";
 import { STORAGE_IPC_CHANNELS, type LocationChangePreview } from "./storage-api";
 import { sanitizeRendererIpcError } from "./ipc-sanitize";
+import { rendererUrlsEquivalent } from "./window-security";
 
 export interface IpcMainLike {
   handle(channel: string, listener: (...args: unknown[]) => unknown): void;
@@ -222,7 +223,7 @@ export function assertAuthorizedSender(event: unknown, authorizedWebContentsId: 
     event.senderFrame === null ||
     !("url" in event.senderFrame) ||
     typeof event.senderFrame.url !== "string" ||
-    event.senderFrame.url !== authorizedRendererUrl
+    !rendererUrlsEquivalent(event.senderFrame.url, authorizedRendererUrl)
   ) {
     throw new StorageError("Storage IPC request rejected: unauthorized renderer.");
   }

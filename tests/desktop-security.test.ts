@@ -6,7 +6,7 @@ import type { StorageRuntime } from "../src/storage/StorageRuntime";
 import { STORAGE_IPC_CHANNELS } from "../src/desktop/storage-api";
 import { registerStorageIpc } from "../src/desktop/storage-ipc";
 import { UnsafePathError } from "../src/storage/errors";
-import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "../src/desktop/window-security";
+import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation, rendererUrlsEquivalent } from "../src/desktop/window-security";
 
 type IpcHandler = (...args: unknown[]) => unknown;
 
@@ -22,6 +22,25 @@ test("keeps the renderer sandboxed and rejects remote navigation or new windows"
   });
   assert.equal(isAuthorizedRendererNavigation("file:///app/storage-settings.html", "file:///app/storage-settings.html"), true);
   assert.equal(isAuthorizedRendererNavigation("https://example.com", "file:///app/storage-settings.html"), false);
+  assert.equal(
+    rendererUrlsEquivalent(
+      "file:///c:/Program%20Files/AI-WorkMate/resources/app.asar/dist/src/renderer/storage-settings.html",
+      "file:///C:/Program Files/AI-WorkMate/resources/app.asar/dist/src/renderer/storage-settings.html",
+    ),
+    true,
+  );
+  assert.equal(
+    rendererUrlsEquivalent(
+      "file://localhost/C:/AI-WorkMate/storage-settings.html",
+      "file:///C:/AI-WorkMate/storage-settings.html",
+    ),
+    true,
+  );
+  assert.equal(
+    rendererUrlsEquivalent("file:///C:/AI-WorkMate/storage-settings.html", "file:///C:/AI-WorkMate/evil.html"),
+    false,
+  );
+  assert.equal(rendererUrlsEquivalent("https://example.com/storage-settings.html", "file:///C:/AI-WorkMate/storage-settings.html"), false);
   assert.deepEqual(denyWindowOpen(), { action: "deny" });
 });
 
@@ -166,6 +185,54 @@ test("authorizes storage IPC only for the active application webContents and exa
   assert.deepEqual(
     await handler({ sender: { id: 77 }, senderFrame: { url: "file:///AI-WorkMate/storage-settings.html" } }),
     snapshot,
+  );
+});
+
+test("authorizes packaged Windows renderer URLs that differ only by drive-letter case or encoding", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const snapshot: StorageSnapshot = {
+    dataLocation: { type: "LOCAL", label: "Local workspace (path hidden)", pathExposed: false },
+    stats: {
+      totalBytes: 0,
+      recordingsBytes: 0,
+      audioBytes: 0,
+      transcriptsBytes: 0,
+      documentsBytes: 0,
+      databaseBytes: 0,
+      availableBytes: 100,
+      fileCount: 0,
+      meetingCount: 0,
+    },
+    storageVersion: 1,
+    aiProcessingPolicy: "ASK_EACH_TIME",
+  };
+  const runtime = { getSnapshot: async () => snapshot } as unknown as StorageRuntime;
+  const authorized = "file:///C:/Program Files/AI-WorkMate/resources/app.asar/dist/src/renderer/storage-settings.html";
+  registerStorageIpc({
+    ipcMain: { handle: (channel, listener) => handlers.set(channel, listener) },
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+    shell: { openPath: async () => "" },
+    runtime,
+    getAuthorizedWebContentsId: () => 77,
+    getAuthorizedRendererUrl: () => authorized,
+  });
+  const handler = handlers.get(STORAGE_IPC_CHANNELS.getSnapshot);
+  assert.ok(handler);
+  assert.deepEqual(
+    await handler({
+      sender: { id: 77 },
+      senderFrame: {
+        url: "file:///c:/Program%20Files/AI-WorkMate/resources/app.asar/dist/src/renderer/storage-settings.html",
+      },
+    }),
+    snapshot,
+  );
+  await assert.rejects(
+    async () => handler({
+      sender: { id: 77 },
+      senderFrame: { url: "file:///c:/Program%20Files/AI-WorkMate/resources/app.asar/dist/src/renderer/evil.html" },
+    }),
+    /unauthorized renderer/,
   );
 });
 

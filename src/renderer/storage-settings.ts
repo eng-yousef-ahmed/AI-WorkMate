@@ -3,9 +3,7 @@ import type { RendererCalendarSyncResult } from "../calendar/CalendarModels";
 import type { MicrosoftOAuthSettingsInput, GoogleOAuthSettingsInput } from "../desktop/storage-api";
 import type { StorageSnapshot } from "../domain/models";
 
-const storage = window.aiWorkMate.storage;
-const calendar = window.aiWorkMate.calendar;
-const runtime = window.aiWorkMate.runtime;
+const { storage, calendar, runtime } = requireDesktopApi();
 const $ = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
   if (element === null) throw new Error(`Missing renderer element: ${id}`);
@@ -606,4 +604,34 @@ function showError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   const looksLikePath = /(?:[A-Za-z]:[\\/]|\\\\|\/home\/|\/Users\/|file:\/\/|DATA_ROOT)/i.test(message);
   showNotice(looksLikePath ? "The storage action could not be completed. Please try again." : message, true);
+}
+
+/**
+ * Fail closed if the sandboxed preload never exposed `aiWorkMate` (for
+ * example because it imported a main-process module and crashed). Do not
+ * invent a successful snapshot — surface Unavailable instead of hanging
+ * on the HTML Loading/Checking placeholders.
+ */
+function requireDesktopApi(): Window["aiWorkMate"] {
+  const api = (window as Window & { aiWorkMate?: Window["aiWorkMate"] }).aiWorkMate;
+  if (api === undefined || api.storage === undefined || api.runtime === undefined || api.calendar === undefined) {
+    const mark = (id: string, text: string): void => {
+      const element = document.getElementById(id);
+      if (element !== null) {
+        element.textContent = text;
+      }
+    };
+    mark("data-location", "Unavailable");
+    mark("runtime-badge", "Unavailable");
+    mark("runtime-transcription-status", "Unavailable");
+    mark("runtime-analysis-status", "Unavailable");
+    mark("availability", "Unavailable");
+    const noticeEl = document.getElementById("notice");
+    if (noticeEl !== null) {
+      noticeEl.textContent = "The desktop workspace bridge is unavailable. Restart AI WorkMate.";
+      noticeEl.classList.add("error", "visible");
+    }
+    throw new Error("The desktop workspace bridge is unavailable. Restart AI WorkMate.");
+  }
+  return api;
 }

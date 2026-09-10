@@ -1,7 +1,14 @@
+/**
+ * Sandboxed preload (`sandbox: true`). Value-import only Electron and
+ * renderer-safe channel modules (`storage-api`, `runtime-api`). Never import
+ * `runtime-ipc`, installers, or Node `fs` / `child_process` / `sqlite` here:
+ * that crashes the preload before `contextBridge.exposeInMainWorld` runs and
+ * leaves the Storage page stuck on Loading/Checking.
+ */
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
-import { RUNTIME_IPC_CHANNELS, type RuntimeRendererAPI } from "./runtime-ipc";
+import { RUNTIME_IPC_CHANNELS, type RuntimeRendererAPI } from "./runtime-api";
 import { AUTOMATION_IPC_CHANNELS, CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, NOTIFICATIONS_CHANGED_EVENT, NOTIFICATIONS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type AutomationRendererAPI, type CalendarRendererAPI, type MeetingsRendererAPI, type NotificationsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {

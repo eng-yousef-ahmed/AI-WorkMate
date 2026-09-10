@@ -1,4 +1,4 @@
-import type { RuntimeRendererAPI } from "../desktop/runtime-ipc";
+import type { RuntimeRendererAPI } from "../desktop/runtime-api";
 import type { AutomationRendererAPI } from "../desktop/storage-api";
 import type { CalendarRendererAPI } from "../desktop/storage-api";
 import type { MeetingsRendererAPI } from "../desktop/storage-api";
