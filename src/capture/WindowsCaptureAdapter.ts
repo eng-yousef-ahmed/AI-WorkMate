@@ -22,7 +22,10 @@ export interface WindowsCaptureAdapterOptions {
   platform?: NodeJS.Platform | string;
   provider?: WindowsNativeCaptureProvider;
   clock?: () => Date;
+  /** When set, both audio and screen helpers use this path (tests isolate a missing helper). */
   helperPath?: string;
+  audioHelperPath?: string;
+  screenHelperPath?: string;
 }
 
 /**

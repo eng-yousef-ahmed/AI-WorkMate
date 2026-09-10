@@ -2,6 +2,8 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { releaseSqliteConnection } from "./sqlite-lifecycle";
+
 import {
   DATABASE_SCHEMA_VERSION,
   type ActionItem,
@@ -455,15 +457,14 @@ export class LocalDatabase {
   }
 
   public close(): void {
-    if (!this.closed) {
-      try {
-        this.database.exec("PRAGMA wal_checkpoint(TRUNCATE);");
-      } catch {
-        // Best-effort: Windows cannot unlink sqlite/WAL while a connection holds them.
-      }
-      this.database.close();
-      this.closed = true;
+    if (this.closed) {
+      return;
     }
+    releaseSqliteConnection(
+      (sql) => this.database.exec(sql),
+      () => this.database.close(),
+    );
+    this.closed = true;
   }
 
   public async createConsistentCopy(destinationPath: string): Promise<void> {

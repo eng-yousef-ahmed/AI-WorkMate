@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import { DATABASE_SCHEMA_VERSION } from "../src/domain/models";
 import { LocalDatabase, type TaskRecord } from "../src/storage/LocalDatabase";
+import { removeDirectoryAfterSqliteClose } from "../src/storage/sqlite-lifecycle";
 
 /**
  * Opens a database file that was created at schema v8 (the tasks table has no
@@ -97,6 +98,6 @@ test("schema v8 tasks migrate to v9 with provenance column and preserved rows", 
     }
   } finally {
     database.close();
-    await rm(root, { recursive: true, force: true });
+    await removeDirectoryAfterSqliteClose(root);
   }
 });

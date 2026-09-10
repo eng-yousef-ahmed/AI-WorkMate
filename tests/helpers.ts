@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { CredentialStore } from "../src/security/CredentialStore";
 import { LocalFirstStore, type LocalFirstStoreOptions } from "../src/storage/LocalFirstStore";
+import { removeDirectoryAfterSqliteClose } from "../src/storage/sqlite-lifecycle";
 
 import type { LoopbackListener } from "../src/integrations/oauth/LoopbackOAuthCallbackServer";
 
@@ -75,7 +76,7 @@ export async function withTempStore<T>(
     return await callback(store, root);
   } finally {
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await removeDirectoryAfterSqliteClose(root);
   }
 }
 

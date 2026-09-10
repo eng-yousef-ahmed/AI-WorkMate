@@ -616,7 +616,12 @@ static unsafe byte[] EncodeBgraJpeg(IntPtr data, int rowPitch, int srcWidth, int
     using var stream = new MemoryStream();
     var encoder = ImageCodecInfo.GetImageEncoders().First(codec => codec.FormatID == ImageFormat.Jpeg.Guid);
     using var parameters = new EncoderParameters(1);
-    parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 70L);
+    var quality = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 70L);
+    if (parameters.Param is null || parameters.Param.Length == 0)
+    {
+        throw new InvalidOperationException("JPEG encoder parameters are unavailable.");
+    }
+    parameters.Param[0] = quality;
     scaled.Save(stream, encoder, parameters);
     return stream.ToArray();
 }

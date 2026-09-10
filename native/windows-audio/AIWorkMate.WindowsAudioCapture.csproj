@@ -4,6 +4,8 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsAsErrors>nullable</WarningsAsErrors>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AIWorkMate.WindowsAudioCapture</AssemblyName>
     <RootNamespace>AIWorkMate.WindowsAudioCapture</RootNamespace>

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import { DATABASE_SCHEMA_VERSION } from "../src/domain/models";
 import { LocalDatabase } from "../src/storage/LocalDatabase";
+import { removeDirectoryAfterSqliteClose } from "../src/storage/sqlite-lifecycle";
 
 test("schema v9 databases gain a notifications table at v10 without losing tasks", async () => {
   const root = await mkdtemp(join(tmpdir(), "ai-workmate-schema-v9-"));
@@ -64,6 +65,6 @@ test("schema v9 databases gain a notifications table at v10 without losing tasks
     assert.equal(database.listNotifications().length, 1);
   } finally {
     database.close();
-    await rm(root, { recursive: true, force: true });
+    await removeDirectoryAfterSqliteClose(root);
   }
 });

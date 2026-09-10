@@ -2,6 +2,7 @@
   "name": "ai-workmate",
   "version": "0.1.0",
   "description": "Local-first meeting workspace for AI WorkMate",
+  "author": "AI WorkMate",
   "private": true,
   "main": "dist/src/desktop/main.js",
   "type": "commonjs",
@@ -12,7 +13,7 @@
     "build": "tsc && node scripts/copy-renderer.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests scripts --max-warnings=0",
-    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "test": "npm run build && node --expose-gc --test \"dist/tests/*.test.js\"",
     "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
     "desktop": "npm run build && electron dist/src/desktop/main.js",
     "package:win": "npm run build && npm run build:native:win && electron-builder --win",
@@ -50,6 +51,8 @@
   "build": {
     "appId": "com.aiworkmate.desktop",
     "productName": "AI WorkMate",
+    "copyright": "Copyright © AI WorkMate",
+    "icon": "build/icon.png",
     "files": [
       "dist/**/*",
       "package.json"
@@ -72,12 +75,14 @@
     },
     "extraResources": [
       {
-        "from": "native/windows-audio/bin/Release/net8.0-windows/win-x64/publish/AIWorkMate.WindowsAudioCapture.exe",
-        "to": "native/windows-audio/AIWorkMate.WindowsAudioCapture.exe"
+        "from": "native/windows-audio/bin/Release/net8.0-windows/win-x64/publish/",
+        "to": "native/windows-audio",
+        "filter": ["**/*"]
       },
       {
-        "from": "native/windows-screen/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/AIWorkMate.WindowsScreenCapture.exe",
-        "to": "native/windows-screen/AIWorkMate.WindowsScreenCapture.exe"
+        "from": "native/windows-screen/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/",
+        "to": "native/windows-screen",
+        "filter": ["**/*"]
       }
     ]
   }

@@ -22,6 +22,8 @@ export const WINDOWS_RELEASE_CONTRACT = {
   uninstallPreservesUserData: true,
   nsisInclude: "installer/nsis.nsh",
   nsisDoesNotDeleteDataRootOnUninstall: true,
+  installerHasAuthor: true,
+  installerHasIcon: true,
 } as const;
 
 export type WindowsReleaseContract = typeof WINDOWS_RELEASE_CONTRACT;

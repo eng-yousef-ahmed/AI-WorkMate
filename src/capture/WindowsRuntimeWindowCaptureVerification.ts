@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,7 @@ import {
 } from "./WindowsNativeScreenProvider";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
+import { removeDirectoryAfterSqliteClose } from "../storage/sqlite-lifecycle";
 
 export const WINDOWS_RUNTIME_WINDOW_CAPTURE_VERIFY_DURATION_MS = 3_000;
 
@@ -82,6 +83,8 @@ export interface WindowsRuntimeWindowCaptureVerificationResult {
 export interface WindowsRuntimeWindowCaptureVerificationOptions {
   durationMs?: number;
   keepWorkspace?: boolean;
+  /** Injected so unit tests can pin the fail-closed off-Windows contract. */
+  platform?: NodeJS.Platform | string;
 }
 
 /** Shell desktop window whose HWND is not a representative WGC target. */
@@ -115,7 +118,7 @@ export async function runWindowsRuntimeWindowCaptureVerification(
   options: WindowsRuntimeWindowCaptureVerificationOptions = {},
 ): Promise<WindowsRuntimeWindowCaptureVerificationResult> {
   const durationMs = options.durationMs ?? WINDOWS_RUNTIME_WINDOW_CAPTURE_VERIFY_DURATION_MS;
-  const platform = process.platform;
+  const platform = options.platform ?? process.platform;
   const helperPath = await resolveWindowsScreenHelperPath();
   const base: Omit<WindowsRuntimeWindowCaptureVerificationResult, "success" | "windowsVerified" | "abort"> = {
     platform,
@@ -164,17 +167,19 @@ export async function runWindowsRuntimeWindowCaptureVerification(
     chosen = selectDeterministicWindowSource(discovered.capabilities.WINDOW.sources);
     abort = await verifyAbort(runtime, chosen);
     capture = await verifyCapture(runtime, dataRoot, durationMs, chosen);
-    const success = abort.success && capture.success && enumeratedWindows > 0;
+    const completed = abort.success && capture.success && enumeratedWindows > 0;
+    const windowsVerified = platform === "win32" && helperPath !== undefined && completed === true
+      && durationMs >= WINDOWS_RUNTIME_WINDOW_CAPTURE_VERIFY_DURATION_MS;
     return {
       ...base,
-      success,
-      windowsVerified: success,
+      success: windowsVerified,
+      windowsVerified,
       abort,
       capture,
       enumeratedWindows,
       ...(chosen === undefined ? {} : { selectedSourceId: chosen.sourceId }),
       ...(chosen?.label === undefined ? {} : { selectedSourceLabel: chosen.label }),
-      ...(success ? {} : { failureCode: "WINDOWS_RUNTIME_CAPTURE_INCOMPLETE", failureMessage: "One or more Windows window capture checks failed." }),
+      ...(windowsVerified ? {} : { failureCode: "WINDOWS_RUNTIME_CAPTURE_INCOMPLETE", failureMessage: "One or more Windows window capture checks failed." }),
     };
   } catch (error: unknown) {
     return {
@@ -192,8 +197,8 @@ export async function runWindowsRuntimeWindowCaptureVerification(
   } finally {
     await runtime.close();
     if (options.keepWorkspace !== true) {
-      await rm(appConfigRoot, { recursive: true, force: true });
-      await rm(dataRoot, { recursive: true, force: true });
+      await removeDirectoryAfterSqliteClose(appConfigRoot);
+      await removeDirectoryAfterSqliteClose(dataRoot);
     }
   }
 }

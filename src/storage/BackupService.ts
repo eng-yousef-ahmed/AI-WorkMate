@@ -8,6 +8,7 @@ import unzipper from "unzipper";
 import { STORAGE_VERSION, type BackupManifest, type StorageManifest } from "../domain/models";
 import { ArchiveSecurityError, DataRootValidationError, InsufficientDiskSpaceError, StorageError } from "./errors";
 import { ArchiveService, normalizeArchiveEntryName, type ArchiveEntry, type CreatedArchive } from "./ArchiveService";
+import { removeDirectoryAfterSqliteClose } from "./sqlite-lifecycle";
 import type { LocalDatabase } from "./LocalDatabase";
 import { getAvailableBytes, isPathInside, LocalStorageService, normalizeAbsolutePath } from "./LocalStorageService";
 import { assertDirectoryHasSpace, type AvailableBytesForDirectory } from "./disk-space";
@@ -113,7 +114,7 @@ export class BackupService {
       });
       return created;
     } finally {
-      await rm(snapshotPath, { force: true }).catch(() => undefined);
+      await removeDirectoryAfterSqliteClose(snapshotPath).catch(() => undefined);
       this.busy = false;
     }
   }

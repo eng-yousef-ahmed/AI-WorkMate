@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { LocalFirstStore } from "../storage/LocalFirstStore";
+import { removeDirectoryAfterSqliteClose } from "../storage/sqlite-lifecycle";
 import { LocalRecordingCaptureEngine } from "../capture/LocalRecordingCaptureEngine";
 import { MeetingCaptureOrchestrator } from "../capture/MeetingCaptureOrchestrator";
 import type { MeetingCaptureFlowSnapshot, MeetingCaptureSourceSnapshot } from "../capture/MeetingCaptureOrchestrator";
@@ -412,7 +413,7 @@ export async function runMeetingProcessingVerification(
           outcome.workspace = { kept: true, directoryName: basename(root) };
         }
       } else {
-        await rm(root, { recursive: true, force: true }).catch(() => undefined);
+        await removeDirectoryAfterSqliteClose(root).catch(() => undefined);
       }
     }
   }

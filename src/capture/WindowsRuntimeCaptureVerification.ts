@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,7 @@ import type { NativeCaptureKind } from "./NativeCaptureAdapter";
 import { NativeCaptureError } from "./NativeCaptureAdapter";
 import { StorageConfigService } from "../storage/StorageConfigService";
 import { StorageRuntime } from "../storage/StorageRuntime";
+import { removeDirectoryAfterSqliteClose } from "../storage/sqlite-lifecycle";
 
 export const WINDOWS_RUNTIME_CAPTURE_VERIFY_DURATION_MS = 3_000;
 
@@ -66,6 +67,7 @@ export interface WindowsRuntimeCaptureVerificationResult {
 export interface WindowsRuntimeCaptureVerificationOptions {
   durationMs?: number;
   keepWorkspace?: boolean;
+  platform?: NodeJS.Platform | string;
 }
 
 /**
@@ -77,7 +79,7 @@ export async function runWindowsRuntimeCaptureVerification(
   options: WindowsRuntimeCaptureVerificationOptions = {},
 ): Promise<WindowsRuntimeCaptureVerificationResult> {
   const durationMs = options.durationMs ?? WINDOWS_RUNTIME_CAPTURE_VERIFY_DURATION_MS;
-  const platform = process.platform;
+  const platform = options.platform ?? process.platform;
   const helperPath = await resolveWindowsAudioHelperPath();
   const base: Omit<WindowsRuntimeCaptureVerificationResult, "success" | "windowsVerified" | "abort" | "captures"> = {
     platform,
@@ -123,14 +125,15 @@ export async function runWindowsRuntimeCaptureVerification(
     abort = await verifyAbort(runtime);
     captures.push(await verifyCapture(runtime, dataRoot, "MICROPHONE_AUDIO", durationMs));
     captures.push(await verifyCapture(runtime, dataRoot, "SYSTEM_AUDIO", durationMs));
-    const success = abort.success && captures.every((capture) => capture.success);
+    const completed = abort.success && captures.every((capture) => capture.success);
+    const windowsVerified = completed === true && durationMs >= WINDOWS_RUNTIME_CAPTURE_VERIFY_DURATION_MS;
     return {
       ...base,
-      success,
-      windowsVerified: success,
+      success: windowsVerified,
+      windowsVerified,
       abort,
       captures,
-      ...(success ? {} : { failureCode: "WINDOWS_RUNTIME_CAPTURE_INCOMPLETE", failureMessage: "One or more Windows runtime capture checks failed." }),
+      ...(windowsVerified ? {} : { failureCode: "WINDOWS_RUNTIME_CAPTURE_INCOMPLETE", failureMessage: "One or more Windows runtime capture checks failed." }),
     };
   } catch (error: unknown) {
     return {
@@ -145,8 +148,8 @@ export async function runWindowsRuntimeCaptureVerification(
   } finally {
     await runtime.close();
     if (options.keepWorkspace !== true) {
-      await rm(appConfigRoot, { recursive: true, force: true });
-      await rm(dataRoot, { recursive: true, force: true });
+      await removeDirectoryAfterSqliteClose(appConfigRoot);
+      await removeDirectoryAfterSqliteClose(dataRoot);
     }
   }
 }

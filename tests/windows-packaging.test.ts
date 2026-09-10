@@ -7,7 +7,10 @@ import { WINDOWS_RELEASE_CONTRACT } from "../src/desktop/windows-release-contrac
 import { getDataRootProtectionError } from "../src/storage/LocalStorageService";
 
 interface PackageJson {
+  author?: string;
   build?: {
+    icon?: string;
+    copyright?: string;
     nsis?: {
       oneClick?: boolean;
       allowToChangeInstallationDirectory?: boolean;
@@ -21,6 +24,10 @@ interface PackageJson {
 
 test("NSIS packaging contract matches package.json and never ships models", async () => {
   const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as PackageJson;
+  assert.equal(typeof pkg.author, "string");
+  assert.ok((pkg.author ?? "").length > 0);
+  assert.equal(pkg.build?.icon, "build/icon.png");
+  assert.ok((pkg.build?.copyright ?? "").includes("AI WorkMate"));
   const nsis = pkg.build?.nsis;
   assert.equal(nsis?.oneClick, WINDOWS_RELEASE_CONTRACT.nsisOneClick);
   assert.equal(nsis?.allowToChangeInstallationDirectory, WINDOWS_RELEASE_CONTRACT.allowToChangeInstallationDirectory);
@@ -45,6 +52,8 @@ test("NSIS packaging contract matches package.json and never ships models", asyn
   assert.equal(WINDOWS_RELEASE_CONTRACT.firstRunRequiresUserDataRootSelection, true);
   assert.equal(WINDOWS_RELEASE_CONTRACT.credentialStoreUsesOsSafeStorage, true);
   assert.equal(WINDOWS_RELEASE_CONTRACT.uninstallPreservesUserData, true);
+  assert.equal(WINDOWS_RELEASE_CONTRACT.installerHasAuthor, true);
+  assert.equal(WINDOWS_RELEASE_CONTRACT.installerHasIcon, true);
 });
 
 test("DATA_ROOT cannot be a Windows Program Files or installation directory", () => {

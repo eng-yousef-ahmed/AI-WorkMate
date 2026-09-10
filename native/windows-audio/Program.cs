@@ -70,12 +70,17 @@ static List<object> EnumerateDevices(MMDeviceEnumerator enumerator, DataFlow flo
     var devices = new List<object>();
     foreach (var device in enumerator.EnumerateAudioEndPoints(flow, DeviceState.Active))
     {
-        devices.Add(new
+        using (device)
         {
-            id = device.ID,
-            label = device.FriendlyName,
-            isDefault = defaultId != null && string.Equals(defaultId, device.ID, StringComparison.OrdinalIgnoreCase),
-        });
+            var id = device.ID ?? string.Empty;
+            var label = device.FriendlyName ?? id;
+            devices.Add(new
+            {
+                id,
+                label,
+                isDefault = defaultId != null && string.Equals(defaultId, id, StringComparison.OrdinalIgnoreCase),
+            });
+        }
     }
     return devices;
 }
@@ -117,7 +122,7 @@ static async Task<int> CaptureAsync(string[] args)
             : new WasapiLoopbackCapture(device);
 
         var source = kind == "microphone" ? "MICROPHONE_AUDIO" : "SYSTEM_AUDIO";
-        var sourceLabel = device.FriendlyName;
+        var sourceLabel = device.FriendlyName ?? device.ID ?? "Windows audio device";
         var startedAt = DateTimeOffset.UtcNow.ToString("O");
         var sequence = 0L;
         var stopped = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
