@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { AIProcessingPolicy } from "../domain/models";
-import { AUTOMATION_IPC_CHANNELS, CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type AutomationRendererAPI, type CalendarRendererAPI, type MeetingsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
+import { AUTOMATION_IPC_CHANNELS, CALENDAR_IPC_CHANNELS, MEETINGS_IPC_CHANNELS, NOTIFICATIONS_CHANGED_EVENT, NOTIFICATIONS_IPC_CHANNELS, STORAGE_IPC_CHANNELS, TASKS_IPC_CHANNELS, type AutomationRendererAPI, type CalendarRendererAPI, type MeetingsRendererAPI, type NotificationsRendererAPI, type StorageRendererAPI, type TasksRendererAPI } from "./storage-api";
 
 const storageApi: StorageRendererAPI = {
   getSnapshot: () => ipcRenderer.invoke(STORAGE_IPC_CHANNELS.getSnapshot),
@@ -69,6 +69,7 @@ const meetingsApi: MeetingsRendererAPI = {
   listHistory: (filter) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.listHistory, filter === undefined ? undefined : { ...filter }),
   getAssistedJoinPlan: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getAssistedJoinPlan, meetingId),
   beginAssistedJoin: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.beginAssistedJoin, meetingId),
+  getAssistedFlowPlan: (meetingId) => ipcRenderer.invoke(MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, meetingId),
 };
 
 const automationApi: AutomationRendererAPI = {
@@ -79,4 +80,27 @@ const automationApi: AutomationRendererAPI = {
   runTick: () => ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.runTick),
 };
 
-contextBridge.exposeInMainWorld("aiWorkMate", { storage: storageApi, calendar: calendarApi, meetings: meetingsApi, tasks: tasksApi, automation: automationApi });
+const notificationsApi: NotificationsRendererAPI = {
+  list: () => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.list),
+  markRead: (notificationId) => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.markRead, notificationId),
+  markAllRead: () => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.markAllRead),
+  getSettings: () => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.getSettings),
+  updateSettings: (input) => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.updateSettings, input),
+  runAutomationNow: () => ipcRenderer.invoke(NOTIFICATIONS_IPC_CHANNELS.runAutomationNow),
+  onChanged: (listener: () => void) => {
+    const handler = (): void => listener();
+    ipcRenderer.on(NOTIFICATIONS_CHANGED_EVENT, handler);
+    return () => {
+      ipcRenderer.removeListener(NOTIFICATIONS_CHANGED_EVENT, handler);
+    };
+  },
+};
+
+contextBridge.exposeInMainWorld("aiWorkMate", {
+  storage: storageApi,
+  calendar: calendarApi,
+  meetings: meetingsApi,
+  tasks: tasksApi,
+  automation: automationApi,
+  notifications: notificationsApi,
+});

@@ -22,9 +22,12 @@ import { StorageRuntime } from "../storage/StorageRuntime";
 import { AutomationPreferencesStore } from "../automation/AutomationPreferences";
 import { registerAutomationIpc } from "./automation-ipc";
 import { registerCalendarIpc, type GoogleOAuthConfigInput, type MicrosoftOAuthConfigInput } from "./calendar-ipc";
+import { NOTIFICATIONS_CHANGED_EVENT } from "./storage-api";
 import { registerMeetingsIpc } from "./meetings-ipc";
+import { registerNotificationsIpc } from "./notifications-ipc";
 import { registerTasksIpc } from "./tasks-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
+import type { HubNotification } from "../domain/hub";
 import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
 
 let runtime: StorageRuntime | undefined;
@@ -56,6 +59,11 @@ async function bootstrap(): Promise<void> {
           }
         },
       },
+      // OS popups stay optional and are suppressed while the window has
+      // focus (the in-app bell still shows everything). The notification
+      // service only calls this while the user's master toggle is enabled.
+      notificationPresenter: presentDesktopNotification,
+      notificationChangeListener: broadcastNotificationChange,
     });
   }
   const configured = await runtime.initialize();
@@ -137,6 +145,13 @@ async function bootstrap(): Promise<void> {
       getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
       getAuthorizedRendererUrl: () => rendererUrl,
     });
+    registerNotificationsIpc({
+      ipcMain: ipcMain as unknown as IpcMainLike,
+      runtime,
+      getAuthorizedWebContentsId: () => mainWindow?.webContents.id,
+      getAuthorizedRendererUrl: () => rendererUrl,
+      broadcastChanged: broadcastNotificationChange,
+    });
     ipcRegistered = true;
   }
   await mainWindow.loadFile(rendererPath);
@@ -153,6 +168,35 @@ function startAutomationTicks(): void {
   };
   tick();
   automationTick = setInterval(tick, 60_000);
+}
+
+/** Sends the notification-change event to the authorized window (no-op when closed). */
+function broadcastNotificationChange(): void {
+  if (mainWindow === undefined || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(NOTIFICATIONS_CHANGED_EVENT);
+}
+
+/**
+ * OS-level popup for a new notification. The in-app notification center is
+ * the source of truth; this only surfaces items while the app is in the
+ * background and the OS supports notifications. Clicking focuses the window,
+ * where the item is already listed.
+ */
+function presentDesktopNotification(notification: HubNotification): void {
+  if (mainWindow === undefined || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (mainWindow.isFocused() || !Notification.isSupported()) {
+    return;
+  }
+  const popup = new Notification({ title: notification.title, body: notification.body });
+  popup.on("click", () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+  popup.show();
 }
 
 /**

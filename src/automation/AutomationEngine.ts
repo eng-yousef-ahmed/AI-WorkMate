@@ -214,9 +214,11 @@ export class AutomationEngine {
     const record: NotificationRecord = {
       notificationId: randomUUID(),
       kind: input.kind,
+      severity: "INFO",
       title: clip(input.title, MAX_NOTIFICATION_TITLE),
       body: clip(input.body, MAX_NOTIFICATION_BODY),
       fingerprint: input.fingerprint,
+      dedupeKey: input.fingerprint,
       createdAt: now,
     };
     if (input.meetingId !== undefined) record.meetingId = input.meetingId;

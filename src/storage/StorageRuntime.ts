@@ -57,7 +57,8 @@ import { TaskManagementService } from "../tasks/TaskManagementService";
 import { AutomationEngine, type LocalNotifier } from "../automation/AutomationEngine";
 import { DEFAULT_AUTOMATION_PREFERENCES, type AutomationPreferencesStore } from "../automation/AutomationPreferences";
 import { OfficeExportService } from "../office/OfficeExportService";
-import type { HubAutomationPreferences, HubOfficeExportKind, HubOfficeExportResult } from "../domain/hub";
+import { NotificationCenterService } from "../notifications/NotificationCenterService";
+import type { HubAutomationPreferences, HubNotification, HubOfficeExportKind, HubOfficeExportResult } from "../domain/hub";
 import type { BeginCalendarSignInResult, CalendarConnectionStatus, CompleteCalendarSignInInput } from "../calendar/CalendarConnection";
 import type { MicrosoftCalendarConnection } from "../integrations/microsoft/MicrosoftCalendarConnection";
 import type { GoogleCalendarConnection } from "../integrations/google/GoogleCalendarConnection";
@@ -76,6 +77,13 @@ export interface StorageRuntimeIntegrations {
   analysisProvider?: AIProvider;
   automationPreferences?: AutomationPreferencesStore;
   localNotifier?: LocalNotifier;
+  /**
+   * Optional OS popup presenter (main process). Only invoked for new
+   * notifications while the user's master notifications toggle is enabled.
+   */
+  notificationPresenter?: (notification: HubNotification) => void;
+  /** Optional renderer change notification (main process broadcasts it). */
+  notificationChangeListener?: () => void;
 }
 
 /** Application lifecycle boundary for first-run setup and location changes. */
@@ -95,6 +103,8 @@ export class StorageRuntime {
   /** User-controlled local notifications and meeting detection. */
   public automation: AutomationEngine | undefined;
   public officeExports: OfficeExportService | undefined;
+  /** Local notification center and user-controlled automation. */
+  public notifications: NotificationCenterService | undefined;
   public transcription: LocalTranscriptionService | undefined;
   public analysis: LocalAnalysisService | undefined;
   public readonly credentialStore: CredentialStore | undefined;
@@ -556,6 +566,15 @@ export class StorageRuntime {
     return this.requireOfficeExports().exportMeetingDocument(meetingId, kind, exportDirectory);
   }
 
+  /** Notification center and automation (throws before first-run setup). */
+  public requireNotificationCenter(): NotificationCenterService {
+    const notifications = this.notifications;
+    if (notifications === undefined) {
+      throw new StorageError("Choose a local data location before using notifications.");
+    }
+    return notifications;
+  }
+
   public async close(): Promise<void> {
     await this.detachStore("Storage runtime closed.");
   }
@@ -723,7 +742,8 @@ export class StorageRuntime {
       provider: this.integrations.analysisProvider ?? new LocalLlmProvider(),
       clock: this.clock,
     });
-    this.tasks = new TaskManagementService({ store, clock: this.clock });
+    const tasks = new TaskManagementService({ store, clock: this.clock });
+    this.tasks = tasks;
     this.officeExports = new OfficeExportService(store, this.clock);
     this.automation = new AutomationEngine({
       store,
@@ -732,6 +752,25 @@ export class StorageRuntime {
       ...(this.integrations.automationPreferences === undefined
         ? {}
         : { preferences: () => this.integrations.automationPreferences!.read() }),
+    });
+    // Notification center + automation: local only; the digest is opt-in and
+    // due-task alerts follow the user's master toggle (see service docs).
+    const notifications = new NotificationCenterService({
+      store,
+      tasks,
+      clock: this.clock,
+      ...(this.integrations.notificationPresenter === undefined
+        ? {}
+        : { presenter: this.integrations.notificationPresenter }),
+      ...(this.integrations.notificationChangeListener === undefined
+        ? {}
+        : { onChanged: this.integrations.notificationChangeListener }),
+    });
+    this.notifications = notifications;
+    notifications.start();
+    // Catch up on anything that became due while the app was closed.
+    void notifications.runAutomation().catch((error: unknown) => {
+      console.error("Startup notification automation pass failed", error);
     });
   }
 
@@ -747,6 +786,8 @@ export class StorageRuntime {
     this.tasks = undefined;
     this.automation = undefined;
     this.officeExports = undefined;
+    this.notifications?.stop();
+    this.notifications = undefined;
     await this.nativeCapture?.abortAllActive(reason);
     this.nativeCapture = undefined;
     this.transcription = undefined;

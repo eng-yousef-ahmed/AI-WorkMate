@@ -20,8 +20,13 @@ import type {
   HubChatAnswer,
   HubFollowupSuggestion,
   HubHistoryFilter,
+  HubMeetingAssistPlan,
   HubMeetingSummary,
+  HubNotification,
   HubNotificationItem,
+  HubNotificationPage,
+  HubNotificationSettings,
+  HubNotificationSettingsInput,
   HubOfficeExportKind,
   HubOfficeExportResult,
   HubTaskCreateInput,
@@ -74,6 +79,7 @@ export const MEETINGS_IPC_CHANNELS = {
   listHistory: "meetings:history",
   getAssistedJoinPlan: "meetings:assisted-join-plan",
   beginAssistedJoin: "meetings:assisted-join-begin",
+  getAssistedFlowPlan: "meetings:assist-plan",
 } as const;
 
 export const AUTOMATION_IPC_CHANNELS = {
@@ -110,6 +116,21 @@ export const CALENDAR_IPC_CHANNELS = {
   syncGoogleCalendarAuto: "calendar:sync-google-auto",
   saveGoogleOAuthConfig: "calendar:google-save-oauth-config",
 } as const;
+
+export const NOTIFICATIONS_IPC_CHANNELS = {
+  list: "notifications:list",
+  markRead: "notifications:mark-read",
+  markAllRead: "notifications:mark-all-read",
+  getSettings: "notifications:get-settings",
+  updateSettings: "notifications:update-settings",
+  runAutomationNow: "notifications:run-automation",
+} as const;
+
+/**
+ * Main -> renderer push channel: the notification history or its settings
+ * changed (an IPC action or an automation tick), so the bell badge refreshes.
+ */
+export const NOTIFICATIONS_CHANGED_EVENT = "notifications:changed";
 
 /** Renderer-sendable Microsoft OAuth application settings (no secrets). */
 export interface MicrosoftOAuthSettingsInput {
@@ -186,6 +207,11 @@ export interface MeetingsRendererAPI {
   listHistory(filter?: HubHistoryFilter): Promise<HubMeetingSummary[]>;
   getAssistedJoinPlan(meetingId: string): Promise<HubAssistedJoinPlan>;
   beginAssistedJoin(meetingId: string): Promise<HubAssistedJoinPlan>;
+  /**
+   * Platform-aware assisted capture plan (Teams/Zoom/Google Meet/other)
+   * derived from the persisted meeting link and local capture capabilities.
+   */
+  getAssistedFlowPlan(meetingId: string): Promise<HubMeetingAssistPlan>;
 }
 
 export interface AutomationRendererAPI {
@@ -215,6 +241,23 @@ export interface TasksRendererAPI {
   setTaskStatus(taskId: string, status: HubTaskStatus): Promise<HubTaskItem>;
   listFollowupSuggestions(meetingId?: string): Promise<HubFollowupSuggestion[]>;
   convertFollowup(followupId: string): Promise<HubTaskItem>;
+}
+
+/**
+ * Notification-center surface. History items are renderer-safe
+ * HubNotification DTOs (meeting/task references and display text only) and
+ * settings are automation preferences — no paths, DATA_ROOT, or secrets.
+ */
+export interface NotificationsRendererAPI {
+  list(): Promise<HubNotificationPage>;
+  markRead(notificationId: string): Promise<HubNotification | undefined>;
+  markAllRead(): Promise<number>;
+  getSettings(): Promise<HubNotificationSettings>;
+  updateSettings(input: HubNotificationSettingsInput): Promise<HubNotificationSettings>;
+  /** Runs the local automation pass on demand (explicit user action). */
+  runAutomationNow(): Promise<unknown>;
+  /** Subscribes to main-process change events; returns an unsubscribe fn. */
+  onChanged(listener: () => void): () => void;
 }
 
 /**
@@ -251,6 +294,11 @@ export type {
   HubCaptureSnapshot,
   HubChatAnswer,
   HubFollowupSuggestion,
+  HubMeetingAssistPlan,
+  HubNotification,
+  HubNotificationPage,
+  HubNotificationSettings,
+  HubNotificationSettingsInput,
   HubTaskCreateInput,
   HubTaskItem,
   HubTaskStatus,

@@ -40,8 +40,8 @@ test("schema v9 databases gain a notifications table at v10 without losing tasks
 
   const database = new LocalDatabase(dbPath, () => new Date("2026-09-09T12:00:00.000Z"));
   try {
-    assert.equal(DATABASE_SCHEMA_VERSION, 10);
-    assert.ok(database.describeTable("notifications").includes("fingerprint"));
+    assert.equal(DATABASE_SCHEMA_VERSION, 11);
+    assert.ok(database.describeTable("notifications").includes("dedupe_key"));
     assert.equal(database.getTask("task-keep")?.text, "Keep this task");
     const inserted = database.registerNotification({
       notificationId: "n-1",

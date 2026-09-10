@@ -82,9 +82,17 @@ export function registerMeetingsIpc({
   handle(MEETINGS_IPC_CHANNELS.processMeeting, async (_event: unknown, meetingId: unknown, approved: unknown): Promise<unknown> => {
     const hub = runtime.requireMeetingHub();
     const id = readMeetingId(meetingId);
-    await runtime.processCompletedMeeting(id, {
-      ...(approved === true ? { userApprovedForThisRequest: true } : {}),
-    });
+    try {
+      await runtime.processCompletedMeeting(id, {
+        ...(approved === true ? { userApprovedForThisRequest: true } : {}),
+      });
+    } finally {
+      // The orchestrator lands the meeting in a terminal state before it
+      // resolves (or throws), so recording the outcome here reflects the run
+      // the user just triggered — success or failure. Live/unchanged
+      // meetings produce nothing.
+      runtime.notifications?.recordMeetingOutcome(id);
+    }
     return hub.getMeetingDetail(id);
   });
 
@@ -126,6 +134,10 @@ export function registerMeetingsIpc({
       await openExternal(url);
     }
     return plan;
+  });
+
+  handle(MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, async (_event: unknown, meetingId: unknown): Promise<unknown> => {
+    return runtime.requireMeetingHub().getAssistedFlowPlan(readMeetingId(meetingId));
   });
 }
 

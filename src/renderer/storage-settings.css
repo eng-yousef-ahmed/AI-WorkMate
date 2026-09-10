@@ -266,3 +266,59 @@ code { padding: 1px 5px; border-radius: 4px; color: #c9b2ff; background: rgba(13
 .followup-row .meeting-main { flex: 1; }
 @media (max-width: 1080px) { .hub-grid { grid-template-columns: 1fr; } .tasks-grid { grid-template-columns: 1fr; } }
 .notice.visible { display: block; }
+
+/* --- Notification center (bell + popover) ----------------------------------- */
+.notifications-wrap { position: relative; }
+.notifications-bell { position: relative; font-size: 15px; }
+.notifications-bell:hover { transform: translateY(-1px); }
+.bell-badge { position: absolute; top: -6px; right: -7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 9px; background: #e05d5d; color: #fff; font-size: 9px; font-weight: 800; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px #0d1017; }
+.bell-badge[hidden] { display: none; }
+.notifications-panel { position: absolute; top: calc(100% + 10px); right: -6px; width: 400px; max-width: calc(100vw - 40px); z-index: 60; border: 1px solid rgba(139,123,255,.28); border-radius: 12px; background: #171c26; box-shadow: 0 22px 60px rgba(0,0,0,.55); overflow: hidden; }
+.notifications-panel[hidden] { display: none; }
+.notifications-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.notifications-title strong { display: block; font-size: 13px; }
+.notifications-title small { color: var(--muted); font-size: 10px; }
+.notifications-header .small-button, .notifications-settings .small-button { padding: 6px 10px; font-size: 10px; }
+.notifications-list { max-height: 330px; overflow-y: auto; }
+.notification-row { display: flex; gap: 11px; width: 100%; padding: 12px 16px; border: 0; border-bottom: 1px solid rgba(255,255,255,.05); background: transparent; color: inherit; text-align: left; font-size: 11px; cursor: pointer; }
+.notification-row:hover { background: rgba(139,123,255,.07); }
+.notification-row.unread { background: rgba(139,123,255,.05); }
+.notification-dot { width: 7px; height: 7px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: transparent; }
+.notification-row.unread .notification-dot { background: var(--accent-bright); box-shadow: 0 0 8px var(--accent); }
+.notification-kind { width: 28px; height: 28px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border-radius: 8px; font-size: 13px; background: rgba(94,215,233,.08); color: var(--cyan); }
+.notification-row.warning .notification-kind { background: rgba(232,170,105,.1); color: var(--orange); }
+.notification-main { min-width: 0; flex: 1; }
+.notification-title-row { display: flex; gap: 8px; align-items: baseline; }
+.notification-title-row strong { font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notification-when { margin-left: auto; color: var(--dim); font-size: 9px; white-space: nowrap; }
+.notification-row p { margin: 3px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; white-space: pre-line; }
+.notification-row .notification-go { margin-top: 6px; color: var(--accent-bright); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; }
+.notifications-empty { padding: 22px 16px; color: var(--muted); font-size: 11px; text-align: center; }
+.notifications-settings { padding: 12px 16px 14px; border-top: 1px solid var(--line); }
+.notifications-settings summary { cursor: pointer; color: #aeb7c9; font-size: 11px; font-weight: 700; letter-spacing: .05em; }
+.notifications-settings summary:focus { outline: 1px dashed var(--accent); outline-offset: 3px; }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; cursor: pointer; }
+.toggle-copy { min-width: 0; }
+.toggle-copy strong { display: block; font-size: 11px; color: #dfe4ee; }
+.toggle-copy small { display: block; margin-top: 2px; color: var(--dim); font-size: 9.5px; line-height: 1.5; }
+.toggle-row input[type="checkbox"] { width: 34px; height: 19px; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
+.digest-time-row { align-items: flex-end; }
+.digest-time-label { flex: 1; }
+.digest-time-label input { width: 100%; color-scheme: dark; }
+.notifications-settings .helper { margin: 10px 0 0; }
+.notification-go-link { display: block; padding: 2px 0; }
+@media (max-width: 640px) { .notifications-panel { right: -72px; } }
+
+/* --- Assisted flow (Teams/Zoom/Meet capture plans) -------------------------- */
+.assist-card { margin: 18px 0 4px; padding: 15px 17px; border: 1px solid rgba(94,215,233,.16); border-radius: 10px; background: linear-gradient(140deg, rgba(94,215,233,.06), transparent 70%); }
+.assist-heading { align-items: center; gap: 9px; }
+.assist-heading h4 { margin: 0; }
+.assist-heading small { color: var(--muted); font-size: 10px; }
+.assist-platform-chip { align-self: flex-start; padding: 3px 9px; border-radius: 20px; background: rgba(94,215,233,.1); color: var(--cyan); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.assist-summary { margin: 10px 0 0; color: #c4cde0; font-size: 11px; line-height: 1.55; }
+.assist-summary.muted { color: var(--muted); }
+.assist-checklist { margin: 12px 0 2px; padding-left: 18px; display: grid; gap: 7px; }
+.assist-checklist li { color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.assist-checklist strong { display: block; color: #dfe4ee; font-size: 11px; }
+.assist-checklist small { color: var(--dim); font-size: 9.5px; }
+.assist-actions { margin-top: 11px; }

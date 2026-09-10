@@ -363,3 +363,89 @@ test("meetings IPC chat sanitizes service failures and keeps hub error codes", a
     /could not be completed/,
   );
 });
+
+test("meetings IPC processMeeting records the terminal outcome through the notification center", async () => {
+  const { calls, runtime } = createStubs();
+  const outcomes: string[] = [];
+  const runtimeWithNotifications = {
+    ...runtime,
+    notifications: {
+      recordMeetingOutcome: (meetingId: string) => { outcomes.push(meetingId); return undefined; },
+    },
+  } as unknown as StorageRuntime;
+  const handlers = register(runtimeWithNotifications);
+  const result = await invoke(handlers, MEETINGS_IPC_CHANNELS.processMeeting, AUTHORIZED_EVENT, "meeting-1", true);
+  assert.deepEqual(calls, ["processCompletedMeeting:meeting-1", "getMeetingDetail"]);
+  assert.deepEqual(outcomes, ["meeting-1"]);
+  assert.ok(result !== undefined);
+});
+
+test("meetings IPC processMeeting records an issue outcome even when processing throws", async () => {
+  const { runtime } = createStubs();
+  const failingRuntime = {
+    ...runtime,
+    processCompletedMeeting: async () => { throw new StorageError("Transcription failed mid-run."); },
+    notifications: {
+      recordMeetingOutcome: (meetingId: string) => { void meetingId; return undefined; },
+    },
+  } as unknown as StorageRuntime;
+  const handlers = register(failingRuntime);
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.processMeeting, AUTHORIZED_EVENT, "meeting-1"),
+    /Transcription failed/,
+  );
+});
+
+test("meetings IPC processMeeting tolerates runtimes without a notification center", async () => {
+  const { runtime, calls } = createStubs();
+  const handlers = register(runtime); // stub has no `notifications` member
+  const result = await invoke(handlers, MEETINGS_IPC_CHANNELS.processMeeting, AUTHORIZED_EVENT, "meeting-1");
+  assert.ok(result !== undefined);
+  assert.deepEqual(calls, ["processCompletedMeeting:meeting-1", "getMeetingDetail"]);
+});
+
+test("meetings IPC assisted-flow plan resolves through the hub from an authorized renderer", async () => {
+  const { runtime } = createStubs();
+  const plan = {
+    meetingId: "meeting-1",
+    meetingTitle: "Standup",
+    meetingDate: "2026-09-09",
+    platform: "TEAMS",
+    platformLabel: "Microsoft Teams",
+    captureSupported: true,
+    joinLinkAvailable: true,
+    recommended: { meetingId: "meeting-1", microphone: false, systemLoopback: true, screen: false, window: "" },
+    rationale: ["This meeting links to Microsoft Teams."],
+    checklist: [{ id: "join", title: "Join the meeting", note: "Use “Join meeting” above." }],
+  };
+  const hub = {
+    getAssistedFlowPlan: (id: string) => {
+      if (id !== "meeting-1") throw new MeetingHubError("MEETING_NOT_FOUND", `Meeting not found: ${id}`);
+      return plan;
+    },
+  } as unknown as MeetingHubService;
+  const runtimeWithHub = {
+    ...runtime,
+    requireMeetingHub: () => hub,
+  } as unknown as StorageRuntime;
+  const handlers = register(runtimeWithHub);
+
+  const result = await invoke(handlers, MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, AUTHORIZED_EVENT, "meeting-1") as typeof plan;
+  assert.equal(result.platform, "TEAMS");
+  assert.equal(result.recommended.window, "");
+  assert.equal(result.checklist[0]?.id, "join");
+
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, UNAUTHORIZED_EVENT, "meeting-1"),
+    /unauthorized renderer/i,
+  );
+
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, AUTHORIZED_EVENT, ""),
+    /meeting id is invalid/i,
+  );
+  await assert.rejects(
+    invoke(handlers, MEETINGS_IPC_CHANNELS.getAssistedFlowPlan, AUTHORIZED_EVENT, "ghost"),
+    (error: unknown) => error instanceof MeetingHubError && error.code === "MEETING_NOT_FOUND",
+  );
+});

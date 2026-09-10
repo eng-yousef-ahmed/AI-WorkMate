@@ -173,6 +173,38 @@ export interface HubCaptureRequest {
   window?: string;
 }
 
+/**
+ * Online-meeting platform classification for assisted flows. Classified in
+ * the main process from persisted calendar URLs; the renderer only ever
+ * receives the label and the recommended capture booleans.
+ */
+export type HubMeetingPlatformKind = "TEAMS" | "ZOOM" | "GOOGLE_MEET" | "OTHER_ONLINE" | "NONE";
+
+export interface HubAssistChecklistItem {
+  id: string;
+  title: string;
+  note?: string;
+}
+
+/**
+ * Renderer-safe assisted capture plan for one calendar-linked meeting. No
+ * URLs, absolute paths, window source ids, or capability internals cross
+ * the boundary; `window` uses "" to request the native deterministic window
+ * default.
+ */
+export interface HubMeetingAssistPlan {
+  meetingId: string;
+  meetingTitle: string;
+  meetingDate: string;
+  platform: HubMeetingPlatformKind;
+  platformLabel: string;
+  captureSupported: boolean;
+  joinLinkAvailable: boolean;
+  recommended: HubCaptureRequest;
+  rationale: string[];
+  checklist: HubAssistChecklistItem[];
+}
+
 export interface HubSearchRequest {
   query: string;
   limit?: number;
@@ -289,6 +321,63 @@ export interface HubFollowupSuggestion {
   alreadyTask: boolean;
 }
 
+export type HubNotificationKind =
+  | "MEETING_READY"
+  | "MEETING_ISSUE"
+  | "TASK_DUE"
+  | "FOLLOWUP_DIGEST"
+  | "MEETING_DETECTED"
+  | "MEETING_PREPARATION"
+  | "MEETING_SUMMARY_READY"
+  | "TASK_ASSIGNED"
+  | "TASK_OVERDUE"
+  | "DAILY_MEETING_REPORT"
+  | "UNRESOLVED_FOLLOWUPS";
+export type HubNotificationAction = "open-meeting" | "open-tasks";
+
+/**
+ * Notification-center entry. Renderer-safe: carries meeting/task references
+ * and display text only — never absolute paths, DATA_ROOT, or artifact
+ * content beyond the composed title/body.
+ */
+export interface HubNotification {
+  notificationId: string;
+  kind: HubNotificationKind;
+  severity: "INFO" | "WARNING";
+  title: string;
+  body: string;
+  createdAt: string;
+  /** Set once the user opened/dismissed the notification. */
+  readAt: string | null;
+  meetingId?: string;
+  taskId?: string;
+  /** Renderer navigation hint when the notification points at a meeting/task. */
+  action?: HubNotificationAction;
+}
+
+/** Automation and popup preferences (persisted locally, no secrets). */
+export interface HubNotificationSettings {
+  /** Master switch: OS popups and automated alerts (due tasks/digest). */
+  notificationsEnabled: boolean;
+  /** Opt-in daily local digest of open tasks and follow-ups. Default OFF. */
+  digestEnabled: boolean;
+  /** Local 24h "HH:MM" time after which the daily digest may fire. */
+  digestTime: string;
+  updatedAt: string;
+}
+
+export interface HubNotificationSettingsInput {
+  notificationsEnabled?: boolean;
+  digestEnabled?: boolean;
+  digestTime?: string;
+}
+
+/** Notification-center page payload: newest-first items plus total unread. */
+export interface HubNotificationPage {
+  notifications: HubNotification[];
+  unread: number;
+}
+
 export const HUB_MAX_TRANSCRIPT_READ_BYTES = 24 * 1024 * 1024;
 export const HUB_MAX_ANALYSIS_READ_BYTES = 8 * 1024 * 1024;
 
@@ -307,15 +396,6 @@ export interface HubAutomationPreferences {
   captureSystemLoopback: boolean;
   captureScreen: boolean;
 }
-
-export type HubNotificationKind =
-  | "MEETING_DETECTED"
-  | "MEETING_PREPARATION"
-  | "MEETING_SUMMARY_READY"
-  | "TASK_ASSIGNED"
-  | "TASK_OVERDUE"
-  | "DAILY_MEETING_REPORT"
-  | "UNRESOLVED_FOLLOWUPS";
 
 /** Renderer-safe local notification (never contains paths, tokens, or credentials). */
 export interface HubNotificationItem {

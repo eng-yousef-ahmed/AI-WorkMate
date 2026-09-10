@@ -594,3 +594,35 @@ test("meeting hub: empty transcript search does not throw when many meetings exi
     assert.equal(results.hitCount, 0);
   });
 });
+
+test("meeting hub: assisted-flow plan classifies the persisted platform without an orchestrator", async () => {
+  await withTempStore(async (store) => {
+    const meetingId = await seedCalendarMeeting(store, {
+      subject: "Teams design sync",
+      dayOffset: 0,
+      joinUrl: "https://teams.microsoft.com/l/meetup-join/19%3ameeting%40thread.v2",
+    });
+    const hub = new MeetingHubService({ store }); // no orchestrator attached
+    const plan = await hub.getAssistedFlowPlan(meetingId);
+    assert.equal(plan.meetingId, meetingId);
+    assert.equal(plan.platform, "TEAMS");
+    assert.equal(plan.platformLabel, "Microsoft Teams");
+    assert.equal(plan.joinLinkAvailable, true);
+    assert.equal(plan.captureSupported, false); // discovery unavailable -> guidance only
+    assert.equal(plan.checklist.length, 4);
+    assert.equal(plan.recommended.microphone, false);
+    assert.equal(plan.recommended.systemLoopback, false);
+    // Renderer-safety: the plan never carries URLs or paths.
+    const json = JSON.stringify(plan);
+    assert.equal(json.includes("teams.microsoft.com"), false);
+    assert.equal(json.includes(":\\"), false);
+  });
+});
+
+test("meeting hub: assisted-flow plan rejects unknown meetings with a hub error", async () => {
+  await withTempStore(async (store) => {
+    const hub = new MeetingHubService({ store });
+    await assert.rejects(hub.getAssistedFlowPlan("ghost-meeting"), (error: unknown) =>
+      error instanceof MeetingHubError && error.code === "MEETING_NOT_FOUND");
+  });
+});

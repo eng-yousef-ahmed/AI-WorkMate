@@ -110,7 +110,20 @@ export interface DecisionRecord extends Decision {
   createdAt: string;
 }
 
+export interface AuditRecord {
+  auditId: string;
+  action: string;
+  meetingId?: string;
+  artifactId?: string;
+  details?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export type NotificationKindValue =
+  | "MEETING_READY"
+  | "MEETING_ISSUE"
+  | "TASK_DUE"
+  | "FOLLOWUP_DIGEST"
   | "MEETING_DETECTED"
   | "MEETING_PREPARATION"
   | "MEETING_SUMMARY_READY"
@@ -119,9 +132,31 @@ export type NotificationKindValue =
   | "DAILY_MEETING_REPORT"
   | "UNRESOLVED_FOLLOWUPS";
 
+export type NotificationKind = NotificationKindValue;
+export type NotificationSeverity = "INFO" | "WARNING";
+export type NotificationAction = "open-meeting" | "open-tasks";
+
 export interface NotificationRecord {
   notificationId: string;
-  kind: NotificationKindValue;
+  kind: NotificationKind;
+  severity: NotificationSeverity;
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt?: string;
+  meetingId?: string;
+  taskId?: string;
+  action?: NotificationAction;
+  /** Unique event identity used to make every notification idempotent. */
+  dedupeKey: string;
+  /** Alias used by the automation engine (same value as dedupeKey). */
+  fingerprint?: string;
+}
+
+/** Input accepted by the automation engine before mapping onto the unified table. */
+export interface AutomationNotificationInput {
+  notificationId: string;
+  kind: NotificationKind;
   title: string;
   body: string;
   fingerprint: string;
@@ -129,15 +164,6 @@ export interface NotificationRecord {
   readAt?: string;
   meetingId?: string;
   taskId?: string;
-}
-
-export interface AuditRecord {
-  auditId: string;
-  action: string;
-  meetingId?: string;
-  artifactId?: string;
-  details?: Record<string, unknown>;
-  createdAt: string;
 }
 
 export interface ArtifactOperationUpdate {
@@ -372,23 +398,6 @@ CREATE INDEX IF NOT EXISTS tasks_meeting_index ON tasks(meeting_id);
 CREATE INDEX IF NOT EXISTS tasks_project_index ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS tasks_status_index ON tasks(status);
 
-CREATE TABLE IF NOT EXISTS notifications (
-  notification_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN (
-    'MEETING_DETECTED', 'MEETING_PREPARATION', 'MEETING_SUMMARY_READY',
-    'TASK_ASSIGNED', 'TASK_OVERDUE', 'DAILY_MEETING_REPORT', 'UNRESOLVED_FOLLOWUPS'
-  )),
-  title TEXT NOT NULL,
-  body TEXT NOT NULL,
-  fingerprint TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL,
-  read_at TEXT,
-  meeting_id TEXT REFERENCES meetings(meeting_id) ON DELETE SET NULL,
-  task_id TEXT
-);
-CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);
-CREATE INDEX IF NOT EXISTS notifications_unread_index ON notifications(read_at);
-
 CREATE TABLE IF NOT EXISTS audit_log (
   audit_id TEXT PRIMARY KEY,
   action TEXT NOT NULL,
@@ -400,6 +409,26 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS audit_action_index ON audit_log(action);
 CREATE INDEX IF NOT EXISTS audit_meeting_index ON audit_log(meeting_id);
 CREATE INDEX IF NOT EXISTS audit_created_index ON audit_log(created_at);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  notification_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'MEETING_READY', 'MEETING_ISSUE', 'TASK_DUE', 'FOLLOWUP_DIGEST',
+    'MEETING_DETECTED', 'MEETING_PREPARATION', 'MEETING_SUMMARY_READY',
+    'TASK_ASSIGNED', 'TASK_OVERDUE', 'DAILY_MEETING_REPORT', 'UNRESOLVED_FOLLOWUPS'
+  )),
+  severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  read_at TEXT,
+  meeting_id TEXT REFERENCES meetings(meeting_id) ON DELETE SET NULL,
+  task_id TEXT,
+  action TEXT CHECK (action IS NULL OR action IN ('open-meeting', 'open-tasks')),
+  dedupe_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS notifications_read_index ON notifications(read_at);
 `;
 
 export class LocalDatabase {
@@ -1220,58 +1249,6 @@ export class LocalDatabase {
     return rows.map((row) => mapTaskRecord(row as SqlRow));
   }
 
-  /**
-   * Inserts a local notification. Duplicate fingerprints are ignored so a tick
-   * can be re-run after a crash without repeating the same reminder.
-   */
-  public registerNotification(record: NotificationRecord): boolean {
-    this.ensureOpen();
-    const result = this.database
-      .prepare(
-        `INSERT OR IGNORE INTO notifications (
-          notification_id, kind, title, body, fingerprint, created_at, read_at, meeting_id, task_id
-        ) VALUES (
-          $notificationId, $kind, $title, $body, $fingerprint, $createdAt, $readAt, $meetingId, $taskId
-        )`,
-      )
-      .run({
-        $notificationId: record.notificationId,
-        $kind: record.kind,
-        $title: record.title,
-        $body: record.body,
-        $fingerprint: record.fingerprint,
-        $createdAt: record.createdAt,
-        $readAt: record.readAt ?? null,
-        $meetingId: record.meetingId ?? null,
-        $taskId: record.taskId ?? null,
-      });
-    return result.changes > 0;
-  }
-
-  public listNotifications(options: { unreadOnly?: boolean; limit?: number } = {}): NotificationRecord[] {
-    this.ensureOpen();
-    const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 100)), 500);
-    const rows = options.unreadOnly === true
-      ? this.database
-          .prepare("SELECT * FROM notifications WHERE read_at IS NULL ORDER BY created_at DESC LIMIT $limit")
-          .all({ $limit: limit })
-      : this.database
-          .prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT $limit")
-          .all({ $limit: limit });
-    return rows.map((row) => mapNotificationRecord(row as SqlRow));
-  }
-
-  public markNotificationRead(notificationId: string, readAt: string): NotificationRecord | undefined {
-    this.ensureOpen();
-    this.database
-      .prepare("UPDATE notifications SET read_at = COALESCE(read_at, $readAt) WHERE notification_id = $notificationId")
-      .run({ $notificationId: notificationId, $readAt: readAt });
-    const row = this.database
-      .prepare("SELECT * FROM notifications WHERE notification_id = $notificationId")
-      .get({ $notificationId: notificationId });
-    return row === undefined ? undefined : mapNotificationRecord(row as SqlRow);
-  }
-
   public updateTask(taskId: string, fields: TaskUpdateFields): TaskRecord | undefined {
     const assignments: string[] = [];
     const parameters: Record<string, string | number | bigint | Uint8Array | null> = { $taskId: taskId };
@@ -1294,6 +1271,133 @@ export class LocalDatabase {
       .prepare(`UPDATE tasks SET ${assignments.join(", ")} WHERE task_id = $taskId`)
       .run(parameters);
     return this.getTask(taskId);
+  }
+
+  /**
+   * Automation-engine insert. Maps fingerprint → dedupe_key and defaults
+   * severity to INFO so both notification surfaces share one table.
+   */
+  public registerNotification(record: AutomationNotificationInput | NotificationRecord): boolean {
+    const dedupeKey = "dedupeKey" in record && record.dedupeKey !== undefined
+      ? record.dedupeKey
+      : record.fingerprint;
+    if (dedupeKey === undefined || dedupeKey.length === 0) {
+      throw new StorageError("A notification must include a dedupe key or fingerprint.");
+    }
+    const severity = "severity" in record && record.severity !== undefined ? record.severity : "INFO";
+    const action = "action" in record ? record.action : undefined;
+    return this.addNotification({
+      notificationId: record.notificationId,
+      kind: record.kind,
+      severity,
+      title: record.title,
+      body: record.body,
+      createdAt: record.createdAt,
+      readAt: record.readAt,
+      meetingId: record.meetingId,
+      taskId: record.taskId,
+      action,
+      dedupeKey,
+      fingerprint: dedupeKey,
+    });
+  }
+
+  /**
+   * Inserts a notification. The unique dedupe key makes repeated generation
+   * of the same event idempotent: an already-present key is ignored and the
+   * method reports that nothing was inserted.
+   */
+  public addNotification(record: NotificationRecord): boolean {
+    const result = this.database
+      .prepare(
+        `INSERT INTO notifications (
+          notification_id, kind, severity, title, body, created_at, read_at,
+          meeting_id, task_id, action, dedupe_key
+        ) VALUES (
+          $notificationId, $kind, $severity, $title, $body, $createdAt, $readAt,
+          $meetingId, $taskId, $action, $dedupeKey
+        ) ON CONFLICT(dedupe_key) DO NOTHING`,
+      )
+      .run({
+        $notificationId: record.notificationId,
+        $kind: record.kind,
+        $severity: record.severity,
+        $title: record.title,
+        $body: record.body,
+        $createdAt: record.createdAt,
+        $readAt: record.readAt ?? null,
+        $meetingId: record.meetingId ?? null,
+        $taskId: record.taskId ?? null,
+        $action: record.action ?? null,
+        $dedupeKey: record.dedupeKey,
+      });
+    return Number(result.changes) > 0;
+  }
+
+  /** Newest-first notification history for the in-app notification center. */
+  public listNotifications(limitOrOptions: number | { unreadOnly?: boolean; limit?: number } = 100): NotificationRecord[] {
+    const options = typeof limitOrOptions === "number" ? { limit: limitOrOptions } : limitOrOptions;
+    const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 100)), 1000);
+    const rows = options.unreadOnly === true
+      ? this.database
+          .prepare("SELECT * FROM notifications WHERE read_at IS NULL ORDER BY created_at DESC, notification_id DESC LIMIT $limit")
+          .all({ $limit: limit })
+      : this.database
+          .prepare("SELECT * FROM notifications ORDER BY created_at DESC, notification_id DESC LIMIT $limit")
+          .all({ $limit: limit });
+    return rows.map((row) => mapNotificationRecord(row as SqlRow));
+  }
+
+  public unreadNotificationCount(): number {
+    const row = this.database.prepare("SELECT COUNT(*) AS count FROM notifications WHERE read_at IS NULL").get() as SqlRow;
+    return numberValue(row.count);
+  }
+
+  public markNotificationRead(notificationId: string, readAt: string): NotificationRecord | undefined {
+    this.database
+      .prepare("UPDATE notifications SET read_at = $readAt WHERE notification_id = $notificationId AND read_at IS NULL")
+      .run({ $notificationId: notificationId, $readAt: readAt });
+    return this.getNotification(notificationId);
+  }
+
+  public getNotification(notificationId: string): NotificationRecord | undefined {
+    const row = this.database.prepare("SELECT * FROM notifications WHERE notification_id = $notificationId").get({ $notificationId: notificationId });
+    return row === undefined ? undefined : mapNotificationRecord(row as SqlRow);
+  }
+
+  public markAllNotificationsRead(readAt: string): number {
+    const result = this.database
+      .prepare("UPDATE notifications SET read_at = $readAt WHERE read_at IS NULL")
+      .run({ $readAt: readAt });
+    return Number(result.changes);
+  }
+
+  /**
+   * Retention for the notification center: keeps at most `keepLatest` rows
+   * and drops rows older than `maxAgeMs`. Runs inside one transaction so the
+   * in-app history can never grow without bound.
+   */
+  public pruneNotifications(keepLatest: number, maxAgeMs: number, now: Date): number {
+    const keptBoundary = new Date(now.getTime() - maxAgeMs).toISOString();
+    const overflow: SqlRow[] = this.database
+      .prepare(
+        "SELECT notification_id FROM notifications ORDER BY created_at DESC LIMIT -1 OFFSET $keep",
+      )
+      .all({ $keep: Math.max(0, Math.trunc(keepLatest)) });
+    let removed = 0;
+    this.transaction(() => {
+      for (const row of overflow) {
+        const removedRow = this.database
+          .prepare("DELETE FROM notifications WHERE notification_id = $notificationId")
+          .run({ $notificationId: stringValue(row.notification_id) });
+        removed += Number(removedRow.changes);
+      }
+      const aged = this.database
+        .prepare("DELETE FROM notifications WHERE created_at < $boundary")
+        .run({ $boundary: keptBoundary });
+      removed += Number(aged.changes);
+    });
+    return removed;
   }
 
   public appendAudit(record: AuditRecord): void {
@@ -1418,8 +1522,8 @@ export class LocalDatabase {
       if (currentVersion > 0 && currentVersion < 9) {
         this.applyTaskSourceArtifactMigration();
       }
-      if (currentVersion > 0 && currentVersion < 10) {
-        this.applyNotificationsMigration();
+      if (currentVersion > 0 && currentVersion < 11) {
+        this.applyUnifiedNotificationsMigration();
       }
       this.database
         .prepare("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES ($version, $appliedAt)")
@@ -1427,26 +1531,58 @@ export class LocalDatabase {
     }
   }
 
-  /** Schema v10: local notification history (no tokens, no paths). */
-  private applyNotificationsMigration(): void {
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        notification_id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN (
-          'MEETING_DETECTED', 'MEETING_PREPARATION', 'MEETING_SUMMARY_READY',
-          'TASK_ASSIGNED', 'TASK_OVERDUE', 'DAILY_MEETING_REPORT', 'UNRESOLVED_FOLLOWUPS'
-        )),
-        title TEXT NOT NULL,
-        body TEXT NOT NULL,
-        fingerprint TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        read_at TEXT,
-        meeting_id TEXT REFERENCES meetings(meeting_id) ON DELETE SET NULL,
-        task_id TEXT
-      );
-      CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);
-      CREATE INDEX IF NOT EXISTS notifications_unread_index ON notifications(read_at);
-    `);
+  /**
+   * Schema v11: one notifications table for the notification center and the
+   * automation engine. Rebuilds either the v10 fingerprint-shaped table or
+   * the v10 four-kind CHECK table onto the unified columns.
+   */
+  private applyUnifiedNotificationsMigration(): void {
+    const currentDdl = this.readTableDdl("notifications");
+    if (currentDdl === undefined) {
+      return;
+    }
+    if (currentDdl.includes("MEETING_DETECTED") && currentDdl.includes("dedupe_key")) {
+      return;
+    }
+    const targetDdl = SCHEMA_SQL.match(/CREATE TABLE IF NOT EXISTS notifications \([^]*?\);/)?.[0];
+    if (targetDdl === undefined) {
+      throw new StorageError("The notifications schema definition is missing.");
+    }
+    const createTable = targetDdl.replace(
+      "CREATE TABLE IF NOT EXISTS notifications",
+      "CREATE TABLE notifications",
+    );
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(notifications)").all() as SqlRow[])
+        .map((row) => stringValue(row.name)),
+    );
+    const copySql = columns.has("fingerprint")
+      ? `INSERT INTO notifications (
+           notification_id, kind, severity, title, body, created_at, read_at,
+           meeting_id, task_id, action, dedupe_key
+         )
+         SELECT
+           notification_id, kind, 'INFO', title, body, created_at, read_at,
+           meeting_id, task_id, NULL, fingerprint
+         FROM notifications_legacy`
+      : `INSERT INTO notifications (
+           notification_id, kind, severity, title, body, created_at, read_at,
+           meeting_id, task_id, action, dedupe_key
+         )
+         SELECT
+           notification_id, kind, severity, title, body, created_at, read_at,
+           meeting_id, task_id, action, dedupe_key
+         FROM notifications_legacy`;
+    this.database.exec(
+      "PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;" +
+      "ALTER TABLE notifications RENAME TO notifications_legacy;" +
+      `${createTable};` +
+      `${copySql};` +
+      "DROP TABLE notifications_legacy;" +
+      "CREATE INDEX IF NOT EXISTS notifications_created_index ON notifications(created_at);" +
+      "CREATE INDEX IF NOT EXISTS notifications_read_index ON notifications(read_at);" +
+      "COMMIT; PRAGMA foreign_keys = ON;",
+    );
   }
 
   /** Schema v9: tasks gain optional source_artifact_id for analysis provenance. */
@@ -1741,18 +1877,21 @@ function mapTaskRecord(value: SqlRow): TaskRecord {
   return task;
 }
 
-function mapNotificationRecord(row: SqlRow): NotificationRecord {
+function mapNotificationRecord(value: SqlRow): NotificationRecord {
   const record: NotificationRecord = {
-    notificationId: stringValue(row.notification_id),
-    kind: stringValue(row.kind) as NotificationKindValue,
-    title: stringValue(row.title),
-    body: stringValue(row.body),
-    fingerprint: stringValue(row.fingerprint),
-    createdAt: stringValue(row.created_at),
+    notificationId: stringValue(value.notification_id),
+    kind: stringValue(value.kind) as NotificationRecord["kind"],
+    severity: stringValue(value.severity) as NotificationRecord["severity"],
+    title: stringValue(value.title),
+    body: stringValue(value.body),
+    createdAt: stringValue(value.created_at),
+    dedupeKey: stringValue(value.dedupe_key),
+    fingerprint: stringValue(value.dedupe_key),
   };
-  addOptional(record, "readAt", optionalString(row.read_at));
-  addOptional(record, "meetingId", optionalString(row.meeting_id));
-  addOptional(record, "taskId", optionalString(row.task_id));
+  addOptional(record, "readAt", optionalString(value.read_at));
+  addOptional(record, "meetingId", optionalString(value.meeting_id));
+  addOptional(record, "taskId", optionalString(value.task_id));
+  addOptional(record, "action", optionalString(value.action) as NotificationAction | undefined);
   return record;
 }
 

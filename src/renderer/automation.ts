@@ -7,7 +7,7 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return element as T;
 };
 
-const list = $("notifications-list");
+const list = $("automation-notifications-list");
 const badge = $("notifications-badge");
 const notice = $("notice");
 
