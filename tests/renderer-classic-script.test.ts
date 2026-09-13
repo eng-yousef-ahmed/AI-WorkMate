@@ -18,6 +18,7 @@ test("Node16 CJS preamble throws in a sandboxed classic script without exports",
 
 test("packaged renderer HTML keeps classic file:// scripts (not type=module)", () => {
   const html = readFileSync(HTML_PATH, "utf8");
+  assert.match(html, /<script src="\.\/workspace-nav\.js"><\/script>/);
   assert.match(html, /<script src="\.\/storage-settings\.js"><\/script>/);
   assert.match(html, /<script src="\.\/meetings-hub\.js"><\/script>/);
   assert.match(html, /<script src="\.\/tasks\.js"><\/script>/);

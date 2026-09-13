@@ -24,7 +24,7 @@
         </nav>
         <div class="workspace-label settings-label">SETTINGS</div>
         <nav aria-label="Settings">
-          <a class="active" href="#storage"><span class="nav-icon">◫</span> Storage <span class="active-dot"></span></a>
+          <a class="active" href="#storage" aria-current="page"><span class="nav-icon">◫</span> Storage <span class="active-dot"></span></a>
           <a href="#privacy"><span class="nav-icon">◉</span> Privacy</a>
           <a href="#capture"><span class="nav-icon">●</span> Capture</a>
           <a href="#integrations"><span class="nav-icon">⌁</span> Integrations</a>
@@ -37,7 +37,7 @@
 
       <main class="content">
         <header class="topbar">
-          <div><div class="eyebrow">SETTINGS / STORAGE</div><h1>AI WorkMate Storage</h1></div>
+          <div><div class="eyebrow" id="page-eyebrow">SETTINGS / STORAGE</div><h1 id="page-title">AI WorkMate Storage</h1></div>
           <div class="topbar-actions">
             <span id="sync-status" class="sync-status"><span class="status-dot"></span> Local-first</span>
             <div class="notifications-wrap" id="notifications-wrap">
@@ -397,6 +397,7 @@
         <footer class="privacy-footnote"><span class="status-dot"></span><strong>Privacy by architecture</strong><span>DATA_ROOT is controlled by the desktop process. The web renderer receives authorized operations only.</span></footer>
       </main>
     </div>
+    <script src="./workspace-nav.js"></script>
     <script src="./storage-settings.js"></script>
     <script src="./meetings-hub.js"></script>
     <script src="./tasks.js"></script>
