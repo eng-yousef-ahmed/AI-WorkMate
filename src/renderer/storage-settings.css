@@ -144,7 +144,12 @@ code { padding: 1px 5px; border-radius: 4px; color: #c9b2ff; background: rgba(13
 .calendar-provider-mark.google { background: linear-gradient(145deg, #34a853, #1a7a3d); box-shadow: 0 5px 16px rgba(52,168,83,.25); }
 
 /* ---------- Meeting hub ---------- */
+[data-workspace-page][hidden] { display: none !important; }
 .meetings-hub { border-top: 1px solid var(--line); padding-top: 4px; }
+.workspace-page { border-top: 0; padding-top: 4px; }
+.workspace-links { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.workspace-links a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; color: #d7dcf0; text-decoration: none; font-size: 12px; background: rgba(255,255,255,.03); }
+.workspace-links a:hover { border-color: rgba(139,123,255,.45); color: #fff; }
 .hub-heading-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .hub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
 .hub-column { display: flex; flex-direction: column; gap: 14px; min-width: 0; }

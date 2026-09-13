@@ -866,7 +866,9 @@ window.addEventListener("focus", () => {
 window.addEventListener("ai-workmate:open-meeting", ((event: Event) => {
   const meetingId = (event as CustomEvent<{ meetingId?: unknown }>).detail?.meetingId;
   if (typeof meetingId === "string" && meetingId.length > 0) {
+    if (window.location.hash !== "#meetings") {
+      window.location.hash = "meetings";
+    }
     void openDetail(meetingId);
-    $("meetings").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }) as EventListener);

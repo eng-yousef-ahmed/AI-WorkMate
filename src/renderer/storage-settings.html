@@ -71,7 +71,26 @@
           </div>
         </header>
 
-        <section id="meetings" class="meetings-hub" aria-label="Meeting hub">
+        <section id="overview" class="section-block workspace-page" data-workspace-page="overview" hidden aria-label="Overview">
+          <div class="section-heading">
+            <div>
+              <h2>Overview</h2>
+              <p>Meetings, tasks, and recordings stay on this device. Nothing is uploaded as a primary data store.</p>
+            </div>
+          </div>
+          <section class="hero-card">
+            <div class="hero-icon">⌂</div>
+            <div class="hero-copy"><div class="section-kicker">LOCAL WORKSPACE</div><h2>Local by default</h2><p>Open Meetings to record and review, Tasks for follow-ups, or Storage for the folder that owns this workspace.</p></div>
+            <div class="hero-pill"><span class="status-dot"></span> LOCAL</div>
+          </section>
+          <nav class="workspace-links" aria-label="Overview shortcuts">
+            <a href="#meetings">Meetings</a>
+            <a href="#tasks">Tasks</a>
+            <a href="#storage">Storage</a>
+          </nav>
+        </section>
+
+        <section id="meetings" class="meetings-hub" data-workspace-page="meetings" hidden aria-label="Meeting hub">
           <div class="section-heading">
             <div><h2>Meeting hub</h2><p id="hub-day-label">Your meetings and recordings, stored on this device.</p></div>
             <div class="hub-heading-actions">
@@ -154,7 +173,7 @@
           <div id="hub-notice" class="notice" role="status" aria-live="polite"></div>
         </section>
 
-        <section id="tasks" class="section-block tasks-section" aria-label="Tasks and follow-ups">
+        <section id="tasks" class="section-block tasks-section" data-workspace-page="tasks" hidden aria-label="Tasks and follow-ups">
           <div class="section-heading">
             <div><h2>Tasks &amp; follow-ups</h2><p>Action items from your meetings — each task keeps its meeting and analysis provenance, stored on this device.</p></div>
             <div class="hub-heading-actions">
@@ -208,7 +227,7 @@
           </details>
         </section>
 
-        <section id="notifications" class="section-block notifications-section" aria-label="Notifications">
+        <section id="notifications" class="section-block notifications-section" data-workspace-page="notifications" hidden aria-label="Notifications">
           <div class="section-heading">
             <div><h2>Notifications</h2><p>Local reminders only. Nothing is emailed or sent to the cloud unless you explicitly connect a calendar.</p></div>
             <div class="hub-heading-actions">
@@ -219,7 +238,25 @@
           <div id="automation-notifications-list" class="meeting-list"></div>
         </section>
 
-        <section id="capture" class="section-block" aria-label="Capture and reminders">
+        <section id="projects" class="section-block workspace-page" data-workspace-page="projects" hidden aria-label="Projects">
+          <div class="section-heading">
+            <div>
+              <h2>Projects</h2>
+              <p>Project grouping is not enabled yet. Meetings and tasks remain in this local workspace.</p>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-heading">
+              <div class="panel-icon">▦</div>
+              <div>
+                <h2>Local only</h2>
+                <p>When project grouping ships, it will use the data already stored on this computer. Nothing is uploaded.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="capture" class="section-block" data-workspace-page="capture" hidden aria-label="Capture and reminders">
           <div class="section-heading">
             <div><h2>Capture &amp; reminders</h2><p>Local detection, reminder, and capture defaults. Nothing is emailed or sent to the cloud.</p></div>
             <button id="automation-save-button" class="button primary" type="button">Save settings</button>
@@ -239,18 +276,18 @@
           </div>
         </section>
 
-        <section class="hero-card">
+        <section class="hero-card" data-workspace-page="storage">
           <div class="hero-icon">⌂</div>
           <div class="hero-copy"><div class="section-kicker">DATA STORAGE</div><h2>Local by default</h2><p>Recordings, transcripts, analysis, tasks, and your local database are stored on your computer. Nothing is uploaded as a primary data store.</p></div>
           <div class="hero-pill"><span class="status-dot"></span> LOCAL</div>
         </section>
 
-        <section class="section-block" id="storage">
+        <section class="section-block" id="storage" data-workspace-page="storage">
           <div class="section-heading"><div><h2>Data location</h2><p>The selected folder owns your AI WorkMate workspace.</p></div><button id="change-location-button" class="button primary">Change location <span>→</span></button></div>
           <div class="location-card"><div class="folder-icon">⌁</div><div class="location-copy"><span class="label">DATA LOCATION</span><strong id="data-location">Loading…</strong><small id="last-check">Integrity has not been checked yet</small></div><button id="open-folder-button" class="button secondary">Open folder</button></div>
         </section>
 
-        <section class="section-block" id="local-runtime">
+        <section class="section-block" id="local-runtime" data-workspace-page="storage">
           <div class="section-heading">
             <div>
               <h2>Local AI runtime</h2>
@@ -293,12 +330,15 @@
           </div>
         </section>
 
-        <section class="lower-grid">
-          <div class="panel" id="privacy"><div class="panel-heading"><div class="panel-icon shield">◇</div><div><h2>Cloud processing policy</h2><p>Local storage does not automatically mean local AI.</p></div></div><label class="select-label" for="ai-policy">AI PROCESSING</label><select id="ai-policy"><option value="ASK_EACH_TIME">Ask each time</option><option value="LOCAL_ONLY">Local models only</option><option value="CLOUD_ALLOWED">Cloud allowed</option></select><p id="policy-description" class="helper">You will be told what content leaves this computer, why, and which provider receives it before each cloud request.</p></div>
+        <section class="section-block" id="privacy" data-workspace-page="privacy" hidden aria-label="Privacy">
+          <div class="panel"><div class="panel-heading"><div class="panel-icon shield">◇</div><div><h2>Cloud processing policy</h2><p>Local storage does not automatically mean local AI.</p></div></div><label class="select-label" for="ai-policy">AI PROCESSING</label><select id="ai-policy"><option value="ASK_EACH_TIME">Ask each time</option><option value="LOCAL_ONLY">Local models only</option><option value="CLOUD_ALLOWED">Cloud allowed</option></select><p id="policy-description" class="helper">You will be told what content leaves this computer, why, and which provider receives it before each cloud request.</p></div>
+        </section>
+
+        <section class="section-block" data-workspace-page="storage">
           <div class="panel actions-panel"><div class="panel-heading"><div class="panel-icon">⚙</div><div><h2>Protect your workspace</h2><p>Portable, verifiable, and recoverable.</p></div></div><div class="action-list"><button id="verify-button" class="action-row"><span class="action-symbol">✓</span><span><strong>Verify storage</strong><small>Check hashes and relationships</small></span><span>›</span></button><button id="repair-button" class="action-row"><span class="action-symbol">⌁</span><span><strong>Repair index</strong><small>Re-index known orphaned files</small></span><span>›</span></button><button id="backup-button" class="action-row"><span class="action-symbol">↓</span><span><strong>Create backup</strong><small>Standard ZIP, locally selected</small></span><span>›</span></button><button id="restore-button" class="action-row"><span class="action-symbol">↑</span><span><strong>Restore backup</strong><small>Restore into a separate folder</small></span><span>›</span></button></div></div>
         </section>
 
-        <section class="section-block" id="integrations">
+        <section class="section-block" id="integrations" data-workspace-page="integrations" hidden>
           <div class="section-heading">
             <div><h2>Calendars</h2><p>Sign in to keep your meetings in sync locally. Calendar data is read-only and never sent to cloud AI.</p></div>
             <span class="helper-inline">Outlook &amp; Microsoft 365 · Google</span>

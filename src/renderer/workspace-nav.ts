@@ -1,7 +1,7 @@
 /**
- * Sidebar highlight must follow the hash route. Native `#meetings` scrolling
- * changes the visible page, but the Storage link was hardcoded `class="active"`
- * and never updated.
+ * Sidebar highlight and visible page must follow the hash route. Storage was
+ * hardcoded `class="active"` while Meetings is first in the document, so the
+ * first paint and Overview/Projects links could not match the displayed page.
  */
 const WORKSPACE_NAV_DEFAULT = "storage";
 
@@ -20,15 +20,26 @@ const WORKSPACE_NAV_COPY: Record<string, { eyebrow: string; title: string }> = {
 function workspaceNavRoute(hash: string): string {
   const value = hash.startsWith("#") ? hash.slice(1) : hash;
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : WORKSPACE_NAV_DEFAULT;
+  if (trimmed.length === 0) {
+    return WORKSPACE_NAV_DEFAULT;
+  }
+  return trimmed in WORKSPACE_NAV_COPY ? trimmed : WORKSPACE_NAV_DEFAULT;
 }
 
 function workspaceNavLinks(): NodeListOf<HTMLAnchorElement> {
   return document.querySelectorAll<HTMLAnchorElement>("aside.sidebar nav a[href^='#']");
 }
 
+function syncWorkspacePages(route: string): void {
+  for (const node of document.querySelectorAll("[data-workspace-page]")) {
+    const page = node.getAttribute("data-workspace-page");
+    (node as HTMLElement).hidden = page !== route;
+  }
+}
+
 function syncWorkspaceNav(): void {
   const route = workspaceNavRoute(window.location.hash);
+  syncWorkspacePages(route);
   for (const link of workspaceNavLinks()) {
     const href = link.getAttribute("href") ?? "";
     const id = href.startsWith("#") ? href.slice(1) : href;
@@ -65,6 +76,9 @@ function syncWorkspaceNav(): void {
 }
 
 window.addEventListener("hashchange", () => {
+  syncWorkspaceNav();
+});
+window.addEventListener("popstate", () => {
   syncWorkspaceNav();
 });
 syncWorkspaceNav();

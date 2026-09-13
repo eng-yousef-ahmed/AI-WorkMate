@@ -7,12 +7,13 @@ import vm from "node:vm";
 const RENDERER_DIR = join(process.cwd(), "dist/src/renderer");
 const HTML_PATH = join(RENDERER_DIR, "storage-settings.html");
 const NAV_JS_PATH = join(RENDERER_DIR, "workspace-nav.js");
+const MEETINGS_JS_PATH = join(RENDERER_DIR, "meetings-hub.js");
 
 const WORKSPACE_ROUTES = ["overview", "meetings", "tasks", "notifications", "projects"] as const;
 const SETTINGS_ROUTES = ["storage", "privacy", "capture", "integrations"] as const;
 const ALL_ROUTES = [...WORKSPACE_ROUTES, ...SETTINGS_ROUTES];
 
-test("sidebar HTML lists every Workspace and Settings route as a hash link", () => {
+test("sidebar HTML lists every Workspace and Settings route as a hash link with a page", () => {
   const html = readFileSync(HTML_PATH, "utf8");
   const workspace = html.match(/<nav aria-label="Workspace">([\s\S]*?)<\/nav>/);
   const settings = html.match(/<nav aria-label="Settings">([\s\S]*?)<\/nav>/);
@@ -23,29 +24,32 @@ test("sidebar HTML lists every Workspace and Settings route as a hash link", () 
   assert.deepEqual(workspaceHrefs, [...WORKSPACE_ROUTES]);
   assert.deepEqual(settingsHrefs, [...SETTINGS_ROUTES]);
   assert.match(html, /href="#storage"[^>]*aria-current="page"|aria-current="page"[^>]*href="#storage"/);
+  for (const route of ALL_ROUTES) {
+    assert.match(html, new RegExp(`id="${route}"[^>]*data-workspace-page="${route}"|data-workspace-page="${route}"[^>]*id="${route}"`));
+  }
+  assert.match(html, /id="overview"[^>]*hidden|hidden[^>]*id="overview"/);
+  assert.match(html, /id="projects"[^>]*hidden|hidden[^>]*id="projects"/);
+  assert.match(html, /id="meetings"[^>]*hidden|hidden[^>]*id="meetings"/);
+  assert.equal(/id="storage"[^>]*\bhidden\b/.test(html), false);
 });
 
 test("sidebar active item follows the hash for every Workspace and Settings route", () => {
-  const source = readFileSync(NAV_JS_PATH, "utf8");
-  const { document, location, fireHash } = createNavDocument();
-
-  vm.runInNewContext(source, {
-    window: document.defaultView,
-    document,
-    NodeList: Array,
-  });
+  const { document, fireHash } = bootNav();
 
   assert.equal(activeRoute(document), "storage");
   assert.equal(document.getElementById("page-title")?.textContent, "AI WorkMate Storage");
+  assertVisible(document, "storage");
 
   fireHash("#meetings");
   assert.equal(activeRoute(document), "meetings");
   assert.equal(document.getElementById("page-title")?.textContent, "Meeting hub");
   assert.equal(document.getElementById("page-eyebrow")?.textContent, "WORKSPACE / MEETINGS");
+  assertVisible(document, "meetings");
 
   fireHash("#storage");
   assert.equal(activeRoute(document), "storage");
   assert.equal(document.getElementById("page-title")?.textContent, "AI WorkMate Storage");
+  assertVisible(document, "storage");
 
   for (const route of ALL_ROUTES) {
     fireHash(`#${route}`);
@@ -53,6 +57,7 @@ test("sidebar active item follows the hash for every Workspace and Settings rout
     const active = sidebarLinks(document).find((link) => link.getAttribute("href") === `#${route}`);
     assert.equal(active?.getAttribute("aria-current"), "page");
     assert.equal(active?.querySelector(".active-dot") !== null, true);
+    assertVisible(document, route);
     const others = sidebarLinks(document).filter((link) => link.getAttribute("href") !== `#${route}`);
     for (const link of others) {
       assert.equal(link.classList.contains("active"), false, `${link.getAttribute("href")} must not stay active`);
@@ -61,13 +66,63 @@ test("sidebar active item follows the hash for every Workspace and Settings rout
     }
   }
 
-  location.hash = "";
-  document.defaultView.dispatchEvent(new Event("hashchange"));
-  assert.equal(activeRoute(document), "storage");
-
   const filter = document.getElementById("tasks-filter-all");
   assert.equal(filter?.classList.contains("active"), true);
 });
+
+test("direct hash, refresh, unknown hash, and back/forward keep the matching page active", () => {
+  const refreshed = bootNav("#meetings");
+  assert.equal(activeRoute(refreshed.document), "meetings");
+  assertVisible(refreshed.document, "meetings");
+  assert.equal(refreshed.document.getElementById("page-title")?.textContent, "Meeting hub");
+
+  const { document, fireHash, firePopstate, location } = bootNav();
+  fireHash("#overview");
+  fireHash("#meetings");
+  fireHash("#tasks");
+  assert.equal(activeRoute(document), "tasks");
+  assertVisible(document, "tasks");
+
+  firePopstate("#meetings");
+  assert.equal(activeRoute(document), "meetings");
+  assertVisible(document, "meetings");
+
+  firePopstate("#overview");
+  assert.equal(activeRoute(document), "overview");
+  assertVisible(document, "overview");
+
+  fireHash("#not-a-route");
+  assert.equal(activeRoute(document), "storage");
+  assertVisible(document, "storage");
+
+  location.hash = "";
+  document.defaultView.dispatchEvent(new Event("hashchange"));
+  assert.equal(activeRoute(document), "storage");
+  assertVisible(document, "storage");
+});
+
+test("opening a meeting from another page sets the meetings hash", () => {
+  const source = readFileSync(MEETINGS_JS_PATH, "utf8");
+  assert.match(source, /location\.hash = ["']meetings["']/);
+});
+
+function bootNav(initialHash = ""): ReturnType<typeof createNavDocument> & { firePopstate: (hash: string) => void } {
+  const harness = createNavDocument(initialHash);
+  vm.runInNewContext(readFileSync(NAV_JS_PATH, "utf8"), {
+    window: harness.document.defaultView,
+    document: harness.document,
+  });
+  return harness;
+}
+
+function assertVisible(document: FakeDocument, route: string): void {
+  const pages = document.querySelectorAll("[data-workspace-page]");
+  assert.equal(pages.length > 0, true);
+  for (const page of pages) {
+    const belongs = page.getAttribute("data-workspace-page") === route;
+    assert.equal(page.hidden, !belongs, `${page.id || page.getAttribute("data-workspace-page")} hidden=${page.hidden}`);
+  }
+}
 
 function activeRoute(document: FakeDocument): string | undefined {
   const active = sidebarLinks(document).filter((link) => link.classList.contains("active"));
@@ -123,6 +178,7 @@ class FakeElement {
   parent: FakeElement | null = null;
   textContent = "";
   className = "";
+  hidden = false;
   readonly attributes = new Map<string, string>();
   readonly classList: FakeClassList;
   private readonly classes = new Set<string>();
@@ -170,7 +226,12 @@ class FakeElement {
   }
 }
 
-function createNavDocument(): { document: FakeDocument; location: { hash: string }; fireHash: (hash: string) => void } {
+function createNavDocument(initialHash = ""): {
+  document: FakeDocument;
+  location: { hash: string };
+  fireHash: (hash: string) => void;
+  firePopstate: (hash: string) => void;
+} {
   const links = ALL_ROUTES.map((route) => {
     const link = new FakeElement("a");
     link.setAttribute("href", `#${route}`);
@@ -183,6 +244,18 @@ function createNavDocument(): { document: FakeDocument; location: { hash: string
     }
     return link;
   });
+  const pages = ALL_ROUTES.flatMap((route) => {
+    const page = new FakeElement("section", route);
+    page.setAttribute("data-workspace-page", route);
+    page.hidden = route !== "storage";
+    if (route === "storage") {
+      const extra = new FakeElement("section", "local-runtime");
+      extra.setAttribute("data-workspace-page", "storage");
+      extra.hidden = false;
+      return [page, extra];
+    }
+    return [page];
+  });
   const eyebrow = new FakeElement("div", "page-eyebrow");
   eyebrow.textContent = "SETTINGS / STORAGE";
   const title = new FakeElement("h1", "page-title");
@@ -193,10 +266,11 @@ function createNavDocument(): { document: FakeDocument; location: { hash: string
     ["page-eyebrow", eyebrow],
     ["page-title", title],
     ["tasks-filter-all", filter],
+    ...pages.map((page) => [page.id, page] as const),
   ]);
 
-  const hashListeners: Array<() => void> = [];
-  const location = { hash: "" };
+  const listeners = new Map<string, Array<() => void>>();
+  const location = { hash: initialHash };
   const document = {
     getElementById(id: string): FakeElement | null {
       return byId.get(id) ?? null;
@@ -204,6 +278,9 @@ function createNavDocument(): { document: FakeDocument; location: { hash: string
     querySelectorAll(selector: string): FakeElement[] {
       if (selector === "aside.sidebar nav a[href^='#']") {
         return links;
+      }
+      if (selector === "[data-workspace-page]") {
+        return pages;
       }
       return [];
     },
@@ -215,15 +292,13 @@ function createNavDocument(): { document: FakeDocument; location: { hash: string
   const windowObject: FakeWindow = {
     location,
     addEventListener(type: string, listener: () => void): void {
-      if (type === "hashchange") {
-        hashListeners.push(listener);
-      }
+      const bucket = listeners.get(type) ?? [];
+      bucket.push(listener);
+      listeners.set(type, bucket);
     },
     dispatchEvent(event: Event): boolean {
-      if (event.type === "hashchange") {
-        for (const listener of hashListeners) {
-          listener();
-        }
+      for (const listener of listeners.get(event.type) ?? []) {
+        listener();
       }
       return true;
     },
@@ -237,6 +312,10 @@ function createNavDocument(): { document: FakeDocument; location: { hash: string
     fireHash(hash: string): void {
       location.hash = hash;
       windowObject.dispatchEvent(new Event("hashchange"));
+    },
+    firePopstate(hash: string): void {
+      location.hash = hash;
+      windowObject.dispatchEvent(new Event("popstate"));
     },
   };
 }
