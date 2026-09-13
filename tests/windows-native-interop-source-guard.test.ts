@@ -93,6 +93,17 @@ test("WGC device/API handling uses canonical CsWinRT conversions, API guards, an
   }
 });
 
+test("WGC window capture is a synchronous method (CS1998: no async without await)", async () => {
+  const source = await readFile(PROGRAM_CS_PATH, "utf8");
+  assert.equal(/static async Task<int> CaptureWindow\b/.test(source), false);
+  assert.equal(/static async Task<int> CaptureWindowAsync\b/.test(source), false);
+  assert.match(source, /static int CaptureWindow\(/);
+  assert.match(source, /return CaptureWindow\(sourceId\);/);
+  assert.equal(source.includes("await CaptureWindow"), false);
+  assert.equal(/static async Task<int> Capture\b/.test(source), false);
+  assert.match(source, /static int Capture\(/);
+});
+
 test("WGC WINDOW zero-frame pipeline is adapter-bound, rooted, instrumented, and never silently swallows frame delivery failure", async () => {
   const source = await readFile(PROGRAM_CS_PATH, "utf8");
   // The D3D11 device must be bound to the DXGI adapter of the window's monitor (the same

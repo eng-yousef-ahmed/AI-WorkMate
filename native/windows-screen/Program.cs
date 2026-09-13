@@ -25,7 +25,7 @@ try
     return command switch
     {
         "capabilities" => WriteCapabilities(),
-        "capture" => await CaptureAsync(args.Skip(1).ToArray()),
+        "capture" => Capture(args.Skip(1).ToArray()),
         _ => Fail("NATIVE_WINDOWS_API_INITIALIZATION_FAILED", $"Unknown command: {command}", false, 2),
     };
 }
@@ -112,7 +112,7 @@ static List<object> EnumerateWindows()
     return windows;
 }
 
-static async Task<int> CaptureAsync(string[] args)
+static int Capture(string[] args)
 {
     var parsed = ParseArguments(args);
     var kind = parsed.GetValueOrDefault("kind")?.ToLowerInvariant();
@@ -128,7 +128,7 @@ static async Task<int> CaptureAsync(string[] args)
     }
     if (kind == "window")
     {
-        return await CaptureWindowAsync(sourceId);
+        return CaptureWindow(sourceId);
     }
     throw new CaptureException("NATIVE_CAPABILITY_UNAVAILABLE", "Capture kind must be screen or window.", false);
 }
@@ -171,7 +171,7 @@ static int CaptureDisplay(string? sourceId)
     }
 }
 
-static async Task<int> CaptureWindowAsync(string? sourceId)
+static int CaptureWindow(string? sourceId)
 {
     if (string.IsNullOrWhiteSpace(sourceId) || !TryParseWindowId(sourceId, out var hwnd) || !NativeMethods.IsWindow(hwnd) || !IsCapturableWindow(hwnd))
     {
