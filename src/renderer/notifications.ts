@@ -78,11 +78,9 @@ function navigateTo(item: HubNotification): void {
   if (item.action === "open-meeting" && item.meetingId !== undefined) {
     window.dispatchEvent(new CustomEvent("ai-workmate:open-meeting", { detail: { meetingId: item.meetingId } }));
   } else if (item.action === "open-tasks") {
-    const section = document.getElementById("tasks");
-    if (section !== null) {
-      section.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (window.location.hash !== "#tasks") {
+      window.location.hash = "tasks";
     }
-    window.location.hash = "tasks";
   }
 }
 

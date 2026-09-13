@@ -106,6 +106,67 @@ test("opening a meeting from another page sets the meetings hash", () => {
   assert.match(source, /location\.hash = ["']meetings["']/);
 });
 
+test("navigation HTML has unique ids and every renderer lookup exists", () => {
+  const html = readFileSync(HTML_PATH, "utf8");
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(ids.length, new Set(ids).size);
+
+  const rendererDir = join(process.cwd(), "src/renderer");
+  const files = ["storage-settings.ts", "meetings-hub.ts", "tasks.ts", "automation.ts", "notifications.ts", "workspace-nav.ts"];
+  const missing: string[] = [];
+  for (const name of files) {
+    const source = readFileSync(join(rendererDir, name), "utf8");
+    for (const match of source.matchAll(/\$<\s*[^>]*>\s*\(\s*"([^"]+)"\s*\)|\$\(\s*"([^"]+)"\s*\)|getElementById\(\s*"([^"]+)"\s*\)/g)) {
+      const id = match[1] ?? match[2] ?? match[3];
+      if (id === undefined || id === "hub-transcript-viewer") {
+        continue;
+      }
+      if (!ids.includes(id)) {
+        missing.push(`${name}:${id}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
+test("hash routing does not invoke capture, backup, calendar, or preload IPC", () => {
+  const source = readFileSync(NAV_JS_PATH, "utf8");
+  assert.equal(source.includes("aiWorkMate"), false);
+  assert.equal(source.includes("ipcRenderer"), false);
+  assert.equal(/\brequire\s*\(/.test(source), false);
+  assert.equal(source.includes("createBackup"), false);
+  assert.equal(source.includes("startCapture"), false);
+  assert.equal(source.includes("beginMicrosoft"), false);
+  assert.equal(source.includes("beginGoogle"), false);
+  assert.match(source, /^"use strict";\s*\(function\s*\(\)\s*\{/m);
+});
+
+test("hidden workspace pages are inert and drop focus", () => {
+  const { document, fireHash } = bootNav();
+  const meetings = document.getElementById("meetings");
+  const focused = new FakeElement("input", "chat-question");
+  meetings?.append(focused);
+  document.activeElement = focused;
+  fireHash("#meetings");
+  fireHash("#storage");
+  assert.equal(meetings?.hidden, true);
+  assert.equal(meetings?.getAttribute("inert"), "");
+  assert.equal(meetings?.getAttribute("aria-hidden"), "true");
+  assert.equal(focused.blurred, true);
+  assert.equal(document.getElementById("storage")?.getAttribute("inert"), null);
+  assert.equal(document.getElementById("storage")?.getAttribute("aria-hidden"), null);
+});
+
+test("task and meeting cross-links change the hash instead of only scrolling", () => {
+  const notifications = readFileSync(join(process.cwd(), "src/renderer/notifications.ts"), "utf8");
+  assert.match(notifications, /location\.hash !== ["']#tasks["']/);
+  assert.match(notifications, /location\.hash = ["']tasks["']/);
+  assert.equal(notifications.includes("scrollIntoView"), false);
+  const meetings = readFileSync(join(process.cwd(), "src/renderer/meetings-hub.ts"), "utf8");
+  assert.match(meetings, /location\.hash !== ["']#meetings["']/);
+  assert.match(meetings, /location\.hash = ["']meetings["']/);
+});
+
 function bootNav(initialHash = ""): ReturnType<typeof createNavDocument> & { firePopstate: (hash: string) => void } {
   const harness = createNavDocument(initialHash);
   vm.runInNewContext(readFileSync(NAV_JS_PATH, "utf8"), {
@@ -121,6 +182,7 @@ function assertVisible(document: FakeDocument, route: string): void {
   for (const page of pages) {
     const belongs = page.getAttribute("data-workspace-page") === route;
     assert.equal(page.hidden, !belongs, `${page.id || page.getAttribute("data-workspace-page")} hidden=${page.hidden}`);
+    assert.equal(page.getAttribute("inert"), belongs ? null : "");
   }
 }
 
@@ -138,6 +200,7 @@ interface FakeDocument {
   getElementById(id: string): FakeElement | null;
   querySelectorAll(selector: string): FakeElement[];
   createElement(tag: string): FakeElement;
+  activeElement: FakeElement | null;
   defaultView: FakeWindow;
 }
 
@@ -179,6 +242,7 @@ class FakeElement {
   textContent = "";
   className = "";
   hidden = false;
+  blurred = false;
   readonly attributes = new Map<string, string>();
   readonly classList: FakeClassList;
   private readonly classes = new Set<string>();
@@ -200,6 +264,38 @@ class FakeElement {
 
   removeAttribute(name: string): void {
     this.attributes.delete(name);
+  }
+
+  toggleAttribute(name: string, force?: boolean): boolean {
+    if (force === true) {
+      this.attributes.set(name, "");
+      return true;
+    }
+    if (force === false) {
+      this.attributes.delete(name);
+      return false;
+    }
+    if (this.attributes.has(name)) {
+      this.attributes.delete(name);
+      return false;
+    }
+    this.attributes.set(name, "");
+    return true;
+  }
+
+  contains(node: { parent?: FakeElement | null } | null): boolean {
+    let current: FakeElement | null | undefined = node as FakeElement | null;
+    while (current !== null && current !== undefined) {
+      if (current === this) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+
+  blur(): void {
+    this.blurred = true;
   }
 
   append(node: FakeElement): void {
@@ -271,7 +367,8 @@ function createNavDocument(initialHash = ""): {
 
   const listeners = new Map<string, Array<() => void>>();
   const location = { hash: initialHash };
-  const document = {
+  const document: FakeDocument = {
+    activeElement: null,
     getElementById(id: string): FakeElement | null {
       return byId.get(id) ?? null;
     },

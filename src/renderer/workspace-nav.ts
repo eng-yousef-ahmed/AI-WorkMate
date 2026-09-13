@@ -31,9 +31,21 @@ function workspaceNavLinks(): NodeListOf<HTMLAnchorElement> {
 }
 
 function syncWorkspacePages(route: string): void {
+  const active = document.activeElement;
   for (const node of document.querySelectorAll("[data-workspace-page]")) {
     const page = node.getAttribute("data-workspace-page");
-    (node as HTMLElement).hidden = page !== route;
+    const hide = page !== route;
+    const element = node as HTMLElement;
+    element.hidden = hide;
+    element.toggleAttribute("inert", hide);
+    if (hide) {
+      element.setAttribute("aria-hidden", "true");
+      if (active !== null && "blur" in active && element.contains(active)) {
+        (active as HTMLElement).blur();
+      }
+    } else {
+      element.removeAttribute("aria-hidden");
+    }
   }
 }
 
