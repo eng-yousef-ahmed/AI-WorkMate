@@ -30,7 +30,7 @@ import { LocalRuntimeSetupService } from "../runtime/LocalRuntimeSetupService";
 import { registerRuntimeIpc } from "./runtime-ipc";
 import { registerStorageIpc, type DialogLike, type IpcMainLike, type ShellLike } from "./storage-ipc";
 import type { HubNotification } from "../domain/hub";
-import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation } from "./window-security";
+import { createSecureRendererPreferences, denyWindowOpen, handleWorkspaceAltArrow, handleWorkspaceAppCommand, isAuthorizedRendererNavigation } from "./window-security";
 
 let runtime: StorageRuntime | undefined;
 let userDataPath = "";
@@ -330,6 +330,25 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
   frameNavigation.on("will-frame-navigate", rejectNavigation);
   window.webContents.on("will-redirect", rejectNavigation);
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  // Windows history: sidebar hash links push real Chromium history entries
+  // and workspace-nav syncs via hashchange/popstate. Electron ships no
+  // default Back/Forward, so Alt+Left/Right and mouse Back/Forward buttons
+  // drive the SAME history stack here. Cross-file traversal stays rejected
+  // by rejectNavigation above; this only traverses existing entries.
+  window.on("app-command", (event, command) => {
+    if (handleWorkspaceAppCommand(command, window.webContents)) {
+      event.preventDefault();
+    }
+  });
+  window.webContents.on("before-input-event", (event, input) => {
+    const handled = handleWorkspaceAltArrow(
+      { type: input.type, key: input.key, alt: input.alt, control: input.control, meta: input.meta },
+      window.webContents,
+    );
+    if (handled) {
+      event.preventDefault();
+    }
+  });
 }
 
 app.whenReady().then(() => bootstrap()).catch((error: unknown) => {

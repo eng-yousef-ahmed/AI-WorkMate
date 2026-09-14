@@ -6,7 +6,7 @@ import type { StorageRuntime } from "../src/storage/StorageRuntime";
 import { STORAGE_IPC_CHANNELS } from "../src/desktop/storage-api";
 import { registerStorageIpc } from "../src/desktop/storage-ipc";
 import { UnsafePathError } from "../src/storage/errors";
-import { createSecureRendererPreferences, denyWindowOpen, isAuthorizedRendererNavigation, rendererUrlsEquivalent } from "../src/desktop/window-security";
+import { createSecureRendererPreferences, denyWindowOpen, handleWorkspaceAltArrow, handleWorkspaceAppCommand, isAuthorizedRendererNavigation, rendererUrlsEquivalent, type WorkspaceHistoryNavigator } from "../src/desktop/window-security";
 
 type IpcHandler = (...args: unknown[]) => unknown;
 
@@ -298,6 +298,51 @@ test("lifecycle IPC returns workspace flags without filesystem paths", async () 
   assert.equal(serialized.includes("C:"), false);
   assert.equal(serialized.includes("/home/"), false);
   assert.equal(serialized.includes("pathExposed\":false"), true);
+});
+
+test("workspace Back/Forward drives Chromium history for Alt+Arrow and app-command only", () => {
+  const calls: string[] = [];
+  const navigator: WorkspaceHistoryNavigator = {
+    canGoBack: () => calls.includes("allow-back"),
+    canGoForward: () => calls.includes("allow-forward"),
+    goBack: () => { calls.push("goBack"); },
+    goForward: () => { calls.push("goForward"); },
+  };
+
+  // Alt+Left / Alt+Right with no history: nothing happens, event not claimed.
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowLeft", alt: true, control: false, meta: false }, navigator), false);
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowRight", alt: true, control: false, meta: false }, navigator), false);
+  assert.equal(handleWorkspaceAppCommand("browser-backward", navigator), false);
+  assert.equal(handleWorkspaceAppCommand("browser-forward", navigator), false);
+  assert.equal(calls.length, 0);
+
+  // With history entries, the same Chromium stack is traversed.
+  calls.push("allow-back", "allow-forward");
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowLeft", alt: true, control: false, meta: false }, navigator), true);
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowRight", alt: true, control: false, meta: false }, navigator), true);
+  assert.equal(handleWorkspaceAppCommand("browser-backward", navigator), true);
+  assert.equal(handleWorkspaceAppCommand("browser-forward", navigator), true);
+  assert.deepEqual(calls.filter((entry) => entry === "goBack" || entry === "goForward"), ["goBack", "goForward", "goBack", "goForward"]);
+
+  // Modifier chords, key releases, other keys, and other commands are never claimed.
+  const before = calls.length;
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowLeft", alt: true, control: true, meta: false }, navigator), false);
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowLeft", alt: true, control: false, meta: true }, navigator), false);
+  assert.equal(handleWorkspaceAltArrow({ type: "keyUp", key: "ArrowLeft", alt: true, control: false, meta: false }, navigator), false);
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowLeft", alt: false, control: false, meta: false }, navigator), false);
+  assert.equal(handleWorkspaceAltArrow({ type: "keyDown", key: "ArrowUp", alt: true, control: false, meta: false }, navigator), false);
+  assert.equal(handleWorkspaceAppCommand("browser-reload", navigator), false);
+  assert.equal(handleWorkspaceAppCommand("", navigator), false);
+  assert.equal(calls.length, before);
+});
+
+test("workspace hash history stays inside the authorized renderer file", () => {
+  const renderer = "file:///C:/Program Files/AI-WorkMate/resources/app.asar/dist/src/renderer/storage-settings.html";
+  assert.equal(isAuthorizedRendererNavigation(`${renderer}#overview`, renderer), true);
+  assert.equal(isAuthorizedRendererNavigation(`${renderer}#meetings`, `${renderer}#tasks`), true);
+  assert.equal(isAuthorizedRendererNavigation(`${renderer}#tasks`, "file:///c:/Program%20Files/AI-WorkMate/resources/app.asar/dist/src/renderer/storage-settings.html#meetings"), true);
+  assert.equal(isAuthorizedRendererNavigation("file:///C:/Program Files/AI-WorkMate/resources/app.asar/dist/src/renderer/evil.html#meetings", renderer), false);
+  assert.equal(isAuthorizedRendererNavigation("https://example.com/#meetings", renderer), false);
 });
 
 test("does not expose local recording capture controls or output paths through renderer IPC", () => {

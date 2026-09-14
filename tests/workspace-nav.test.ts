@@ -101,6 +101,55 @@ test("direct hash, refresh, unknown hash, and back/forward keep the matching pag
   assertVisible(document, "storage");
 });
 
+test("Windows Back/Forward traverses Overview -> Meetings -> Tasks history", () => {
+  const { document, location, fireHash } = bootNav();
+  const fireHistoryTraversal = (hash: string): void => {
+    // Chromium history traversal (goBack/goForward from Alt+Left/Right or
+    // mouse Back/Forward) re-targets the URL and fires popstate+hashchange;
+    // workspace-nav must sync the same route from the hash either way.
+    location.hash = hash;
+    document.defaultView.dispatchEvent(new Event("popstate"));
+    document.defaultView.dispatchEvent(new Event("hashchange"));
+  };
+  const expectRoute = (route: string, eyebrow: string, title: string): void => {
+    assert.equal(activeRoute(document), route, `Back/Forward must land on ${route}`);
+    assert.equal(document.getElementById("page-eyebrow")?.textContent, eyebrow);
+    assert.equal(document.getElementById("page-title")?.textContent, title);
+    assertVisible(document, route);
+    const active = sidebarLinks(document).find((link) => link.getAttribute("href") === `#${route}`);
+    assert.equal(active?.getAttribute("aria-current"), "page");
+    assert.equal(active?.querySelector(".active-dot") !== null, true);
+    for (const page of document.querySelectorAll("[data-workspace-page]")) {
+      const belongs = page.getAttribute("data-workspace-page") === route;
+      assert.equal(page.getAttribute("aria-hidden"), belongs ? null : "true", `${page.id} aria-hidden`);
+    }
+    for (const link of sidebarLinks(document).filter((item) => item.getAttribute("href") !== `#${route}`)) {
+      assert.equal(link.classList.contains("active"), false);
+      assert.equal(link.getAttribute("aria-current"), null);
+    }
+  };
+
+  // Sidebar clicks push hash history entries (hashchange path).
+  fireHash("#overview");
+  expectRoute("overview", "WORKSPACE / OVERVIEW", "Overview");
+  fireHash("#meetings");
+  expectRoute("meetings", "WORKSPACE / MEETINGS", "Meeting hub");
+  fireHash("#tasks");
+  expectRoute("tasks", "WORKSPACE / TASKS", "Tasks & follow-ups");
+
+  // Windows Back (Alt+Left / mouse Back) walks the same stack backwards.
+  fireHistoryTraversal("#meetings");
+  expectRoute("meetings", "WORKSPACE / MEETINGS", "Meeting hub");
+  fireHistoryTraversal("#overview");
+  expectRoute("overview", "WORKSPACE / OVERVIEW", "Overview");
+
+  // Windows Forward (Alt+Right / mouse Forward) walks it forwards again.
+  fireHistoryTraversal("#meetings");
+  expectRoute("meetings", "WORKSPACE / MEETINGS", "Meeting hub");
+  fireHistoryTraversal("#tasks");
+  expectRoute("tasks", "WORKSPACE / TASKS", "Tasks & follow-ups");
+});
+
 test("opening a meeting from another page sets the meetings hash", () => {
   const source = readFileSync(MEETINGS_JS_PATH, "utf8");
   assert.match(source, /location\.hash = ["']meetings["']/);

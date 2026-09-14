@@ -33,7 +33,13 @@ const searchInput = $<HTMLInputElement>("hub-search-input");
 const searchStatus = $("hub-search-status");
 const detailPane = $("hub-detail");
 const notice = $("hub-notice");
+// Readiness indicator only (role=status in the HTML): it reports the last
+// discovery result from renderCaptureStatus and intentionally has no click
+// action. Capture defaults live on the existing #capture route.
 const captureStatus = $("hub-capture-status");
+const refreshButton = $<HTMLButtonElement>("hub-refresh-button");
+const REFRESH_LABEL = "↻ Refresh";
+const REFRESHING_LABEL = "↻ Refreshing…";
 
 let capabilities: HubCaptureCapabilities | undefined;
 let openMeetingId: string | undefined;
@@ -202,9 +208,20 @@ function renderCaptureStatus(): void {
   captureStatus.className = capabilities.supported ? "calendar-badge connected" : "calendar-badge neutral";
 }
 
-async function refreshHub(): Promise<void> {
-  if (busy) return;
+async function refreshHub(manual = false): Promise<void> {
+  if (busy) {
+    // A refresh triggered by initial load, window focus, or a capture action
+    // is still awaiting the real Meeting Hub IPC. Tell an explicit click the
+    // truth instead of silently swallowing it or faking success.
+    if (manual) {
+      showNoticeMessage("A refresh is already in progress…");
+    }
+    return;
+  }
   busy = true;
+  refreshButton.disabled = true;
+  const restoreLabel = refreshButton.textContent;
+  refreshButton.textContent = REFRESHING_LABEL;
   try {
     const [next, caps] = await Promise.all([
       meetings.getOverview(),
@@ -216,10 +233,17 @@ async function refreshHub(): Promise<void> {
     if (openMeetingId !== undefined) {
       await renderDetail(openMeetingId);
     }
+    // Manual clicks confirm only after the real overview/capabilities IPC
+    // resolved and the page re-rendered; background refreshes stay silent.
+    if (manual) {
+      showNoticeMessage("Meeting hub refreshed.");
+    }
   } catch (error: unknown) {
     showErrorMessage(error);
   } finally {
     busy = false;
+    refreshButton.disabled = false;
+    refreshButton.textContent = restoreLabel.length > 0 ? restoreLabel : REFRESH_LABEL;
   }
 }
 
@@ -848,7 +872,7 @@ async function refreshHistory(): Promise<void> {
 
 // --- Init ---------------------------------------------------------------------
 
-$("hub-refresh-button").addEventListener("click", () => void refreshHub());
+refreshButton.addEventListener("click", () => void refreshHub(true));
 bindSearch();
 bindMeetingChat();
 bindHistoryFilters();

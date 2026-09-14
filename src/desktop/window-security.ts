@@ -58,3 +58,79 @@ function normalizeRendererFileUrl(url: string): string | undefined {
 export function denyWindowOpen(): { action: "deny" } {
   return { action: "deny" };
 }
+
+/**
+ * Minimal history-navigation surface of `WebContents` (structural so tests
+ * can substitute a fake). Sidebar hash links push real Chromium history
+ * entries and the renderer syncs via the existing `hashchange`/`popstate`
+ * listeners — Electron just provides no default Back/Forward to drive that
+ * stack on Windows (Alt+Left/Right, mouse Back/Forward buttons).
+ */
+export interface WorkspaceHistoryNavigator {
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  goBack(): void;
+  goForward(): void;
+}
+
+/**
+ * Drives the SAME Chromium history stack for Windows `app-command`
+ * (`browser-backward`/`browser-forward`, from mouse buttons and some
+ * keyboard chords). Returns true when a navigation was performed and the
+ * caller must `preventDefault()` the event. Never navigates when there is
+ * no history entry, and never introduces a second navigation system: the
+ * renderer keeps syncing via `hashchange`/`popstate`.
+ */
+export function handleWorkspaceAppCommand(command: string, navigator: WorkspaceHistoryNavigator): boolean {
+  if (command === "browser-backward") {
+    if (!navigator.canGoBack()) {
+      return false;
+    }
+    navigator.goBack();
+    return true;
+  }
+  if (command === "browser-forward") {
+    if (!navigator.canGoForward()) {
+      return false;
+    }
+    navigator.goForward();
+    return true;
+  }
+  return false;
+}
+
+/** Subset of Electron's `Input` needed for Alt+Arrow history chords. */
+export interface WorkspaceKeyInput {
+  type: string;
+  key: string;
+  alt: boolean;
+  control: boolean;
+  meta: boolean;
+}
+
+/**
+ * Drives the SAME Chromium history stack for Windows Alt+Left (Back) and
+ * Alt+Right (Forward). Returns true when a navigation was performed and the
+ * caller must `preventDefault()` the `before-input-event`. Ctrl/Meta
+ * combinations and non-arrow keys are never claimed.
+ */
+export function handleWorkspaceAltArrow(input: WorkspaceKeyInput, navigator: WorkspaceHistoryNavigator): boolean {
+  if (input.type !== "keyDown" || !input.alt || input.control || input.meta) {
+    return false;
+  }
+  if (input.key === "ArrowLeft") {
+    if (!navigator.canGoBack()) {
+      return false;
+    }
+    navigator.goBack();
+    return true;
+  }
+  if (input.key === "ArrowRight") {
+    if (!navigator.canGoForward()) {
+      return false;
+    }
+    navigator.goForward();
+    return true;
+  }
+  return false;
+}
