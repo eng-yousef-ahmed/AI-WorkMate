@@ -18,6 +18,25 @@ import {
 
 const ENGINE_ID = "windows-local-whisper";
 const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Realtime multiple applied to audio duration when no explicit timeout
+ * override is configured (P1-2a). The wall-clock budget allows processing up
+ * to this many times slower than realtime before the helper is treated as
+ * hung; the 120 s floor below keeps short-audio behavior identical.
+ */
+const DURATION_TIMEOUT_FACTOR = 2;
+
+/**
+ * Effective whisper.cpp wall-clock budget in milliseconds for audio of the
+ * given duration. Pure and exported for deterministic unit testing.
+ * Non-positive or non-finite durations fall back to the short-audio floor.
+ */
+export function resolveWhisperTimeoutMs(durationMs: number): number {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+  return Math.max(DEFAULT_TIMEOUT_MS, Math.ceil(durationMs * DURATION_TIMEOUT_FACTOR));
+}
 const ALLOWED_CLI_NAMES = new Set(["whisper-cli.exe", "whisper.exe", "main.exe"]);
 const MODEL_NAMES = ["ggml-tiny.bin", "ggml-tiny.en.bin", "ggml-base.bin", "ggml-base.en.bin", "ggml-small.bin"];
 
@@ -59,7 +78,7 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
   private readonly helperPathOverride: string | undefined;
   private readonly modelPathOverride: string | undefined;
   private readonly helperRunner: WhisperHelperRunner | undefined;
-  private readonly timeoutMs: number;
+  private readonly timeoutMsOverride: number | undefined;
   private readonly localAppData: string | undefined;
 
   public constructor(options: WindowsLocalWhisperEngineOptions = {}) {
@@ -67,7 +86,7 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
     this.helperPathOverride = options.helperPath;
     this.modelPathOverride = options.modelPath;
     this.helperRunner = options.helperRunner;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMsOverride = options.timeoutMs;
     this.localAppData = options.localAppData ?? process.env.LOCALAPPDATA;
   }
 
@@ -92,6 +111,9 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
     const args = ["-m", modelPath, "-f", wavPath, "-oj", "-of", outputBase, "-l", request.language ?? "auto", "--no-prints"];
     const runner = this.helperRunner ?? createSpawnRunner(cliPath);
     const child = runner(args);
+    // No explicit override: scale the wall-clock budget with audio length so
+    // long meetings are not killed by the short-audio floor (P1-2a).
+    const effectiveTimeoutMs = this.timeoutMsOverride ?? resolveWhisperTimeoutMs(request.audio.durationMs);
     let timeout: NodeJS.Timeout | undefined;
     const onAbort = (): void => {
       child.kill("SIGTERM");
@@ -106,8 +128,8 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
       const timeoutPromise = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           child.kill("SIGTERM");
-          reject(new TranscriptionError("TRANSCRIPTION_ENGINE_TIMEOUT", `Local whisper.cpp timed out after ${this.timeoutMs}ms.`, true));
-        }, this.timeoutMs);
+          reject(new TranscriptionError("TRANSCRIPTION_ENGINE_TIMEOUT", `Local whisper.cpp timed out after ${effectiveTimeoutMs}ms.`, true));
+        }, effectiveTimeoutMs);
       });
       const exit = await Promise.race([child.exited, timeoutPromise]);
       if (timeout !== undefined) {

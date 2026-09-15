@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import { TranscriptionError } from "../src/transcription/TranscriptionEngine";
 import { prepareWhisperWav } from "../src/transcription/PrepareWhisperAudio";
 import {
   WindowsLocalWhisperEngine,
+  resolveWhisperTimeoutMs,
   type WhisperHelperProcess,
   type WhisperHelperRunner,
 } from "../src/transcription/WindowsLocalWhisperEngine";
@@ -262,3 +263,59 @@ function completed(stdout: string, code = 0): WhisperHelperProcess {
     kill: () => undefined,
   };
 }
+
+test("P1-2a: whisper timeout keeps the 120 s floor for short or invalid durations", () => {
+  assert.equal(resolveWhisperTimeoutMs(0), 120_000);
+  assert.equal(resolveWhisperTimeoutMs(1), 120_000);
+  assert.equal(resolveWhisperTimeoutMs(59_999), 120_000);
+  assert.equal(resolveWhisperTimeoutMs(60_000), 120_000);
+  assert.equal(resolveWhisperTimeoutMs(-5), 120_000);
+  assert.equal(resolveWhisperTimeoutMs(Number.NaN), 120_000);
+  assert.equal(resolveWhisperTimeoutMs(Number.POSITIVE_INFINITY), 120_000);
+});
+
+test("P1-2a: whisper timeout scales linearly with audio duration", () => {
+  assert.equal(resolveWhisperTimeoutMs(60_001), 120_002);
+  assert.equal(resolveWhisperTimeoutMs(120_000), 240_000);
+  assert.equal(resolveWhisperTimeoutMs(3_600_000), 7_200_000);
+});
+
+test("P1-2a: explicit timeoutMs override takes precedence over duration scaling", async () => {
+  const request = sampleRequest();
+  const engine = new WindowsLocalWhisperEngine({ platform: "linux", timeoutMs: 20, helperRunner: unkillableRunner() });
+  // 1 h of audio would scale to a 2 h budget; the 20 ms override must win and
+  // the failure must report the override value.
+  await assert.rejects(
+    engine.transcribe({ ...request, audio: { ...request.audio, durationMs: 3_600_000 } }),
+    (error: unknown) =>
+      error instanceof TranscriptionError &&
+      error.code === "TRANSCRIPTION_ENGINE_TIMEOUT" &&
+      error.message.includes("after 20ms"),
+  );
+});
+
+test("P1-2a: timed-out helper is killed and the work directory is removed", async () => {
+  const prefix = "ai-workmate-whisper-";
+  const before = new Set(await readdir(tmpdir()));
+  let killed = false;
+  const engine = new WindowsLocalWhisperEngine({
+    platform: "linux",
+    timeoutMs: 20,
+    helperRunner: () => ({
+      stdout: (async function* () {})(),
+      stderr: (async function* () {})(),
+      exited: new Promise<never>(() => undefined),
+      kill: () => {
+        killed = true;
+      },
+    }),
+  });
+  await assert.rejects(
+    engine.transcribe(sampleRequest()),
+    (error: unknown) => error instanceof TranscriptionError && error.code === "TRANSCRIPTION_ENGINE_TIMEOUT",
+  );
+  assert.equal(killed, true);
+  const after = await readdir(tmpdir());
+  const leftovers = after.filter((entry) => entry.startsWith(prefix) && !before.has(entry));
+  assert.deepEqual(leftovers, []);
+});
