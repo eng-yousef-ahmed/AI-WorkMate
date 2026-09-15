@@ -59,7 +59,7 @@ export interface ChangeDataRootResult {
   result?: MigrationResult;
 }
 
-import { MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
+import { MEETING_ALREADY_PROCESSING_MESSAGE, MeetingTranscriptionOrchestrator } from "../processing/MeetingTranscriptionOrchestrator";
 import { MeetingHubService } from "../meetings/MeetingHubService";
 import { GroundedMeetingChatService } from "../meetings/GroundedMeetingChatService";
 import { TaskManagementService } from "../tasks/TaskManagementService";
@@ -121,6 +121,12 @@ export class StorageRuntime {
   private readonly storageOptions: LocalStorageServiceOptions;
   private readonly nativeAdapter: NativeCaptureAdapter;
   private readonly appVersion: string;
+  /**
+   * Runtime-boundary per-meeting processing mutex (P1-1). A second
+   * processCompletedMeeting call for an already-processing meeting fails fast
+   * here, before the orchestrator is even reached.
+   */
+  private readonly inFlightProcessingMeetings = new Set<string>();
 
   public constructor(
     config: StorageConfigService,
@@ -587,7 +593,15 @@ export class StorageRuntime {
     if (this.meetingProcessing === undefined || this.store === undefined) {
       throw new StorageError("Choose a local data location before using meeting processing.");
     }
-    return this.meetingProcessing.processCompletedMeeting(meetingId, options);
+    if (this.inFlightProcessingMeetings.has(meetingId)) {
+      throw new StorageError(MEETING_ALREADY_PROCESSING_MESSAGE);
+    }
+    this.inFlightProcessingMeetings.add(meetingId);
+    try {
+      await this.meetingProcessing.processCompletedMeeting(meetingId, options);
+    } finally {
+      this.inFlightProcessingMeetings.delete(meetingId);
+    }
   }
 
   /** Meeting Hub service bound to the active store (throws before first-run setup). */

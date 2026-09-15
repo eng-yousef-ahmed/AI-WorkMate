@@ -11,6 +11,14 @@ import { evaluateAnalysisQuality } from "../ai/AnalysisQuality";
 import { rm } from "node:fs/promises";
 import { parseAnalysisDocument } from "../ai/AnalysisDocument";
 
+/**
+ * Fail-fast error when a second processing run is requested for a meeting that
+ * is already being processed (P1-1). Path-free and user-safe by construction
+ * so it can cross the IPC boundary verbatim.
+ */
+export const MEETING_ALREADY_PROCESSING_MESSAGE =
+  "This meeting is already being processed. Please wait for the current run to finish.";
+
 export interface MeetingTranscriptionOrchestratorOptions {
   store: LocalFirstStore;
   transcriptionEngine: TranscriptionEngine;
@@ -26,6 +34,15 @@ export class MeetingTranscriptionOrchestrator {
   private readonly policy: AIProcessingPolicy;
   private readonly enforcer = new AIProcessingPolicyEnforcer();
   private readonly clock: () => Date;
+  /**
+   * Per-meeting processing mutex (P1-1). Two overlapping runs for the same
+   * meeting could both pass the transcript/analysis reuse checks and then
+   * collide on the UNIQUE artifact registration, while the loser's cleanup
+   * transition masked its real error. The has()/add() pair in
+   * processCompletedMeeting runs synchronously with no await between them, so
+   * same-process concurrent callers are serialized deterministically.
+   */
+  private readonly inFlightMeetings = new Set<string>();
 
   constructor(options: MeetingTranscriptionOrchestratorOptions) {
     this.store = options.store;
@@ -43,7 +60,18 @@ export class MeetingTranscriptionOrchestrator {
     if (meeting.status !== "COMPLETED" && meeting.status !== "PROCESSING" && meeting.status !== "INCOMPLETE" && meeting.status !== "FAILED") {
       throw new StorageError(`Meeting is not ready for processing: ${meeting.status}`);
     }
+    if (this.inFlightMeetings.has(meetingId)) {
+      throw new StorageError(MEETING_ALREADY_PROCESSING_MESSAGE);
+    }
+    this.inFlightMeetings.add(meetingId);
+    try {
+      await this.runLockedProcessing(meetingId, options);
+    } finally {
+      this.inFlightMeetings.delete(meetingId);
+    }
+  }
 
+  private async runLockedProcessing(meetingId: string, options?: { userApprovedForThisRequest?: boolean }): Promise<void> {
     const recordings = this.store.database.listRecordings(meetingId);
     const micRecordings = recordings.filter(r => r.captureSource?.endsWith(":MICROPHONE_AUDIO") && r.finalStatus === "COMMITTED");
     const sysRecordings = recordings.filter(r => r.captureSource?.endsWith(":SYSTEM_AUDIO") && r.finalStatus === "COMMITTED");
@@ -65,7 +93,13 @@ export class MeetingTranscriptionOrchestrator {
       this.store.transitionMeeting(meetingId, "COMPLETED");
     } catch (e) {
       const isRetryable = e instanceof StorageError && /interrupted|abort/i.test(e.message);
-      this.store.transitionMeeting(meetingId, isRetryable ? "INCOMPLETE" : "FAILED");
+      try {
+        this.store.transitionMeeting(meetingId, isRetryable ? "INCOMPLETE" : "FAILED");
+      } catch {
+        // The meeting already moved (a second invocation completed it or
+        // recovery intervened): the transition error must never replace the
+        // original processing failure.
+      }
       throw e;
     }
   }

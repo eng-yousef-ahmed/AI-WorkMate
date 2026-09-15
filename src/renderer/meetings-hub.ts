@@ -59,6 +59,11 @@ let busy = false;
 // the header button and every row/detail action, so double clicks can never
 // send duplicate starts.
 let captureBusy = false;
+// Only one Transcribe & analyze IPC may be in flight per meeting, so double
+// clicks can never send duplicate processing requests. The main process
+// enforces the same per-meeting serialization; this guard avoids firing an
+// IPC that would deterministically fail fast.
+const processingMeetings = new Set<string>();
 let captureAction: "start" | "stop" | undefined;
 let activeCapture: { meetingId: string; title: string } | undefined;
 
@@ -675,7 +680,16 @@ function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument |
   const canProcess = summary.hasRecording && !summary.hasAnalysis && !summary.isActive &&
     (summary.status === "COMPLETED" || summary.status === "INCOMPLETE" || summary.status === "FAILED");
   if (canProcess) {
-    actions.append(button("Transcribe & analyze", "button mini primary", () => void processMeeting(summary.meetingId)));
+    // While a run for this meeting is in flight (e.g. a refresh re-rendered
+    // the detail mid-run), offer no second action.
+    const processInFlight = processingMeetings.has(summary.meetingId);
+    const processButton = button(
+      processInFlight ? "Processing…" : "Transcribe & analyze",
+      "button mini primary",
+      () => void processMeeting(summary.meetingId),
+    );
+    processButton.disabled = processInFlight;
+    actions.append(processButton);
   }
   header.append(actions);
   detailPane.append(header);
@@ -699,6 +713,11 @@ function renderDetailPane(detail: MeetingDetail, analysis: HubAnalysisDocument |
 }
 
 async function processMeeting(meetingId: string): Promise<void> {
+  if (processingMeetings.has(meetingId)) {
+    showNoticeMessage("This meeting is already being processed…");
+    return;
+  }
+  processingMeetings.add(meetingId);
   try {
     showNoticeMessage("Transcription and analysis started (local models by default).");
     await meetings.processMeeting(meetingId, false);
@@ -710,6 +729,7 @@ async function processMeeting(meetingId: string): Promise<void> {
     // "Processing…" pill after a failed analysis.
     await renderDetail(meetingId);
   } finally {
+    processingMeetings.delete(meetingId);
     await refreshHub();
   }
 }

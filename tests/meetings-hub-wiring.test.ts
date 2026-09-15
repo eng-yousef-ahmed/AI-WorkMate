@@ -902,3 +902,71 @@ test("Failed Transcribe & analyze re-renders the persisted FAILED state instead 
   // Retry stays available: FAILED meetings still offer Transcribe & analyze.
   assert.equal(hubFindButton(harness.element("hub-detail"), "Transcribe & analyze") !== undefined, true);
 });
+
+test("P1-1: duplicate Transcribe & analyze clicks while processing is in flight issue a single IPC", async () => {
+  let release: ((value: unknown) => void) | undefined;
+  const detailFor = (): MeetingDetail => ({
+    meeting: summary("meeting-1", "Local meeting", { status: "COMPLETED", hasRecording: true }),
+    folderLabel: "Local meeting",
+    artifacts: [],
+    transcripts: [],
+    processingJobs: [],
+  });
+  const harness = bootHub({
+    getOverview: () =>
+      Promise.resolve(overviewWith([summary("meeting-1", "Local meeting", { status: "COMPLETED", hasRecording: true })])),
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    getDetail: () => Promise.resolve(detailFor()),
+    processMeeting: () =>
+      new Promise<unknown>((resolve) => {
+        release = resolve;
+      }),
+  });
+  await harness.waitFor(
+    () =>
+      harness.calls.overview === 1 &&
+      hubFindButton(harness.element("hub-today"), "Details") !== undefined,
+    "initial hub load with an actionable meeting",
+  );
+
+  const detailsButton = hubFindButton(harness.element("hub-today"), "Details");
+  assert.ok(detailsButton !== undefined);
+  detailsButton.dispatch("click", {});
+  await harness.waitFor(
+    () => hubFindButton(harness.element("hub-detail"), "Transcribe & analyze") !== undefined,
+    "detail renders the process action",
+  );
+
+  // Two rapid clicks: the first starts the IPC, the second is refused locally.
+  const processButton = hubFindButton(harness.element("hub-detail"), "Transcribe & analyze");
+  assert.ok(processButton !== undefined);
+  processButton.dispatch("click", {});
+  processButton.dispatch("click", {});
+  await tick();
+  assert.deepEqual(harness.calls.processMeeting, ["meeting-1"]);
+  assert.equal(harness.element("hub-notice").textContent, "This meeting is already being processed…");
+
+  // A refresh that re-renders the detail mid-run offers no second action.
+  harness.click("hub-refresh-button");
+  await harness.waitFor(
+    () =>
+      harness.element("hub-refresh-button").disabled === false &&
+      hubFindButton(harness.element("hub-detail"), "Processing…") !== undefined,
+    "mid-flight refresh shows the disabled processing state",
+  );
+  const midFlightButton = hubFindButton(harness.element("hub-detail"), "Processing…");
+  assert.ok(midFlightButton !== undefined);
+  assert.equal(midFlightButton.disabled, true);
+  assert.equal(hubFindButton(harness.element("hub-detail"), "Transcribe & analyze"), undefined);
+  assert.equal(harness.calls.processMeeting.length, 1);
+
+  assert.ok(release !== undefined, "deferred process meeting must be releasable");
+  release(undefined);
+  await harness.waitFor(
+    () =>
+      harness.calls.overview === 3 &&
+      hubFindButton(harness.element("hub-detail"), "Transcribe & analyze") !== undefined,
+    "settled process re-renders through the post-run refresh",
+  );
+  assert.equal(harness.calls.processMeeting.length, 1);
+});
