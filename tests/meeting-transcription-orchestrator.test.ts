@@ -670,3 +670,41 @@ test("Processing Orchestrator 31 - real Arabic transcript plus faithful Arabic a
 
   await disposeTestEnv(store, root);
 });
+
+test("Processing Orchestrator 32 - rejected analysis persists FAILED meeting and job error", async () => {
+  const { root, store, orchestrator, analysisProvider } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+
+  analysisProvider.process = async (request: AIProcessRequest): Promise<AIProcessResult> => {
+    const analysis: AnalysisDocument = {
+      meetingId: request.meetingId,
+      createdAt: new Date().toISOString(),
+      summary: "Completely unrelated invented wording about nothing relevant",
+      decisions: [],
+      tasks: [],
+      risks: [],
+      questions: [],
+      followups: [],
+    };
+    return {
+      providerId: "fake-ai",
+      persistedByProvider: false,
+      processedAt: new Date().toISOString(),
+      output: JSON.stringify(analysis),
+    };
+  };
+
+  await assert.rejects(orchestrator.processCompletedMeeting(meetingId), /Analysis quality rejected/);
+
+  // The meeting lands in a terminal FAILED state (never stuck PROCESSING)
+  // and the ANALYSIS job carries the exact rejection for the UI to render.
+  assert.strictEqual(store.getMeeting(meetingId)?.status, "FAILED");
+  const jobs = store.database.listProcessingJobs(meetingId);
+  const analysisJob = jobs.find((job) => job.jobType === "ANALYSIS");
+  assert.ok(analysisJob);
+  assert.strictEqual(analysisJob.state, "FAILED");
+  assert.match(analysisJob.error ?? "", /Summary is not grounded/);
+  assert.strictEqual(jobs.find((job) => job.jobType === "TRANSCRIPTION")?.state, "COMPLETED");
+
+  await disposeTestEnv(store, root);
+});

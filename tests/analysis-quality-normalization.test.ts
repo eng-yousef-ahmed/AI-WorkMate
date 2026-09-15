@@ -953,3 +953,64 @@ test("Arabic: quality reasons never trip the IPC filesystem-leak guard", () => {
     assert.equal(rendererErrorContainsFilesystemLeak(reason), false);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Real Windows failure reproduction (post-cc8a5ff): an Arabic meeting whose
+// Qwen summary paraphrased the discussion into novel wording instead of
+// copying transcript phrases, rejected with the single reason "Summary is
+// not grounded in the meeting transcript" while the decision/task rows
+// grounded. The gate is unchanged and still rejects paraphrased summaries;
+// the fixed prompt contract requires a same-language summary built from
+// exact transcript phrases, and contract-conforming output passes.
+// ---------------------------------------------------------------------------
+
+const ARABIC_MEETING_CORPUS = [
+  "السلام عليكم. نبدأ اجتماع اليوم لمناقشة خطة إطلاق المنتج الجديد.",
+  "القرار الأول. نعتمد موعد الإطلاق في نهاية الشهر الحالي.",
+  "القرار الثاني. يتولى فريق التطوير تجهيز النسخة النهائية قبل الموعد.",
+  "سيتابع عمر اختبارات الأداء ويرفع التقرير قبل يوم الخميس.",
+  "ستراجع نادية وثائق الإطلاق وتعتمدها قبل نهاية الأسبوع.",
+];
+
+function arabicMeetingAnalysis(summary: string): AnalysisDocument {
+  return {
+    meetingId: "m-1",
+    createdAt: "2026-09-15T11:00:00.000Z",
+    summary,
+    decisions: [{ decisionId: "d1", text: "نعتمد موعد الإطلاق في نهاية الشهر الحالي." }],
+    tasks: [{ taskId: "t1", text: "سيتابع عمر اختبارات الأداء", assignee: "عمر", status: "OPEN" }],
+    risks: [],
+    questions: [],
+    followups: [],
+  };
+}
+
+test("Windows reproduction: paraphrased Arabic summary is rejected with the exact single reason", () => {
+  const transcript = arabicTranscript(ARABIC_MEETING_CORPUS);
+  const paraphrased = arabicMeetingAnalysis("ناقش الفريق في الاجتماع الترتيبات النهائية للإطلاق ووزع المهام على الأعضاء.");
+  const quality = evaluateAnalysisQuality(paraphrased, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+  assert.equal(quality.matchedTasks, 1);
+  assert.equal(quality.summaryGrounded, false);
+  assert.equal(quality.acceptable, false);
+  assert.deepEqual(quality.reasons, ["Summary is not grounded in the meeting transcript."]);
+});
+
+test("Fixed contract: extractive Arabic summary built from transcript phrases passes", () => {
+  const transcript = arabicTranscript(ARABIC_MEETING_CORPUS);
+  const extractive = arabicMeetingAnalysis("اجتماع اليوم: نعتمد موعد الإطلاق في نهاية الشهر الحالي.");
+  const quality = evaluateAnalysisQuality(extractive, transcript);
+  assert.equal(quality.matchedDecisions, 1);
+  assert.equal(quality.matchedTasks, 1);
+  assert.equal(quality.summaryGrounded, true);
+  assert.equal(quality.acceptable, true);
+  assert.deepEqual(quality.reasons, []);
+});
+
+test("Fixed contract: prompt requires a same-language summary copied word-for-word from the transcript", () => {
+  const prompt = buildAnalysisPrompt(arabicTranscript(ARABIC_MEETING_CORPUS), "2026-09-15T11:00:00.000Z");
+  assert.match(prompt, /SAME language as the transcript/);
+  assert.match(prompt, /an Arabic transcript means an Arabic summary/);
+  assert.match(prompt, /copying exact phrases word-for-word from the transcript/);
+  assert.match(prompt, /instead of paraphrasing/);
+});

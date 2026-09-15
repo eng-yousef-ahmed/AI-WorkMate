@@ -9,6 +9,8 @@ import type {
   HubCaptureRequest,
   HubCaptureSnapshot,
   HubMeetingSummary,
+  HubProcessingJobInfo,
+  MeetingDetail,
   MeetingHubOverview,
 } from "../src/domain/hub";
 
@@ -455,6 +457,8 @@ interface HubBootOptions {
   getCaptureCapabilities: () => Promise<HubCaptureCapabilities>;
   startCapture?: (request: HubCaptureRequest) => Promise<HubCaptureSnapshot>;
   stopCapture?: (meetingId: string) => Promise<HubCaptureSnapshot>;
+  getDetail?: (meetingId: string) => Promise<MeetingDetail>;
+  processMeeting?: (meetingId: string, approved: boolean) => Promise<unknown>;
   preferences?: () => Promise<{ captureMicrophone: boolean; captureSystemLoopback: boolean; captureScreen: boolean }>;
 }
 
@@ -464,12 +468,26 @@ interface HubHarness {
   waitFor(condition: () => boolean, label: string): Promise<void>;
   /** Advances the virtual window-timer clock, firing due callbacks in order. */
   advanceTime(ms: number): void;
-  calls: { overview: number; captureCapabilities: number; startCapture: HubCaptureRequest[]; stopCapture: string[] };
+  calls: {
+    overview: number;
+    captureCapabilities: number;
+    startCapture: HubCaptureRequest[];
+    stopCapture: string[];
+    detail: number;
+    processMeeting: string[];
+  };
   location: { hash: string };
 }
 
 function bootHub(options: HubBootOptions): HubHarness {
-  const calls = { overview: 0, captureCapabilities: 0, startCapture: [] as HubCaptureRequest[], stopCapture: [] as string[] };
+  const calls: HubHarness["calls"] = {
+    overview: 0,
+    captureCapabilities: 0,
+    startCapture: [],
+    stopCapture: [],
+    detail: 0,
+    processMeeting: [],
+  };
   const elements = new Map<string, FakeHubElement>();
   const getOrCreate = (id: string, tag: string): FakeHubElement => {
     const existing = elements.get(id);
@@ -534,6 +552,10 @@ function bootHub(options: HubBootOptions): HubHarness {
     options.startCapture ?? unexpected("startCapture");
   const captureStop: (meetingId: string) => Promise<HubCaptureSnapshot> =
     options.stopCapture ?? unexpected("stopCapture");
+  const detailLoader: (meetingId: string) => Promise<MeetingDetail> =
+    options.getDetail ?? unexpected("getDetail");
+  const meetingProcessor: (meetingId: string, approved: boolean) => Promise<unknown> =
+    options.processMeeting ?? unexpected("processMeeting");
   const meetings = {
     getOverview: () => {
       calls.overview += 1;
@@ -543,7 +565,10 @@ function bootHub(options: HubBootOptions): HubHarness {
       calls.captureCapabilities += 1;
       return options.getCaptureCapabilities();
     },
-    getDetail: unexpected("getDetail"),
+    getDetail: (meetingId: string) => {
+      calls.detail += 1;
+      return detailLoader(meetingId);
+    },
     getTranscriptContent: unexpected("getTranscriptContent"),
     searchTranscripts: unexpected("searchTranscripts"),
     getAnalysis: unexpected("getAnalysis"),
@@ -557,7 +582,10 @@ function bootHub(options: HubBootOptions): HubHarness {
     },
     abortCapture: unexpected("abortCapture"),
     listActiveCaptures: unexpected("listActiveCaptures"),
-    processMeeting: unexpected("processMeeting"),
+    processMeeting: (meetingId: string, approved: boolean) => {
+      calls.processMeeting.push(meetingId);
+      return meetingProcessor(meetingId, approved);
+    },
     openLinkedUrl: unexpected("openLinkedUrl"),
     askMeetingHistory: unexpected("askMeetingHistory"),
     listHistory: unexpected("listHistory"),
@@ -780,3 +808,97 @@ class FakeHubElement {
     return;
   }
 }
+
+// --- Failed-process re-render regression -------------------------------------
+
+function hubDescendants(root: FakeHubElement): FakeHubElement[] {
+  const found: FakeHubElement[] = [];
+  const walk = (node: FakeHubElement): void => {
+    for (const child of node.children) {
+      found.push(child);
+      walk(child);
+    }
+  };
+  walk(root);
+  return found;
+}
+
+function hubFindButton(root: FakeHubElement, label: string): FakeHubElement | undefined {
+  return hubDescendants(root).find((node) => node.tagName === "button" && node.textContent === label);
+}
+
+test("Failed Transcribe & analyze re-renders the persisted FAILED state instead of sticking on Processing", async () => {
+  const FAILURE = "Analysis quality rejected: Summary is not grounded in the meeting transcript";
+  let status: "COMPLETED" | "FAILED" = "COMPLETED";
+  const failedJobs: HubProcessingJobInfo[] = [
+    { jobId: "job-analysis-1", jobType: "ANALYSIS", state: "FAILED", createdAt: "2026-09-15T10:00:00.000Z", error: FAILURE },
+  ];
+  const detailFor = (): MeetingDetail => ({
+    meeting: summary("meeting-1", "Local meeting", { status, hasRecording: true }),
+    folderLabel: "Local meeting",
+    artifacts: [],
+    transcripts: [],
+    processingJobs: status === "FAILED" ? failedJobs : [],
+  });
+  const harness = bootHub({
+    getOverview: () =>
+      Promise.resolve(overviewWith([summary("meeting-1", "Local meeting", { status, hasRecording: true })])),
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    getDetail: () => Promise.resolve(detailFor()),
+    processMeeting: (_meetingId) => {
+      status = "FAILED";
+      return Promise.reject(new Error(FAILURE));
+    },
+  });
+  await harness.waitFor(
+    () =>
+      harness.calls.overview === 1 &&
+      harness.element("hub-refresh-button").disabled === false &&
+      hubFindButton(harness.element("hub-today"), "Details") !== undefined,
+    "initial hub load with an actionable meeting",
+  );
+
+  const detailsButton = hubFindButton(harness.element("hub-today"), "Details");
+  assert.ok(detailsButton !== undefined);
+  detailsButton.dispatch("click", {});
+  await harness.waitFor(
+    () => hubFindButton(harness.element("hub-detail"), "Transcribe & analyze") !== undefined,
+    "detail renders the process action",
+  );
+
+  const processButton = hubFindButton(harness.element("hub-detail"), "Transcribe & analyze");
+  assert.ok(processButton !== undefined);
+  processButton.dispatch("click", {});
+  await harness.waitFor(
+    () =>
+      harness.calls.processMeeting.length === 1 &&
+      harness.element("hub-notice").textContent === FAILURE &&
+      hubDescendants(harness.element("hub-today")).some(
+        (node) => node.className.includes("status-pill") && node.textContent === "Failed",
+      ),
+    "failed process re-renders persisted state",
+  );
+
+  assert.deepEqual(harness.calls.processMeeting, ["meeting-1"]);
+  // The failure is surfaced with the error style and stays visible.
+  const noticeEl = harness.element("hub-notice");
+  assert.equal(noticeEl.textContent, FAILURE);
+  assert.equal(noticeEl.classList.contains("visible"), true);
+  assert.equal(noticeEl.classList.contains("error"), true);
+  // The detail header reflects the persisted FAILED status (not a stale pill).
+  assert.equal(
+    hubDescendants(harness.element("hub-detail")).some(
+      (node) => node.tagName === "small" && node.textContent.includes("Failed"),
+    ),
+    true,
+  );
+  // The persisted ANALYSIS job error renders in the detail jobs panel.
+  assert.equal(
+    hubDescendants(harness.element("hub-detail")).some((node) => node.textContent === FAILURE),
+    true,
+  );
+  // The overview row pill re-rendered as Failed via the post-run refresh.
+  assert.equal(harness.calls.overview, 2);
+  // Retry stays available: FAILED meetings still offer Transcribe & analyze.
+  assert.equal(hubFindButton(harness.element("hub-detail"), "Transcribe & analyze") !== undefined, true);
+});

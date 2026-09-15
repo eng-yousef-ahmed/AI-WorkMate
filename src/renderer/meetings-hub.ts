@@ -705,6 +705,12 @@ async function processMeeting(meetingId: string): Promise<void> {
     await renderDetail(meetingId);
   } catch (error: unknown) {
     showErrorMessage(error);
+    // The run persisted a terminal state (meeting FAILED plus the job error)
+    // before rejecting: re-render so the UI can never stick on a stale
+    // "Processing…" pill after a failed analysis.
+    await renderDetail(meetingId);
+  } finally {
+    await refreshHub();
   }
 }
 
