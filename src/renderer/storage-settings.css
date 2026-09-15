@@ -63,6 +63,7 @@ h2 { font-size: 16px; letter-spacing: -.018em; font-weight: 650; }
 .button:hover { transform: translateY(-1px); }
 .button.primary { color: white; background: linear-gradient(135deg, #8878f8, #6553d4); box-shadow: 0 6px 18px rgba(101,83,212,.2); }
 .button.secondary { border: 1px solid rgba(255,255,255,.11); background: #202633; color: #b7c0ce; }
+.button.danger { background: rgba(214,69,69,.15); color: #f0a3a3; border: 1px solid rgba(214,69,69,.35); }
 .button span { margin-left: 8px; color: #d3ccff; }
 .location-card { display: flex; align-items: center; gap: 15px; min-height: 78px; padding: 16px 19px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
 .folder-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; color: #8ddae8; background: rgba(94,215,233,.1); font-size: 21px; }

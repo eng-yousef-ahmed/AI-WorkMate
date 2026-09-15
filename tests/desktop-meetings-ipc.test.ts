@@ -55,9 +55,11 @@ interface HubStubOptions {
 
 function createStubs(options: HubStubOptions = {}): {
   calls: string[];
+  startRequests: unknown[];
   runtime: StorageRuntime;
 } {
   const calls: string[] = [];
+  const startRequests: unknown[] = [];
   const meetingId = "meeting-1";
   const hub = {
     getOverview: () => { calls.push("getOverview"); return overviewStub(); },
@@ -66,7 +68,7 @@ function createStubs(options: HubStubOptions = {}): {
     searchTranscripts: async (query: string, optionsArg?: { limit?: number }) => { calls.push(`searchTranscripts:${query}:${optionsArg?.limit ?? "default"}`); return { query, hitCount: 0, matches: [], truncated: false }; },
     getAnalysisDocument: async (id: string) => { calls.push(`getAnalysis:${id}`); return options.analysis; },
     getCaptureCapabilities: async () => { calls.push("getCaptureCapabilities"); return { supported: true, platform: "win32", adapterId: "test", microphone: true, systemLoopback: true, screen: false, window: false }; },
-    startMeetingCapture: async () => { calls.push("startMeetingCapture"); if (options.capture?.startError !== undefined) throw options.capture.startError; return options.capture?.startResult ?? { flowId: "flow-1", meetingId, phase: "RECORDING", meetingStatus: "RECORDING", startedAt: "2026-09-09T08:00:00.000Z", requestedCapabilities: ["MICROPHONE"], startedCapabilities: ["MICROPHONE"], activeSources: ["MICROPHONE"] }; },
+    startMeetingCapture: async (request: unknown) => { calls.push("startMeetingCapture"); startRequests.push(request); if (options.capture?.startError !== undefined) throw options.capture.startError; return options.capture?.startResult ?? { flowId: "flow-1", meetingId, phase: "RECORDING", meetingStatus: "RECORDING", startedAt: "2026-09-09T08:00:00.000Z", requestedCapabilities: ["MICROPHONE"], startedCapabilities: ["MICROPHONE"], activeSources: ["MICROPHONE"] }; },
     stopMeetingCapture: async () => { calls.push("stopMeetingCapture"); if (options.capture?.stopError !== undefined) throw options.capture.stopError; return { flowId: "flow-1", meetingId, phase: "COMPLETED", meetingStatus: "COMPLETED", startedAt: "2026-09-09T08:00:00.000Z", requestedCapabilities: ["MICROPHONE"], startedCapabilities: ["MICROPHONE"], activeSources: [] }; },
     abortMeetingCapture: async () => { calls.push("abortMeetingCapture"); return { flowId: "flow-1", meetingId, phase: "CANCELLED", meetingStatus: "CANCELLED", startedAt: "2026-09-09T08:00:00.000Z", requestedCapabilities: ["MICROPHONE"], startedCapabilities: ["MICROPHONE"], activeSources: [] }; },
     listActiveCaptures: () => { calls.push("listActiveCaptures"); return []; },
@@ -96,7 +98,7 @@ function createStubs(options: HubStubOptions = {}): {
     processCompletedMeeting: async (id: string) => { calls.push(`processCompletedMeeting:${id}`); },
   } as unknown as StorageRuntime;
 
-  return { calls, runtime };
+  return { calls, startRequests, runtime };
 }
 
 function register(runtime: StorageRuntime, opened: string[] = []): Map<string, IpcHandler> {
@@ -173,7 +175,7 @@ test("meetings IPC search and analysis route validated inputs", async () => {
 
 test("meetings IPC capture controls route requests and sanitize hub errors", async () => {
   const meetingId = "meeting-1";
-  const { calls, runtime } = createStubs();
+  const { calls, startRequests, runtime } = createStubs();
   const handlers = register(runtime);
 
   const caps = await invoke(handlers, MEETINGS_IPC_CHANNELS.getCaptureCapabilities, AUTHORIZED_EVENT);
@@ -188,12 +190,26 @@ test("meetings IPC capture controls route requests and sanitize hub errors", asy
   }) as HubCaptureSnapshot;
   assert.equal(started.phase, "RECORDING");
   assert.deepEqual(calls, ["getCaptureCapabilities", "startMeetingCapture"]);
+  assert.deepEqual(startRequests[0], { meetingId, microphone: true, systemLoopback: true, screen: false });
+
+  // Standalone local meeting: no meetingId, sanitized title passes through.
+  const standalone = await invoke(handlers, MEETINGS_IPC_CHANNELS.startCapture, AUTHORIZED_EVENT, {
+    title: "  Local meeting  ",
+    microphone: true,
+    systemLoopback: false,
+    screen: false,
+  }) as HubCaptureSnapshot;
+  assert.equal(standalone.phase, "RECORDING");
+  assert.deepEqual(calls, ["getCaptureCapabilities", "startMeetingCapture", "startMeetingCapture"]);
+  assert.deepEqual(startRequests[1], { microphone: true, systemLoopback: false, screen: false, title: "Local meeting" });
 
   for (const bad of [
     { meetingId, microphone: false, systemLoopback: false, screen: false },
     { meetingId: "", microphone: true, systemLoopback: false, screen: false },
     { meetingId },
-    { microphone: true },
+    { microphone: false, systemLoopback: false, screen: false },
+    { microphone: true, title: "x".repeat(201) },
+    { microphone: true, title: 42 },
     "capture",
   ]) {
     await assert.rejects(
@@ -201,11 +217,11 @@ test("meetings IPC capture controls route requests and sanitize hub errors", asy
       /invalid|requires at least one/i,
     );
   }
-  assert.deepEqual(calls, ["getCaptureCapabilities", "startMeetingCapture"]);
+  assert.deepEqual(calls, ["getCaptureCapabilities", "startMeetingCapture", "startMeetingCapture"]);
 
   await invoke(handlers, MEETINGS_IPC_CHANNELS.stopCapture, AUTHORIZED_EVENT, meetingId);
   await invoke(handlers, MEETINGS_IPC_CHANNELS.listActiveCaptures, AUTHORIZED_EVENT);
-  assert.deepEqual(calls, ["getCaptureCapabilities", "startMeetingCapture", "stopMeetingCapture", "listActiveCaptures"]);
+  assert.deepEqual(calls, ["getCaptureCapabilities", "startMeetingCapture", "startMeetingCapture", "stopMeetingCapture", "listActiveCaptures"]);
 });
 
 test("meetings IPC maps unexpected errors to a generic message and keeps hub codes", async () => {

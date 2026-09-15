@@ -3,6 +3,7 @@ import type {
   HubAssistedJoinPlan,
   HubCaptureCapabilities,
   HubCaptureRequest,
+  HubCaptureSnapshot,
   HubChatAnswer,
   HubChatEvidenceSource,
   HubHistoryFilter,
@@ -40,11 +41,26 @@ const captureStatus = $("hub-capture-status");
 const refreshButton = $<HTMLButtonElement>("hub-refresh-button");
 const REFRESH_LABEL = "↻ Refresh";
 const REFRESHING_LABEL = "↻ Refreshing…";
+// Header standalone control: starts a new local meeting when idle, stops the
+// active recording while one is running. Rows/detail keep their own
+// per-meeting Record/Stop actions for calendar-linked meetings.
+const recordButton = $<HTMLButtonElement>("hub-record-button");
+const recordingStatus = $("hub-recording-status");
+const RECORD_LABEL = "● Start recording";
+const RECORD_STARTING_LABEL = "● Starting…";
+const RECORDING_STOP_LABEL = "■ Stop recording";
+const RECORD_STOPPING_LABEL = "■ Stopping…";
 
 let capabilities: HubCaptureCapabilities | undefined;
 let openMeetingId: string | undefined;
 let openMeetingTitle = "";
 let busy = false;
+// Only one capture IPC (start/stop/abort) may be in flight at a time, across
+// the header button and every row/detail action, so double clicks can never
+// send duplicate starts.
+let captureBusy = false;
+let captureAction: "start" | "stop" | undefined;
+let activeCapture: { meetingId: string; title: string } | undefined;
 
 const STATUS_LABELS: Record<string, string> = {
   SCHEDULED: "Scheduled",
@@ -204,6 +220,8 @@ function renderOverview(next: MeetingHubOverview): void {
   } else {
     void refreshHistory();
   }
+  activeCapture = findActiveCapture(next);
+  renderRecordButton();
 }
 
 function renderCaptureStatus(): void {
@@ -264,30 +282,136 @@ async function refreshHub(manual = false): Promise<void> {
 
 // --- Capture controls --------------------------------------------------------
 
-async function captureRequestFromPrefs(meetingId: string): Promise<HubCaptureRequest> {
+interface CaptureSources {
+  microphone: boolean;
+  systemLoopback: boolean;
+  screen: boolean;
+}
+
+async function captureSourcesFromPrefs(): Promise<CaptureSources> {
   try {
     const prefs = await automation.getPreferences();
     const microphone = prefs.captureMicrophone;
     const systemLoopback = prefs.captureSystemLoopback;
     const screen = prefs.captureScreen;
     if (!microphone && !systemLoopback && !screen) {
-      return { meetingId, microphone: true, systemLoopback: true, screen: false };
+      return { microphone: true, systemLoopback: true, screen: false };
     }
-    return { meetingId, microphone, systemLoopback, screen };
+    return { microphone, systemLoopback, screen };
   } catch {
-    return { meetingId, microphone: true, systemLoopback: true, screen: false };
+    return { microphone: true, systemLoopback: true, screen: false };
+  }
+}
+
+async function captureRequestFromPrefs(meetingId: string): Promise<HubCaptureRequest> {
+  return { meetingId, ...(await captureSourcesFromPrefs()) };
+}
+
+/**
+ * The orchestrator RESOLVES start/stop failures as FAILED snapshots (with
+ * `error`) instead of throwing, so every capture call must inspect the
+ * snapshot — announcing success from IPC resolution alone fakes it.
+ */
+function captureSnapshotFailure(snapshot: HubCaptureSnapshot): string | undefined {
+  if (snapshot.phase === "FAILED" || snapshot.error !== undefined) {
+    return snapshot.error?.message ?? "The capture step did not complete.";
+  }
+  return undefined;
+}
+
+function beginCaptureAction(action: "start" | "stop"): boolean {
+  if (captureBusy) {
+    showNoticeMessage("A capture action is already in progress…");
+    return false;
+  }
+  captureBusy = true;
+  captureAction = action;
+  renderRecordButton();
+  return true;
+}
+
+function endCaptureAction(): void {
+  captureBusy = false;
+  captureAction = undefined;
+  renderRecordButton();
+}
+
+async function startCaptureWithRequest(request: HubCaptureRequest): Promise<void> {
+  if (!beginCaptureAction("start")) {
+    return;
+  }
+  try {
+    const snapshot = await meetings.startCapture(request);
+    const failure = captureSnapshotFailure(snapshot);
+    if (failure === undefined) {
+      showNoticeMessage("Recording started. Meeting audio stays on this device.");
+    } else {
+      showErrorMessage(failure);
+    }
+  } catch (error: unknown) {
+    showErrorMessage(error);
+  } finally {
+    // Refresh while still guarded so the header cannot offer a second start
+    // before the new active state renders.
+    await refreshHub();
+    endCaptureAction();
   }
 }
 
 async function startCapture(meetingId: string, request?: HubCaptureRequest): Promise<void> {
-  try {
-    const captureRequest = request ?? await captureRequestFromPrefs(meetingId);
-    await meetings.startCapture(captureRequest);
-    showNoticeMessage("Recording started. Meeting audio stays on this device.");
-  } catch (error: unknown) {
-    showErrorMessage(error);
+  await startCaptureWithRequest(request ?? await captureRequestFromPrefs(meetingId));
+}
+
+function standaloneMeetingTitle(): string {
+  return `Local meeting — ${new Date().toLocaleString()}`;
+}
+
+async function startStandaloneCapture(): Promise<void> {
+  await startCaptureWithRequest({ title: standaloneMeetingTitle(), ...(await captureSourcesFromPrefs()) });
+}
+
+function findActiveCapture(next: MeetingHubOverview): { meetingId: string; title: string } | undefined {
+  // Same live predicate as the per-row Stop buttons, so the header and the
+  // rows can never disagree about which recording is active.
+  const live = [...next.today, ...next.upcoming, ...next.recent].find(
+    (summary) =>
+      summary.isActive &&
+      (summary.status === "RECORDING" || summary.status === "PREPARING" || summary.status === "FINALIZING"),
+  );
+  return live === undefined ? undefined : { meetingId: live.meetingId, title: live.title };
+}
+
+function renderRecordButton(): void {
+  if (captureBusy) {
+    recordButton.disabled = true;
+    recordButton.className = captureAction === "stop" ? "button danger" : "button primary";
+    recordButton.textContent = captureAction === "stop" ? RECORD_STOPPING_LABEL : RECORD_STARTING_LABEL;
+    recordButton.title = "A capture action is in progress…";
+    return;
   }
-  await refreshHub();
+  if (activeCapture !== undefined) {
+    recordButton.disabled = false;
+    recordButton.className = "button danger";
+    recordButton.textContent = RECORDING_STOP_LABEL;
+    recordButton.title = `Stop recording “${activeCapture.title}”.`;
+    recordingStatus.hidden = false;
+    recordingStatus.textContent = `● Recording — ${activeCapture.title}`;
+    return;
+  }
+  recordingStatus.hidden = true;
+  recordingStatus.textContent = "";
+  if (capabilities === undefined) {
+    recordButton.disabled = true;
+    recordButton.className = "button primary";
+    recordButton.textContent = RECORD_LABEL;
+    recordButton.title = "Checking local capture support…";
+    return;
+  }
+  const supported = capabilities.supported === true;
+  recordButton.disabled = !supported;
+  recordButton.className = "button primary";
+  recordButton.textContent = RECORD_LABEL;
+  recordButton.title = supported ? "Start a local recording" : "Local capture is not available on this computer";
 }
 
 /** Renders the platform-aware assisted flow card inside the meeting detail. */
@@ -888,9 +1012,17 @@ async function refreshHistory(): Promise<void> {
 // --- Init ---------------------------------------------------------------------
 
 refreshButton.addEventListener("click", () => void refreshHub(true));
+recordButton.addEventListener("click", () => {
+  if (activeCapture !== undefined) {
+    void stopCapture(activeCapture.meetingId);
+  } else {
+    void startStandaloneCapture();
+  }
+});
 bindSearch();
 bindMeetingChat();
 bindHistoryFilters();
+renderRecordButton();
 void refreshHub();
 syncChatScopeVisibility();
 // Refresh again when the window regains focus so a capture that stopped

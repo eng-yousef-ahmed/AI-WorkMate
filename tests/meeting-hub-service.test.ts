@@ -496,6 +496,105 @@ test("meeting hub: capture controls drive the real orchestrator on the persisted
   });
 });
 
+test("meeting hub: standalone start creates a local meeting and drives the real orchestrator", async () => {
+  await withTempStore(async (store) => {
+    const adapter = new HubScriptedAdapter();
+    const { hub } = hubStack(store, adapter);
+
+    const started = await hub.startMeetingCapture({
+      title: "Local meeting — standalone",
+      microphone: true,
+      systemLoopback: false,
+      screen: false,
+    });
+    assert.equal(started.phase, "RECORDING");
+    assert.equal(started.error, undefined);
+    assert.deepEqual(started.requestedCapabilities, ["MICROPHONE"]);
+
+    // The orchestrator created the meeting itself on the LOCAL day with no
+    // invented calendar linkage.
+    const meeting = store.getMeeting(started.meetingId);
+    assert.ok(meeting !== undefined);
+    assert.equal(meeting.title, "Local meeting — standalone");
+    assert.equal(meeting.status, "RECORDING");
+    assert.equal(meeting.meetingDate, localDateKey(new Date()));
+    assert.equal(meeting.calendarEventId, undefined);
+
+    // Live views report it: active list + Today with an active (Stop-able) row.
+    const live = hub.listActiveCaptures();
+    assert.equal(live.length, 1);
+    assert.equal(live[0]?.meetingId, started.meetingId);
+    const during = hub.getOverview().today.find((summary) => summary.meetingId === started.meetingId);
+    assert.ok(during !== undefined);
+    assert.equal(during.isActive, true);
+    assert.equal(during.status, "RECORDING");
+    assert.equal(during.calendar, undefined);
+
+    await sleep(60);
+    const stopped = await hub.stopMeetingCapture(started.meetingId);
+    assert.equal(stopped.phase, "COMPLETED");
+    assert.equal(stopped.meetingStatus, "COMPLETED");
+    assert.equal(hub.listActiveCaptures().length, 0);
+
+    const overview = hub.getOverview();
+    assert.equal(overview.today.some((summary) => summary.meetingId === started.meetingId), false);
+    assert.ok(overview.recent.some((summary) => summary.meetingId === started.meetingId));
+    assert.equal(overview.historyTotal, 1);
+  });
+});
+
+test("meeting hub: standalone start without a title uses the orchestrator default", async () => {
+  await withTempStore(async (store) => {
+    const adapter = new HubScriptedAdapter();
+    const { hub } = hubStack(store, adapter);
+    const started = await hub.startMeetingCapture({ microphone: true, systemLoopback: false, screen: false });
+    assert.equal(started.phase, "RECORDING");
+    assert.equal(store.getMeeting(started.meetingId)?.title, "Meeting capture");
+    await sleep(60);
+    await hub.stopMeetingCapture(started.meetingId);
+  });
+});
+
+test("meeting hub: duplicate capture starts on the same meeting are rejected", async () => {
+  await withTempStore(async (store) => {
+    const adapter = new HubScriptedAdapter();
+    const meetingId = await seedCalendarMeeting(store, { subject: "Double-start sync", dayOffset: 0, hour: 10 });
+    const { hub } = hubStack(store, adapter);
+
+    await hub.startMeetingCapture({ meetingId, microphone: true, systemLoopback: false, screen: false });
+    await assert.rejects(
+      () => hub.startMeetingCapture({ meetingId, microphone: true, systemLoopback: false, screen: false }),
+      /already active/,
+    );
+    assert.equal(hub.listActiveCaptures().length, 1);
+
+    await sleep(60);
+    await hub.stopMeetingCapture(meetingId);
+    assert.equal(hub.listActiveCaptures().length, 0);
+  });
+});
+
+test("meeting hub: capture start failure resolves a FAILED snapshot with the cause", async () => {
+  await withTempStore(async (store) => {
+    const adapter = new HubScriptedAdapter();
+    adapter.startFailures.set("MICROPHONE_AUDIO", new Error("microphone unavailable"));
+    const { hub } = hubStack(store, adapter);
+
+    const failed = await hub.startMeetingCapture({
+      title: "Local meeting — failing",
+      microphone: true,
+      systemLoopback: false,
+      screen: false,
+    });
+    assert.equal(failed.phase, "FAILED");
+    assert.ok(failed.error !== undefined);
+    assert.match(failed.error.message, /MICROPHONE/);
+    assert.match(failed.error.message, /microphone unavailable/);
+    assert.equal(hub.listActiveCaptures().length, 0);
+    assert.equal(store.getMeeting(failed.meetingId)?.status, "FAILED");
+  });
+});
+
 test("meeting hub: unknown meeting id with a real orchestrator raises MEETING_NOT_FOUND", async () => {
   await withTempStore(async (store) => {
     const adapter = new HubScriptedAdapter();

@@ -401,10 +401,16 @@ export class MeetingHubService {
 
   public async startMeetingCapture(request: HubCaptureRequest): Promise<HubCaptureSnapshot> {
     const orchestrator = this.requireOrchestrator();
-    this.requireMeeting(request.meetingId);
     if (!request.microphone && !request.systemLoopback && !request.screen && !request.window) {
       throw new MeetingHubError("INVALID_REQUEST", "A capture requires at least one enabled source.");
     }
+    if (request.meetingId !== undefined) {
+      // Calendar-linked / existing meeting path: the meeting must exist.
+      this.requireMeeting(request.meetingId);
+    }
+    // Standalone local meeting (no meetingId): the orchestrator generates
+    // the meeting id and creates the meeting itself from `title` — its own
+    // built-in creation path, not a second implementation.
     const snapshot = await orchestrator.start(
       {
         microphone: request.microphone,
@@ -412,7 +418,9 @@ export class MeetingHubService {
         screen: request.screen,
         ...(request.window === undefined ? {} : { window: request.window }),
       },
-      { meetingId: request.meetingId },
+      request.meetingId === undefined
+        ? (request.title === undefined ? {} : { title: request.title })
+        : { meetingId: request.meetingId },
     );
     return toCaptureSnapshot(snapshot);
   }

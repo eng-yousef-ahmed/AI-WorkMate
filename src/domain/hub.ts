@@ -164,9 +164,16 @@ export interface HubCaptureSnapshot {
   error?: { code?: string; message: string; failed: boolean };
 }
 
-/** Renderer-sendable capture request (booleans + optional window source id). */
+/**
+ * Renderer-sendable capture request (booleans + optional window source id).
+ * Omit `meetingId` to start a standalone local meeting: the capture flow
+ * creates the meeting itself and `title` (when provided) names it. An
+ * explicit `meetingId` must reference an existing meeting (calendar-linked
+ * behavior is unchanged).
+ */
 export interface HubCaptureRequest {
-  meetingId: string;
+  meetingId?: string;
+  title?: string;
   microphone: boolean;
   systemLoopback: boolean;
   screen: boolean;

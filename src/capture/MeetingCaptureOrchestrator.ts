@@ -248,6 +248,10 @@ export class MeetingCaptureOrchestrator {
       await this.store.createMeeting({
         meetingId,
         title: options.title?.trim() || "Meeting capture",
+        // meetingDate is a LOCAL day everywhere the hub buckets by day; the
+        // UTC startedAt alone would park late-evening local recordings on
+        // "tomorrow" and hide them from Today.
+        meetingDate: localDateKey(this.clock()),
         startedAt: this.clock().toISOString(),
       });
     } else if (this.activeByMeetingId.has(meetingId)) {
@@ -681,6 +685,13 @@ export class MeetingCaptureOrchestrator {
     }
     return snapshot;
   }
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function requestedKinds(config: MeetingCaptureConfig): MeetingCaptureSourceKind[] {

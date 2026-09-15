@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import vm from "node:vm";
 
-import type { HubCaptureCapabilities, HubMeetingSummary, MeetingHubOverview } from "../src/domain/hub";
+import type {
+  HubCaptureCapabilities,
+  HubCaptureRequest,
+  HubCaptureSnapshot,
+  HubMeetingSummary,
+  MeetingHubOverview,
+} from "../src/domain/hub";
 
 const RENDERER_DIR = join(process.cwd(), "dist/src/renderer");
 const HTML_PATH = join(RENDERER_DIR, "storage-settings.html");
@@ -12,7 +18,7 @@ const HUB_JS_PATH = join(RENDERER_DIR, "meetings-hub.js");
 
 const REFRESH_LABEL = "↻ Refresh";
 
-function summary(id: string, title: string): HubMeetingSummary {
+function summary(id: string, title: string, overrides?: Partial<HubMeetingSummary>): HubMeetingSummary {
   return {
     meetingId: id,
     title,
@@ -25,6 +31,21 @@ function summary(id: string, title: string): HubMeetingSummary {
     hasRecording: false,
     hasTranscript: false,
     hasAnalysis: false,
+    ...overrides,
+  };
+}
+
+function captureSnapshot(overrides?: Partial<HubCaptureSnapshot>): HubCaptureSnapshot {
+  return {
+    flowId: "flow-1",
+    meetingId: "meeting-9",
+    phase: "RECORDING",
+    meetingStatus: "RECORDING",
+    startedAt: "2026-09-14T08:05:00.000Z",
+    requestedCapabilities: ["MICROPHONE", "SYSTEM_LOOPBACK"],
+    startedCapabilities: ["MICROPHONE", "SYSTEM_LOOPBACK"],
+    activeSources: ["MICROPHONE", "SYSTEM_LOOPBACK"],
+    ...overrides,
   };
 }
 
@@ -199,6 +220,166 @@ test("stale notice timers never hide a newer refresh success", async () => {
   assert.equal(notice.classList.contains("visible"), false);
 });
 
+test("Standalone recording control starts a local capture through the existing capture API", async () => {
+  const html = readFileSync(HTML_PATH, "utf8");
+  assert.match(html, /id="hub-record-button"/, "packaged Meetings page must expose the standalone record control");
+  assert.match(html, /id="hub-recording-status"/, "packaged Meetings page must expose the recording state pill");
+
+  const active = summary("meeting-9", "Local meeting", { status: "RECORDING", isActive: true });
+  let overviews = 0;
+  const harness = bootHub({
+    getOverview: () => {
+      overviews += 1;
+      return Promise.resolve(overviews === 1 ? overviewWith([]) : overviewWith([active]));
+    },
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    startCapture: () => Promise.resolve(captureSnapshot({})),
+  });
+  await harness.waitFor(
+    () => harness.calls.overview === 1 && harness.element("hub-record-button").disabled === false,
+    "record control ready",
+  );
+
+  const record = harness.element("hub-record-button");
+  assert.equal(record.textContent, "● Start recording");
+  assert.equal(harness.element("hub-recording-status").hidden, true);
+
+  harness.click("hub-record-button");
+  await harness.waitFor(
+    () => harness.calls.startCapture.length === 1 && record.textContent === "■ Stop recording",
+    "standalone start settles",
+  );
+
+  // The existing capture API is invoked with a standalone request: Capture
+  // settings sources, a local title, and no meeting id.
+  assert.equal(harness.calls.startCapture.length, 1);
+  const request = harness.calls.startCapture[0];
+  assert.ok(request !== undefined);
+  assert.equal(request.meetingId, undefined);
+  assert.equal(request.microphone, true);
+  assert.equal(request.systemLoopback, true);
+  assert.equal(request.screen, false);
+  assert.match(request.title ?? "", /^Local meeting — /);
+
+  // Success is confirmed and the active recording state renders.
+  const noticeEl = harness.element("hub-notice");
+  assert.equal(noticeEl.textContent, "Recording started. Meeting audio stays on this device.");
+  assert.equal(noticeEl.classList.contains("visible"), true);
+  const pill = harness.element("hub-recording-status");
+  assert.equal(pill.hidden, false);
+  assert.equal(pill.textContent, "● Recording — Local meeting");
+});
+
+test("Standalone start respects the existing Capture settings", async () => {
+  const harness = bootHub({
+    getOverview: () => Promise.resolve(overviewWith([])),
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    preferences: () => Promise.resolve({ captureMicrophone: false, captureSystemLoopback: true, captureScreen: true }),
+    startCapture: () => Promise.resolve(captureSnapshot({})),
+  });
+  await harness.waitFor(() => harness.element("hub-record-button").disabled === false, "record control ready");
+  harness.click("hub-record-button");
+  await harness.waitFor(() => harness.calls.startCapture.length === 1, "standalone start invoked");
+  const request = harness.calls.startCapture[0];
+  assert.ok(request !== undefined);
+  assert.equal(request.microphone, false);
+  assert.equal(request.systemLoopback, true);
+  assert.equal(request.screen, true);
+  await harness.waitFor(
+    () => harness.element("hub-record-button").disabled === false && harness.calls.overview === 2,
+    "standalone start settles",
+  );
+});
+
+test("Duplicate standalone starts are prevented while a start is in flight", async () => {
+  let release: ((value: HubCaptureSnapshot) => void) | undefined;
+  const harness = bootHub({
+    getOverview: () => Promise.resolve(overviewWith([])),
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    startCapture: () => new Promise<HubCaptureSnapshot>((resolve) => {
+      release = resolve;
+    }),
+  });
+  await harness.waitFor(() => harness.element("hub-record-button").disabled === false, "record control ready");
+
+  harness.click("hub-record-button");
+  await tick();
+  harness.click("hub-record-button");
+  await tick();
+  assert.equal(harness.calls.startCapture.length, 1);
+  assert.equal(harness.element("hub-notice").textContent, "A capture action is already in progress…");
+
+  assert.ok(release !== undefined, "deferred capture start must be releasable");
+  release(captureSnapshot({}));
+  await harness.waitFor(
+    () => harness.element("hub-record-button").disabled === false && harness.calls.overview === 2,
+    "standalone start settles",
+  );
+  assert.equal(harness.calls.startCapture.length, 1);
+});
+
+test("Stop recording invokes the existing stop path for the active meeting", async () => {
+  const active = summary("meeting-9", "Local meeting", { status: "RECORDING", isActive: true });
+  let overviews = 0;
+  const harness = bootHub({
+    getOverview: () => {
+      overviews += 1;
+      return Promise.resolve(overviews === 1 ? overviewWith([active]) : overviewWith([]));
+    },
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    stopCapture: (meetingId) =>
+      Promise.resolve(
+        captureSnapshot({ meetingId, phase: "COMPLETED", meetingStatus: "COMPLETED", activeSources: [] }),
+      ),
+  });
+  await harness.waitFor(
+    () => harness.calls.overview === 1 && harness.element("hub-record-button").textContent === "■ Stop recording",
+    "active recording renders",
+  );
+  assert.equal(harness.element("hub-recording-status").hidden, false);
+
+  harness.click("hub-record-button");
+  await harness.waitFor(
+    () => harness.calls.stopCapture.length === 1 && harness.element("hub-record-button").textContent === "● Start recording",
+    "stop settles",
+  );
+  assert.deepEqual(harness.calls.stopCapture, ["meeting-9"]);
+  const noticeEl = harness.element("hub-notice");
+  assert.equal(noticeEl.textContent, "Recording stopped.");
+  assert.equal(noticeEl.classList.contains("visible"), true);
+});
+
+test("Capture start failure is surfaced visibly and never announced as success", async () => {
+  const harness = bootHub({
+    getOverview: () => Promise.resolve(overviewWith([])),
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    startCapture: () =>
+      Promise.resolve(
+        captureSnapshot({
+          phase: "FAILED",
+          meetingStatus: "FAILED",
+          startedCapabilities: [],
+          activeSources: [],
+          error: { message: "Required source MICROPHONE could not start.", failed: true },
+        }),
+      ),
+  });
+  await harness.waitFor(() => harness.element("hub-record-button").disabled === false, "record control ready");
+  harness.click("hub-record-button");
+  await harness.waitFor(
+    () => harness.calls.startCapture.length === 1 && harness.calls.overview === 2,
+    "failed start settles",
+  );
+
+  const noticeEl = harness.element("hub-notice");
+  assert.equal(noticeEl.textContent, "Required source MICROPHONE could not start.");
+  assert.equal(noticeEl.classList.contains("visible"), true);
+  assert.equal(noticeEl.classList.contains("error"), true);
+  // No recording state is rendered for the failed start.
+  assert.equal(harness.element("hub-record-button").textContent, "● Start recording");
+  assert.equal(harness.element("hub-recording-status").hidden, true);
+});
+
 test("Meetings Refresh surfaces hub errors safely without fake success", async () => {
   let calls = 0;
   const harness = bootHub({
@@ -272,6 +453,9 @@ test("Local capture status is a non-interactive readiness indicator", async () =
 interface HubBootOptions {
   getOverview: () => Promise<MeetingHubOverview>;
   getCaptureCapabilities: () => Promise<HubCaptureCapabilities>;
+  startCapture?: (request: HubCaptureRequest) => Promise<HubCaptureSnapshot>;
+  stopCapture?: (meetingId: string) => Promise<HubCaptureSnapshot>;
+  preferences?: () => Promise<{ captureMicrophone: boolean; captureSystemLoopback: boolean; captureScreen: boolean }>;
 }
 
 interface HubHarness {
@@ -280,12 +464,12 @@ interface HubHarness {
   waitFor(condition: () => boolean, label: string): Promise<void>;
   /** Advances the virtual window-timer clock, firing due callbacks in order. */
   advanceTime(ms: number): void;
-  calls: { overview: number; captureCapabilities: number };
+  calls: { overview: number; captureCapabilities: number; startCapture: HubCaptureRequest[]; stopCapture: string[] };
   location: { hash: string };
 }
 
 function bootHub(options: HubBootOptions): HubHarness {
-  const calls = { overview: 0, captureCapabilities: 0 };
+  const calls = { overview: 0, captureCapabilities: 0, startCapture: [] as HubCaptureRequest[], stopCapture: [] as string[] };
   const elements = new Map<string, FakeHubElement>();
   const getOrCreate = (id: string, tag: string): FakeHubElement => {
     const existing = elements.get(id);
@@ -312,6 +496,8 @@ function bootHub(options: HubBootOptions): HubHarness {
     ["hub-upcoming-count", "span", false],
     ["hub-history-count", "span", false],
     ["hub-refresh-button", "button", false],
+    ["hub-record-button", "button", false],
+    ["hub-recording-status", "span", true],
     ["hub-history-filters", "div", false],
     ["chat-thread", "div", false],
     ["chat-empty", "div", false],
@@ -328,6 +514,7 @@ function bootHub(options: HubBootOptions): HubHarness {
     el.hidden = hidden;
   }
   getOrCreate("hub-refresh-button", "button").textContent = REFRESH_LABEL;
+  getOrCreate("hub-record-button", "button").textContent = "● Start recording";
   getOrCreate("hub-capture-status", "span").textContent = "Capture status…";
 
   const filters = getOrCreate("hub-history-filters", "div");
@@ -343,6 +530,10 @@ function bootHub(options: HubBootOptions): HubHarness {
 
   const unexpected = (name: string) => (): Promise<never> =>
     Promise.reject(new Error(`unexpected renderer API call in hub wiring test: ${name}`));
+  const captureStart: (request: HubCaptureRequest) => Promise<HubCaptureSnapshot> =
+    options.startCapture ?? unexpected("startCapture");
+  const captureStop: (meetingId: string) => Promise<HubCaptureSnapshot> =
+    options.stopCapture ?? unexpected("stopCapture");
   const meetings = {
     getOverview: () => {
       calls.overview += 1;
@@ -356,8 +547,14 @@ function bootHub(options: HubBootOptions): HubHarness {
     getTranscriptContent: unexpected("getTranscriptContent"),
     searchTranscripts: unexpected("searchTranscripts"),
     getAnalysis: unexpected("getAnalysis"),
-    startCapture: unexpected("startCapture"),
-    stopCapture: unexpected("stopCapture"),
+    startCapture: (request: HubCaptureRequest) => {
+      calls.startCapture.push(request);
+      return captureStart(request);
+    },
+    stopCapture: (meetingId: string) => {
+      calls.stopCapture.push(meetingId);
+      return captureStop(meetingId);
+    },
     abortCapture: unexpected("abortCapture"),
     listActiveCaptures: unexpected("listActiveCaptures"),
     processMeeting: unexpected("processMeeting"),
@@ -403,7 +600,7 @@ function bootHub(options: HubBootOptions): HubHarness {
         exportOfficeDocument: unexpected("exportOfficeDocument"),
       },
       automation: {
-        getPreferences: unexpected("getPreferences"),
+        getPreferences: options.preferences ?? unexpected("getPreferences"),
       },
     },
   };

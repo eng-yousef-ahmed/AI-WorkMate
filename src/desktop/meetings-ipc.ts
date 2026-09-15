@@ -17,11 +17,13 @@ export interface MeetingsIpcDependencies {
 
 const MAX_MEETING_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 4096;
+const MAX_CAPTURE_TITLE_LENGTH = 200;
 
 /**
  * Main-process Meeting Hub handlers. All payloads are produced by the hub
  * service from persisted local data; the renderer only ever supplies meeting
- * ids, transcript ids, capture capability toggles, and search text. External
+ * ids, transcript ids, capture capability toggles, capture titles, and
+ * search text. External
  * join/web URLs are resolved from the persisted calendar association in this
  * process and never accepted from the renderer.
  */
@@ -220,12 +222,30 @@ function readMeetingId(value: unknown, label = "meeting id"): string {
   return value.trim();
 }
 
+function readCaptureTitle(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new StorageError("The capture title is invalid.");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_CAPTURE_TITLE_LENGTH) {
+    throw new StorageError("The capture title is invalid.");
+  }
+  // A blank title falls back to the orchestrator's default meeting title.
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function readCaptureRequest(value: unknown): HubCaptureRequest {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new StorageError("The capture request is invalid.");
   }
   const record = value as Record<string, unknown>;
-  const meetingId = readMeetingId(record.meetingId);
+  // Standalone local meeting: no meetingId — the capture flow creates the
+  // meeting itself. An explicitly provided id must be valid.
+  const meetingId = record.meetingId === undefined ? undefined : readMeetingId(record.meetingId);
+  const title = readCaptureTitle(record.title);
   const microphone = record.microphone === true;
   const systemLoopback = record.systemLoopback === true;
   const screen = record.screen === true;
@@ -233,7 +253,13 @@ function readCaptureRequest(value: unknown): HubCaptureRequest {
   if (!microphone && !systemLoopback && !screen && window === undefined) {
     throw new StorageError("The capture request requires at least one enabled source.");
   }
-  const request: HubCaptureRequest = { meetingId, microphone, systemLoopback, screen };
+  const request: HubCaptureRequest = {
+    microphone,
+    systemLoopback,
+    screen,
+    ...(meetingId === undefined ? {} : { meetingId }),
+    ...(title === undefined ? {} : { title }),
+  };
   if (typeof window === "string" && window.length > 0) {
     if (window.length > 1024) {
       throw new StorageError("The capture window source is invalid.");
