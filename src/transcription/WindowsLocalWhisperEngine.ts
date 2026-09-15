@@ -205,6 +205,12 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
       return "injected-whisper-model.bin";
     }
     const candidates = this.modelPathOverride === undefined ? whisperModelCandidates(this.localAppData) : [assertSafeModelPath(this.modelPathOverride)];
+    // First magic-valid file that is not an allowlisted multilingual model
+    // (e.g. an English-only `.en` file copied in by hand). Catalog-strict:
+    // usable models must be allowlisted AND SHA-verified, so such files are
+    // skipped — never silently selected — and reported below when nothing
+    // usable exists.
+    let unusableModelName: string | undefined;
     for (const candidate of candidates) {
       try {
         const bytes = await readFile(candidate);
@@ -215,11 +221,13 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
           throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model is not a whisper.cpp ggml/gguf file: ${basename(candidate)}.`, false);
         }
         const catalog = getWhisperModelCatalogEntry(basename(candidate));
-        if (catalog !== undefined) {
-          const sha256 = createHash("sha256").update(bytes).digest("hex");
-          if (sha256 !== catalog.sha256 || bytes.byteLength !== catalog.bytes) {
-            throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model SHA-256 did not match the allowlisted catalog: ${basename(candidate)}.`, false);
-          }
+        if (catalog === undefined) {
+          unusableModelName ??= basename(candidate);
+          continue;
+        }
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        if (sha256 !== catalog.sha256 || bytes.byteLength !== catalog.bytes) {
+          throw new TranscriptionError("TRANSCRIPTION_ENGINE_UNAVAILABLE", `Whisper model SHA-256 did not match the allowlisted catalog: ${basename(candidate)}.`, false);
         }
         return candidate;
       } catch (error: unknown) {
@@ -227,6 +235,13 @@ export class WindowsLocalWhisperEngine implements TranscriptionEngine {
           throw error;
         }
       }
+    }
+    if (unusableModelName !== undefined) {
+      throw new TranscriptionError(
+        "TRANSCRIPTION_ENGINE_UNAVAILABLE",
+        `No verified multilingual Whisper model was found. ${unusableModelName} is not an allowlisted multilingual model and was not used; install ggml-tiny.bin in %LOCALAPPDATA%\\AI-WorkMate\\models\\whisper\\.`,
+        false,
+      );
     }
     throw new TranscriptionError(
       "TRANSCRIPTION_ENGINE_UNAVAILABLE",

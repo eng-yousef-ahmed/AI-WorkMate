@@ -7,9 +7,11 @@ import { test } from "node:test";
 import { STORAGE_IPC_CHANNELS } from "../src/desktop/storage-api";
 import { TranscriptionError } from "../src/transcription/TranscriptionEngine";
 import { prepareWhisperWav } from "../src/transcription/PrepareWhisperAudio";
+import { writeGgmlFileMagic } from "../src/transcription/WhisperModelFormat";
 import {
   WindowsLocalWhisperEngine,
   resolveWhisperTimeoutMs,
+  resolveWindowsWhisperModelPath,
   type WhisperHelperProcess,
   type WhisperHelperRunner,
 } from "../src/transcription/WindowsLocalWhisperEngine";
@@ -318,4 +320,118 @@ test("P1-2a: timed-out helper is killed and the work directory is removed", asyn
   const after = await readdir(tmpdir());
   const leftovers = after.filter((entry) => entry.startsWith(prefix) && !before.has(entry));
   assert.deepEqual(leftovers, []);
+});
+
+test("P2-1: production whisper argv pins auto language detection without translation", async () => {
+  let seenArgs: readonly string[] | undefined;
+  const engine = new WindowsLocalWhisperEngine({
+    platform: "linux",
+    helperRunner: (args) => {
+      seenArgs = args;
+      return completed(JSON.stringify({ language: "fr", segments: [{ startMs: 0, endMs: 800, text: "bonjour" }] }), 0);
+    },
+  });
+  await engine.transcribe(sampleRequest());
+  assert.ok(seenArgs !== undefined);
+  const flagIndex = seenArgs.indexOf("-l");
+  assert.ok(flagIndex >= 0 && seenArgs[flagIndex + 1] === "auto");
+  assert.equal(seenArgs.includes("--translate"), false);
+});
+
+test("P2-1: whisper language parsing reads top-level, nested, then the missing-language default", async () => {
+  const transcribeLanguage = async (stdout: string): Promise<string> => {
+    const engine = new WindowsLocalWhisperEngine({ platform: "linux", helperRunner: () => completed(stdout, 0) });
+    return (await engine.transcribe(sampleRequest())).language;
+  };
+  const segments = [{ startMs: 0, endMs: 800, text: "hello" }];
+  assert.equal(await transcribeLanguage(JSON.stringify({ language: "ar", segments })), "ar");
+  assert.equal(await transcribeLanguage(JSON.stringify({ result: { language: "fr" }, segments })), "fr");
+  assert.equal(await transcribeLanguage(JSON.stringify({ segments })), "en");
+});
+
+test("P2-1: multilingual catalog model is discovered ahead of a co-located .en model", async () => {
+  const root = join(tmpdir(), `ai-workmate-whisper-prefer-${Date.now()}`);
+  const modelDir = join(root, "AI-WorkMate", "models", "whisper");
+  await mkdir(modelDir, { recursive: true });
+  await writeFile(join(modelDir, "ggml-tiny.en.bin"), Buffer.alloc(128, 7));
+  await writeFile(join(modelDir, "ggml-tiny.bin"), Buffer.alloc(128, 7));
+  const resolved = await resolveWindowsWhisperModelPath(undefined, root);
+  assert.ok(resolved !== undefined);
+  assert.equal(resolved.endsWith("ggml-tiny.bin"), true);
+  assert.equal(resolved.endsWith(".en.bin"), false);
+});
+
+test("P2-1: English-only model file fails closed with a multilingual-model error", async () => {
+  const root = join(tmpdir(), `ai-workmate-whisper-enonly-${Date.now()}`);
+  await mkdir(root, { recursive: true });
+  const modelPath = join(root, "ggml-tiny.en.bin");
+  await writeFile(modelPath, writeGgmlFileMagic(Buffer.alloc(128, 9)));
+  const engine = new WindowsLocalWhisperEngine({ platform: "linux", helperRunner: unkillableRunner(), modelPath });
+  await assert.rejects(
+    engine.transcribe(sampleRequest()),
+    (error: unknown) =>
+      error instanceof TranscriptionError &&
+      error.code === "TRANSCRIPTION_ENGINE_UNAVAILABLE" &&
+      error.message.includes("multilingual"),
+  );
+});
+
+test("P2-1: unlisted model file fails closed even with valid magic", async () => {
+  const root = join(tmpdir(), `ai-workmate-whisper-unlisted-${Date.now()}`);
+  await mkdir(root, { recursive: true });
+  const modelPath = join(root, "ggml-small.bin");
+  await writeFile(modelPath, writeGgmlFileMagic(Buffer.alloc(128, 11)));
+  const engine = new WindowsLocalWhisperEngine({ platform: "linux", helperRunner: unkillableRunner(), modelPath });
+  await assert.rejects(
+    engine.transcribe(sampleRequest()),
+    (error: unknown) =>
+      error instanceof TranscriptionError &&
+      error.code === "TRANSCRIPTION_ENGINE_UNAVAILABLE" &&
+      error.message.includes("multilingual"),
+  );
+});
+
+test("P2-1: helper language round-trips into persisted transcript metadata", async () => {
+  await withTempStore(async (store) => {
+    const meeting = await store.createMeeting({ title: "Whisper language", meetingDate: "2026-09-02" });
+    const pcm = Buffer.alloc(32, 1);
+    const format = {
+      container: "AIWPCM_JSONL",
+      encoding: "PCM",
+      sampleRateHz: 16_000,
+      channels: 1,
+      bitsPerSample: 16,
+      blockAlign: 2,
+      averageBytesPerSecond: 32_000,
+    };
+    const { createHash } = await import("node:crypto");
+    const jsonl = `${JSON.stringify({ recordType: "format", source: "MICROPHONE_AUDIO", startedAt: "2026-09-02T10:00:00.000Z", format })}\n${JSON.stringify({
+      recordType: "chunk",
+      sequence: 0,
+      timestamp: "2026-09-02T10:00:01.000Z",
+      source: "MICROPHONE_AUDIO",
+      format,
+      byteLength: pcm.byteLength,
+      sha256: createHash("sha256").update(pcm).digest("hex"),
+      dataBase64: pcm.toString("base64"),
+    })}\n`;
+    await store.saveRecording({
+      meetingId: meeting.meetingId,
+      extension: "aiwpcm",
+      mimeType: "application/x-ai-workmate-pcm-jsonl",
+      contents: Buffer.from(jsonl, "utf8"),
+    });
+    const recording = store.database.listRecordings(meeting.meetingId)[0];
+    assert.ok(recording);
+    const service = new LocalTranscriptionService({
+      store,
+      engine: new WindowsLocalWhisperEngine({
+        platform: "linux",
+        helperRunner: () =>
+          completed(JSON.stringify({ language: "ar", segments: [{ startMs: 0, endMs: 800, text: "marhaban" }] }), 0),
+      }),
+    });
+    await service.transcribeRecording(meeting.meetingId, recording.recordingId);
+    assert.equal(store.database.listTranscripts(meeting.meetingId)[0]?.language, "ar");
+  });
 });

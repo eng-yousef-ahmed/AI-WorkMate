@@ -970,3 +970,49 @@ test("P1-1: duplicate Transcribe & analyze clicks while processing is in flight 
   );
   assert.equal(harness.calls.processMeeting.length, 1);
 });
+
+test("P2-1: transcript language labels render English, Arabic, and other tags distinctly", async () => {
+  const detailFor = (): MeetingDetail => ({
+    meeting: summary("meeting-1", "Local meeting", { status: "COMPLETED", hasRecording: true, hasTranscript: true }),
+    folderLabel: "Local meeting",
+    artifacts: [],
+    transcripts: [
+      { transcriptId: "t-en", language: "en", createdAt: "2026-09-15T10:00:00.000Z" },
+      { transcriptId: "t-ar", language: "ar", createdAt: "2026-09-15T10:00:00.000Z" },
+      { transcriptId: "t-fr", language: "fr", createdAt: "2026-09-15T10:00:00.000Z" },
+    ],
+    processingJobs: [],
+  });
+  const harness = bootHub({
+    getOverview: () =>
+      Promise.resolve(
+        overviewWith([summary("meeting-1", "Local meeting", { status: "COMPLETED", hasRecording: true, hasTranscript: true })]),
+      ),
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+    getDetail: () => Promise.resolve(detailFor()),
+  });
+  await harness.waitFor(
+    () =>
+      harness.calls.overview === 1 &&
+      hubFindButton(harness.element("hub-today"), "Details") !== undefined,
+    "initial hub load with a transcribed meeting",
+  );
+
+  const detailsButton = hubFindButton(harness.element("hub-today"), "Details");
+  assert.ok(detailsButton !== undefined);
+  detailsButton.dispatch("click", {});
+  await harness.waitFor(
+    () =>
+      hubDescendants(harness.element("hub-detail")).some(
+        (node) => node.tagName === "strong" && node.textContent === "Transcript (ar)",
+      ),
+    "detail renders the transcript language labels",
+  );
+
+  const labels = hubDescendants(harness.element("hub-detail"))
+    .filter((node) => node.tagName === "strong")
+    .map((node) => node.textContent);
+  assert.equal(labels.includes("Transcript (English)"), true);
+  assert.equal(labels.includes("Transcript (ar)"), true);
+  assert.equal(labels.includes("Transcript (fr)"), true);
+});
