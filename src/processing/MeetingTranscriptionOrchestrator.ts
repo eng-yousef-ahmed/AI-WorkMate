@@ -52,7 +52,10 @@ export class MeetingTranscriptionOrchestrator {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  public async processCompletedMeeting(meetingId: string, options?: { userApprovedForThisRequest?: boolean }): Promise<void> {
+  public async processCompletedMeeting(
+    meetingId: string,
+    options?: { userApprovedForThisRequest?: boolean; policy?: AIProcessingPolicy },
+  ): Promise<void> {
     const meeting = this.store.getMeeting(meetingId);
     if (!meeting) {
       throw new DataRootValidationError(`Meeting not found: ${meetingId}`);
@@ -71,7 +74,10 @@ export class MeetingTranscriptionOrchestrator {
     }
   }
 
-  private async runLockedProcessing(meetingId: string, options?: { userApprovedForThisRequest?: boolean }): Promise<void> {
+  private async runLockedProcessing(
+    meetingId: string,
+    options?: { userApprovedForThisRequest?: boolean; policy?: AIProcessingPolicy },
+  ): Promise<void> {
     const recordings = this.store.database.listRecordings(meetingId);
     const micRecordings = recordings.filter(r => r.captureSource?.endsWith(":MICROPHONE_AUDIO") && r.finalStatus === "COMMITTED");
     const sysRecordings = recordings.filter(r => r.captureSource?.endsWith(":SYSTEM_AUDIO") && r.finalStatus === "COMMITTED");
@@ -88,7 +94,7 @@ export class MeetingTranscriptionOrchestrator {
         sysRecordings.length > 0 && sysRecordings[0] ? this.processSource(meetingId, sysRecordings[0], "SYSTEM_AUDIO") : Promise.resolve(undefined),
       ]);
 
-      await this.runAnalysis(meetingId, micTranscriptRecord, sysTranscriptRecord, options?.userApprovedForThisRequest);
+      await this.runAnalysis(meetingId, micTranscriptRecord, sysTranscriptRecord, options?.userApprovedForThisRequest, options?.policy);
 
       this.store.transitionMeeting(meetingId, "COMPLETED");
     } catch (e) {
@@ -232,7 +238,13 @@ export class MeetingTranscriptionOrchestrator {
     return JSON.parse(Buffer.from(bytes).toString("utf8")) as TranscriptDocument;
   }
 
-  private async runAnalysis(meetingId: string, micRecord?: TranscriptRecord, sysRecord?: TranscriptRecord, userApproved?: boolean): Promise<void> {
+  private async runAnalysis(
+    meetingId: string,
+    micRecord?: TranscriptRecord,
+    sysRecord?: TranscriptRecord,
+    userApproved?: boolean,
+    policy?: AIProcessingPolicy,
+  ): Promise<void> {
     const jobId = randomUUID();
     const job: ProcessingJobRecord = {
       jobId,
@@ -246,7 +258,9 @@ export class MeetingTranscriptionOrchestrator {
     this.store.database.registerProcessingJob(job);
 
     try {
-      this.enforcer.assertAllowed(this.policy, this.analysisProvider.descriptor, userApproved === true);
+      // P2-2: a per-call policy (the freshly persisted setting) wins; the
+      // construction policy remains as the fallback for direct callers.
+      this.enforcer.assertAllowed(policy ?? this.policy, this.analysisProvider.descriptor, userApproved === true);
 
       const sourceTranscriptIds = [micRecord?.transcriptId, sysRecord?.transcriptId].filter(Boolean).join(",");
       const sourceTranscriptShas = [

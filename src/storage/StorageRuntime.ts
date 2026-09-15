@@ -598,7 +598,11 @@ export class StorageRuntime {
     }
     this.inFlightProcessingMeetings.add(meetingId);
     try {
-      await this.meetingProcessing.processCompletedMeeting(meetingId, options);
+      // P2-2: read the persisted policy on every call so settings changes
+      // apply without an app restart; the orchestrator falls back to its
+      // construction policy when no per-call policy is provided.
+      const config = await this.config.read();
+      await this.meetingProcessing.processCompletedMeeting(meetingId, { ...options, policy: config.aiProcessingPolicy });
     } finally {
       this.inFlightProcessingMeetings.delete(meetingId);
     }

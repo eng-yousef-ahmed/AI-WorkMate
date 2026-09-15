@@ -34,6 +34,7 @@ export interface CalendarSyncStatePatch {
 }
 import type { AIProvider } from "../ai/AIProvider";
 import { assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../ai/AnalysisDocument";
+import { evaluateAnalysisQuality } from "../ai/AnalysisQuality";
 import { BackupService } from "./BackupService";
 import { ExportService } from "./ExportService";
 import { LocalDatabase, type AuditRecord, type DuplicateMeetingKeys, type ParticipantRecord, type TaskRecord, type TaskUpdateFields, type TranscriptRecord } from "./LocalDatabase";
@@ -1168,6 +1169,12 @@ export class LocalFirstStore {
         throw new StorageError("AI provider must not persist meeting data; cloud AI is processing only.");
       }
       const analysis = parseAnalysisDocument(result.output, document.meetingId);
+      // P2-3: the legacy path enforces the same canonical quality gate as the
+      // orchestrator before anything is persisted.
+      const quality = evaluateAnalysisQuality(analysis, document);
+      if (!quality.acceptable) {
+        throw new StorageError(`Analysis quality rejected: ${quality.reasons.join(" ")}`);
+      }
       await this.saveAnalysis(analysis);
       this.transitionMeeting(meeting.meetingId, "COMPLETED");
       this.database.appendAudit(this.audit("ANALYSIS_COMPLETED", meeting.meetingId, { providerId: result.providerId }));

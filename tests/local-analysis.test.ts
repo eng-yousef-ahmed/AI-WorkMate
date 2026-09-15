@@ -10,7 +10,14 @@ import {
   unconfiguredLocalAIProvider,
 } from "../src/ai/LocalAnalysisService";
 import type { AnalysisDocument, TranscriptDocument } from "../src/domain/models";
-import { STORAGE_IPC_CHANNELS } from "../src/desktop/storage-api";
+import {
+  AUTOMATION_IPC_CHANNELS,
+  CALENDAR_IPC_CHANNELS,
+  MEETINGS_IPC_CHANNELS,
+  NOTIFICATIONS_IPC_CHANNELS,
+  STORAGE_IPC_CHANNELS,
+  TASKS_IPC_CHANNELS,
+} from "../src/desktop/storage-api";
 import { LocalFirstStore } from "../src/storage/LocalFirstStore";
 import { DataRootValidationError, StorageError } from "../src/storage/errors";
 import { withTempStore } from "./helpers";
@@ -28,7 +35,7 @@ test("committed transcript yields successful analysis artifacts under DATA_ROOT"
       recordingId: prepared.recordingId,
     });
     assert.equal(result.analysis.meetingId, prepared.meetingId);
-    assert.equal(result.analysis.summary, "Validated local summary");
+    assert.equal(result.analysis.summary, "The team committed the release transcript for analysis.");
     assert.equal(store.getMeeting(prepared.meetingId)?.status, "COMPLETED");
     assert.equal(store.database.listAnalysis(prepared.meetingId).length, 7);
     assert.ok(result.relativePath.includes("/Analysis/"));
@@ -39,7 +46,7 @@ test("committed transcript yields successful analysis artifacts under DATA_ROOT"
     assert.equal(result.sha256, store.storage.hashBytes(persisted));
     assert.equal(store.database.listArtifactOperations().filter((operation) => operation.artifactType.startsWith("ANALYSIS_")).every((operation) => operation.state === "COMMITTED"), true);
     const sqlite = await store.storage.readFile("Database/ai-workmate.sqlite");
-    assert.equal(Buffer.from(sqlite).includes(Buffer.from("Validated local summary")), false);
+    assert.equal(Buffer.from(sqlite).includes(Buffer.from("The team committed the release transcript for analysis.")), false);
   });
 });
 
@@ -154,7 +161,7 @@ test("ASK_EACH_TIME blocks cloud until explicitly authorized", async () => {
       userApprovedForThisRequest: true,
     });
     assert.equal(transmitted, true);
-    assert.equal(result.analysis.summary, "Validated local summary");
+    assert.equal(result.analysis.summary, "The team committed the release transcript for analysis.");
     assert.equal(store.getMeeting(prepared.meetingId)?.status, "COMPLETED");
   });
 });
@@ -174,7 +181,7 @@ test("CLOUD_ALLOWED permits an injected cloud transport without a real network c
       meetingId: prepared.meetingId,
       recordingId: prepared.recordingId,
     });
-    assert.equal(result.analysis.summary, "Validated local summary");
+    assert.equal(result.analysis.summary, "The team committed the release transcript for analysis.");
   });
 });
 
@@ -214,6 +221,59 @@ test("analysis remains a main-process boundary with no renderer analysis IPC", (
   assert.equal(values.some((channel) => /analy|openai|provider|summar/i.test(channel)), false);
 });
 
+test("P2-3: ungrounded provider output is rejected before anything is persisted", async () => {
+  await withTempStore(async (store) => {
+    const prepared = await commitTranscript(store);
+    const service = new LocalAnalysisService({
+      store,
+      policy: "LOCAL_ONLY",
+      provider: new LocalAIProvider(async () => JSON.stringify({
+        meetingId: prepared.meetingId,
+        createdAt: "2026-09-02T12:00:00.000Z",
+        summary: "Completely unrelated invented wording about nothing relevant.",
+        decisions: [{ decisionId: "d1", text: "Invented decision about nothing relevant at all." }],
+        tasks: [{ taskId: "t1", text: "Fabricated errand with no transcript overlap whatsoever.", status: "OPEN" }],
+        risks: [],
+        questions: [],
+        followups: [],
+      })),
+    });
+    await assert.rejects(
+      service.analyzeCommittedTranscript({ meetingId: prepared.meetingId, recordingId: prepared.recordingId }),
+      (error: unknown) => error instanceof StorageError && error.message.startsWith("Analysis quality rejected: "),
+    );
+    assert.equal(store.getMeeting(prepared.meetingId)?.status, "FAILED");
+    assert.equal(store.database.listAnalysis(prepared.meetingId).length, 0);
+    const artifacts = store.database.listArtifacts(prepared.meetingId);
+    assert.equal(artifacts.some((artifact) => artifact.artifactType.startsWith("ANALYSIS")), false);
+  });
+});
+
+test("P2-3: legacy analysis/transcription services stay unreachable through every IPC channel map", () => {
+  const channels = [
+    ...Object.values(STORAGE_IPC_CHANNELS),
+    ...Object.values(MEETINGS_IPC_CHANNELS),
+    ...Object.values(AUTOMATION_IPC_CHANNELS),
+    ...Object.values(TASKS_IPC_CHANNELS),
+    ...Object.values(CALENDAR_IPC_CHANNELS),
+    ...Object.values(NOTIFICATIONS_IPC_CHANNELS),
+  ];
+  assert.ok(channels.length > 0);
+  // The only transcript/analysis-reaching channels are the known-good read
+  // surfaces; anything else matching provider/engine wording is a leak.
+  const knownReads = new Set(["meetings:analysis", "meetings:transcript-content", "meetings:search-transcripts"]);
+  for (const channel of channels) {
+    if (knownReads.has(channel)) {
+      continue;
+    }
+    assert.equal(
+      /analy|transcrib|whisper|stt|llama|openai|provider|summar/i.test(channel),
+      false,
+      `channel must not expose analysis internals: ${channel}`,
+    );
+  }
+});
+
 async function commitTranscript(store: LocalFirstStore, title = "Analyze me"): Promise<{ meetingId: string; recordingId: string }> {
   const meeting = await store.createMeeting({ title, meetingDate: "2026-09-02" });
   const pcm = Buffer.alloc(8, 3);
@@ -250,7 +310,11 @@ async function commitTranscript(store: LocalFirstStore, title = "Analyze me"): P
     recordingId: recording.recordingId,
     speakers: [],
     timestamps: true,
-    segments: [{ segmentId: randomUUID(), startMs: 0, endMs: 1_000, text: "Committed transcript for analysis." }],
+    segments: [
+      { segmentId: randomUUID(), startMs: 0, endMs: 1_000, text: "The team committed the release transcript for analysis today." },
+      { segmentId: randomUUID(), startMs: 1_000, endMs: 2_000, text: "We approved the local rollout plan for Thursday." },
+      { segmentId: randomUUID(), startMs: 2_000, endMs: 3_000, text: "Omar will verify the release transcript tomorrow." },
+    ],
     language: "en",
     createdAt: "2026-09-02T11:00:00.000Z",
   };
@@ -262,9 +326,9 @@ function validAnalysis(meetingId: string): AnalysisDocument {
   return {
     meetingId,
     createdAt: "2026-09-02T12:00:00.000Z",
-    summary: "Validated local summary",
-    decisions: [{ decisionId: "d1", text: "Ship the local pipeline" }],
-    tasks: [{ taskId: "t1", text: "Review analysis artifacts", status: "OPEN" }],
+    summary: "The team committed the release transcript for analysis.",
+    decisions: [{ decisionId: "d1", text: "We approved the local rollout plan." }],
+    tasks: [{ taskId: "t1", text: "Omar will verify the release transcript.", status: "OPEN" }],
     risks: ["None"],
     questions: ["Any follow-up?"],
     followups: ["Schedule next review"],

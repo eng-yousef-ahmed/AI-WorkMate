@@ -65,7 +65,7 @@ test("persists only a validated provider result through the local analysis store
         };
       },
     };
-    const result = await store.processTranscriptWithProvider({ meetingId: meeting.meetingId, speakers: [], timestamps: true, segments: [], language: "en-US", createdAt: "2026-09-01T10:00:00.000Z" }, provider);
+    const result = await store.processTranscriptWithProvider({ meetingId: meeting.meetingId, speakers: [], timestamps: true, segments: [{ segmentId: "seg-1", startMs: 0, endMs: 1_000, text: "The provider returned a validated summary." }], language: "en-US", createdAt: "2026-09-01T10:00:00.000Z" }, provider);
     assert.equal(result.summary, "Validated");
     assert.equal(store.database.listAnalysis(meeting.meetingId).length, 7);
     assert.equal(store.getMeeting(meeting.meetingId)?.status, "COMPLETED");

@@ -544,14 +544,14 @@ test("injected local provider persists validated analysis through saveAnalysis",
     const service = new LocalAnalysisService({
       store,
       policy: "LOCAL_ONLY",
-      provider: new LocalAIProvider(async (request) => JSON.stringify(validAnalysis(request.meetingId))),
+      provider: new LocalAIProvider(async (request) => JSON.stringify(groundedServiceAnalysis(request.meetingId))),
     });
     const result = await service.analyzeCommittedTranscript({
       meetingId: prepared.meetingId,
       recordingId: prepared.recordingId,
     });
     assert.equal(store.getMeeting(prepared.meetingId)?.status, "COMPLETED");
-    assert.equal(result.analysis.summary, "Validated local summary");
+    assert.equal(result.analysis.summary, "We keep analysis LOCAL_ONLY with llama.cpp.");
     assert.equal(store.database.listAnalysis(prepared.meetingId).length, 7);
   });
 });
@@ -791,6 +791,22 @@ function validAnalysis(meetingId: string): AnalysisDocument {
     summary: "Validated local summary",
     decisions: [{ decisionId: "d1", text: "Ship the local pipeline" }],
     tasks: [{ taskId: "t1", text: "Review analysis artifacts", status: "OPEN" }],
+    risks: ["None"],
+    questions: ["Any follow-up?"],
+    followups: ["Schedule next review"],
+  };
+}
+
+// P2-3: the store-level legacy path gates persisted analyses with the
+// canonical quality gate, so service tests use analysis wording grounded in
+// the real meeting-analysis transcript fixture (no placeholder phrases).
+function groundedServiceAnalysis(meetingId: string): AnalysisDocument {
+  return {
+    meetingId,
+    createdAt: "2026-09-02T12:00:00.000Z",
+    summary: "We keep analysis LOCAL_ONLY with llama.cpp.",
+    decisions: [{ decisionId: "d1", text: "We keep analysis LOCAL_ONLY with llama.cpp." }],
+    tasks: [{ taskId: "t1", text: "Omar will document the llama.cpp install.", status: "OPEN" }],
     risks: ["None"],
     questions: ["Any follow-up?"],
     followups: ["Schedule next review"],
