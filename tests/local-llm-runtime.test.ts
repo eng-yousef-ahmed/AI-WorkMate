@@ -15,8 +15,11 @@ import { installLocalLlmModel } from "../src/ai/LocalLlmModelInstaller";
 import { ANALYSIS_DOCUMENT_JSON_SCHEMA, assignPersistentAnalysisIdentities, parseAnalysisDocument, validateAnalysisDocument } from "../src/ai/AnalysisDocument";
 import {
   LocalLlmProvider,
+  ANALYSIS_PROMPT_MAX_DIALOGUE_CHARS,
   assertUsableLocalLlmModelFile,
   buildAnalysisPrompt,
+  LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS,
+  LOCAL_LLM_CHAT_CONTEXT_TOKENS,
   LOCAL_LLM_MAX_PREDICT_TOKENS,
   buildLlamaCliArgs,
   describeJsonCursor,
@@ -27,6 +30,7 @@ import {
   type LocalLlmHelperProcess,
   type LocalLlmHelperRunner,
 } from "../src/ai/LocalLlmProvider";
+import { rendererErrorContainsFilesystemLeak } from "../src/desktop/ipc-sanitize";
 import { DataRootValidationError, StorageError } from "../src/storage/errors";
 import {
   LOCAL_LLM_MODEL_CATALOG,
@@ -255,7 +259,7 @@ test("b10621 llama-cli argv omits removed -no-cnv and uses --single-turn so conv
     "-n",
     String(LOCAL_LLM_MAX_PREDICT_TOKENS),
     "-c",
-    "2048",
+    String(LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS),
     "-t",
     args[args.indexOf("-t") + 1],
   ]);
@@ -816,7 +820,8 @@ test("GROUNDED_QA chat requests stream plain text through llama.cpp without JSON
   assert.ok(tokens > 0 && tokens < LOCAL_LLM_MAX_PREDICT_TOKENS, `chat token budget ${tokens} must stay below analysis budget`);
   const contextIndex = seenArgs?.indexOf("-c") ?? -1;
   const context = contextIndex >= 0 ? Number(seenArgs?.[contextIndex + 1]) : NaN;
-  assert.ok(context > 2048, `chat context ${context} must exceed the analysis context`);
+  assert.equal(context, LOCAL_LLM_CHAT_CONTEXT_TOKENS);
+  assert.equal(LOCAL_LLM_CHAT_CONTEXT_TOKENS, LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS);
   assert.equal(seenArgs?.includes("-p"), true);
   const promptIndex = seenArgs?.indexOf("-p") ?? -1;
   assert.equal(promptIndex >= 0 ? seenArgs?.[promptIndex + 1] : undefined, chatPrompt);
@@ -902,3 +907,85 @@ async function mkdirTemp(): Promise<string> {
 async function* bytesOf(value: string | Buffer): AsyncIterable<Uint8Array> {
   yield Buffer.isBuffer(value) ? value : Buffer.from(value);
 }
+
+test("analysis context window fits real transcripts plus the full prediction budget", () => {
+  assert.equal(LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS, 4096);
+  assert.equal(LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS > LOCAL_LLM_MAX_PREDICT_TOKENS, true);
+});
+
+test("missing CLI fails closed with a path-free message that names the Local AI runtime section", async () => {
+  const provider = new LocalLlmProvider({
+    platform: "win32",
+    localAppData: join(tmpdir(), `ai-workmate-no-cli-${Date.now()}`),
+  });
+  await assert.rejects(
+    provider.process(sampleRequest()),
+    (error: unknown) => {
+      assert.ok(error instanceof LocalLlmError);
+      assert.equal(error.code, "ANALYSIS_ENGINE_UNAVAILABLE");
+      assert.match(error.message, /llama\.cpp CLI was not found/);
+      assert.match(error.message, /Local AI runtime section/);
+      assert.equal(error.message.includes("%LOCALAPPDATA%"), false);
+      assert.equal(rendererErrorContainsFilesystemLeak(error.message), false);
+      return true;
+    },
+  );
+});
+
+test("missing model fails closed with a path-free message that names the Local AI runtime section", async () => {
+  const localAppData = await mkdirTemp();
+  const helperDir = join(localAppData, "AI-WorkMate", "native");
+  await mkdir(helperDir, { recursive: true });
+  await writeFile(join(helperDir, "llama-cli.exe"), "placeholder");
+  const provider = new LocalLlmProvider({
+    platform: "win32",
+    helperPath: join(helperDir, "llama-cli.exe"),
+    localAppData,
+  });
+  await assert.rejects(
+    provider.process(sampleRequest()),
+    (error: unknown) => {
+      assert.ok(error instanceof LocalLlmError);
+      assert.equal(error.code, "ANALYSIS_ENGINE_UNAVAILABLE");
+      assert.match(error.message, /No local GGUF instruct model was found/);
+      assert.match(error.message, /Local AI runtime section/);
+      assert.equal(error.message.includes("%LOCALAPPDATA%"), false);
+      assert.equal(rendererErrorContainsFilesystemLeak(error.message), false);
+      return true;
+    },
+  );
+});
+
+test("oversized dialogue is trimmed with a marker and the full argv stays inside the Windows limit", () => {
+  const meetingId = "11111111-1111-4111-8111-111111111111";
+  const transcript: TranscriptDocument = {
+    meetingId,
+    language: "en",
+    createdAt: "2026-09-02T11:00:00.000Z",
+    speakers: [],
+    timestamps: true,
+    segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text: "word ".repeat(5000) }],
+  };
+  const prompt = buildAnalysisPrompt(transcript, "2026-09-02T12:00:00.000Z");
+  assert.match(prompt, /Return minified JSON only/);
+  assert.match(prompt, /\[transcript trimmed to fit the analysis window/);
+  assert.equal(prompt.length < 32767, true);
+  const argvLength = ["llama-cli.exe", ...buildLlamaCliArgs("model.gguf", prompt)].join(" ").length;
+  assert.equal(argvLength < 32767, true);
+});
+
+test("dialogue at the budget passes through unmarked; one char over trims", () => {
+  const meetingId = "11111111-1111-4111-8111-111111111111";
+  const build = (text: string): TranscriptDocument => ({
+    meetingId,
+    language: "en",
+    createdAt: "2026-09-02T11:00:00.000Z",
+    speakers: [],
+    timestamps: true,
+    segments: [{ segmentId: "s1", startMs: 0, endMs: 1000, text }],
+  });
+  const exact = buildAnalysisPrompt(build("x".repeat(ANALYSIS_PROMPT_MAX_DIALOGUE_CHARS)), "2026-09-02T12:00:00.000Z");
+  assert.equal(exact.includes("transcript trimmed to fit the analysis window"), false);
+  const over = buildAnalysisPrompt(build("x".repeat(ANALYSIS_PROMPT_MAX_DIALOGUE_CHARS + 1)), "2026-09-02T12:00:00.000Z");
+  assert.match(over, /\[transcript trimmed to fit the analysis window/);
+});

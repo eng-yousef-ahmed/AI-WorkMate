@@ -13,14 +13,12 @@ import {
   VERIFY_WAV_ENV,
   VerificationPlaybackError,
 } from "../src/processing/VerifySpeechPlayback";
-import { ANALYSIS_QUALITY_MARKERS } from "../src/ai/AnalysisQuality";
 
 /**
  * Linux-safe verifier tests. The full pipeline only runs on Windows; these
  * tests pin the fail-closed behavior, the honest reporting contract, the
  * playback helper's Windows-only boundary, and the deterministic speech
- * fixture's integrity and vocabulary coverage for the unchanged quality
- * evaluator.
+ * fixture's integrity and scripted vocabulary coverage.
  */
 
 const NON_WINDOWS_PLATFORM = process.platform === "win32" ? "linux" : process.platform;
@@ -108,21 +106,28 @@ test("speech fixture WAV, once generated on Windows, is valid PCM WAV of the scr
   assert.ok(wav.durationMs < 180_000, `fixture speech is unexpectedly long: ${wav.durationMs}ms`);
 });
 
-test("committed speech script contains the unchanged quality evaluator vocabulary", async () => {
+test("committed speech script contains the scripted meeting vocabulary", async () => {
+  // The script fixture is unchanged; only the assertion source moved. The
+  // quality gate no longer exports a fixture vocabulary (generic per-row
+  // grounding), so the script's expected phrases are pinned here as literals.
+  const decisions = ["local only", "meeting files", "Windows verification"];
+  const tasks = ["encryption of transcripts", "fail-closed tests", "install guide"];
+  const assignees = ["Omar", "Nadia", "Samir"];
+  const dates = ["12 September 2026", "10 September 2026"];
   const script = await readFile(join(process.cwd(), MEETING_PROCESSING_SPEECH_SCRIPT_FIXTURE_RELATIVE), "utf8");
-  for (const marker of ANALYSIS_QUALITY_MARKERS.decisions) {
-    assert.ok(script.includes(marker), `speech script must mention decision marker "${marker}"`);
+  for (const marker of decisions) {
+    assert.ok(script.includes(marker), `speech script must mention decision phrase "${marker}"`);
   }
-  for (const marker of ANALYSIS_QUALITY_MARKERS.tasks) {
-    assert.ok(script.includes(marker), `speech script must mention task marker "${marker}"`);
+  for (const marker of tasks) {
+    assert.ok(script.includes(marker), `speech script must mention task phrase "${marker}"`);
   }
   assert.ok(/AI WorkMate/.test(script));
   assert.ok(/DATA_ROOT/.test(script));
   assert.ok(/llama\.cpp/.test(script));
-  for (const assignee of ANALYSIS_QUALITY_MARKERS.assignees) {
+  for (const assignee of assignees) {
     assert.ok(script.includes(assignee), `speech script must mention assignee "${assignee}"`);
   }
-  for (const date of ANALYSIS_QUALITY_MARKERS.dates) {
+  for (const date of dates) {
     assert.ok(script.includes(date), `speech script must mention date "${date}"`);
   }
 });

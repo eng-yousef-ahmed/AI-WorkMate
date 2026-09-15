@@ -25,10 +25,19 @@ const MAX_TIMEOUT_MS = 900_000;
  * constrained JSON schema): `-n 480` truncated real output into invalid JSON,
  * while `-n 960` and `-n 1024` both produced complete valid JSON (3 separate
  * decisions + 3 tasks). 1024 is the replay-proven value with headroom over
- * 960, still bounded inside the 2048 context window alongside the prompt.
+ * 960, still bounded inside the 4096 analysis context window alongside the prompt.
  */
 export const LOCAL_LLM_MAX_PREDICT_TOKENS = 1024;
-const CONTEXT_TOKENS = 2048;
+/**
+ * Analysis context window. The 2048-token value was proven only against the
+ * short English fixture; real meetings cost more - an Arabic token averages
+ * well under one word, so a modest real transcript plus instructions plus the
+ * 1024-token JSON answer no longer fits, and llama.cpp then truncates the
+ * prompt or the answer into invalid JSON. 4096 is the already-proven chat
+ * window value: large enough for the 8000-char dialogue budget plus the full
+ * 1024-token prediction, still CPU-cheap at 7B Q4.
+ */
+export const LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS = 4096;
 const CPU_BATCH_SIZE = 256;
 const MAX_CPU_THREADS = 8;
 const ALLOWED_CLI_NAMES = new Set([
@@ -236,7 +245,7 @@ export class LocalLlmProvider implements AIProvider {
     }
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_UNAVAILABLE",
-      "llama.cpp CLI was not found. Install llama-completion.exe or llama-cli.exe under %LOCALAPPDATA%\\AI-WorkMate\\native\\.",
+      "llama.cpp CLI was not found. Install the local AI runtime (llama-completion.exe or llama-cli.exe) from the Local AI runtime section of Storage settings, then retry analysis.",
       false,
     );
   }
@@ -263,7 +272,7 @@ export class LocalLlmProvider implements AIProvider {
     }
     throw new LocalLlmError(
       "ANALYSIS_ENGINE_UNAVAILABLE",
-      "No local GGUF instruct model was found. Install the catalogued Qwen2.5-7B-Instruct Q4_K_M shards under %LOCALAPPDATA%\\AI-WorkMate\\models\\llm\\.",
+      "No local GGUF instruct model was found. Install the catalogued Qwen2.5-7B-Instruct model from the Local AI runtime section of Storage settings, then retry analysis.",
       false,
     );
   }
@@ -437,7 +446,7 @@ export function buildLlamaCliArgs(modelPath: string, prompt: string, _helperName
     "-n",
     String(LOCAL_LLM_MAX_PREDICT_TOKENS),
     "-c",
-    String(CONTEXT_TOKENS),
+    String(LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS),
     "-t",
     threads,
     "-tb",
@@ -468,8 +477,10 @@ export const LOCAL_LLM_CHAT_MAX_PREDICT_TOKENS = 768;
 
 /**
  * Grounded chat context window. Evidence (bounded snippets) plus instructions
- * can reach ~1500 tokens, so a wider window than the 2048-token analysis
- * context keeps room for the full 768-token answer without truncation.
+ * can reach ~1500 tokens, so 4096 tokens keep room for the full 768-token
+ * answer without truncation. Analysis uses the same proven window value via
+ * LOCAL_LLM_ANALYSIS_CONTEXT_TOKENS; chat keeps its own smaller prediction
+ * budget because answers are prose, not schema-constrained JSON extraction.
  */
 export const LOCAL_LLM_CHAT_CONTEXT_TOKENS = 4096;
 
@@ -525,9 +536,22 @@ export function resolveLocalLlmTimeoutMs(requested?: number, envValue = process.
   return Math.min(Math.floor(candidate), MAX_TIMEOUT_MS);
 }
 
+/**
+ * Maximum transcript dialogue characters embedded in the analysis prompt.
+ * The prompt travels verbatim as one `-p` argv element (Windows CreateProcess
+ * limit 32767 chars) AND must fit the 4096-token context window next to the
+ * instructions and the 1024-token JSON answer; real meetings are unbounded,
+ * so the dialogue is capped and the model is told it was trimmed (see the
+ * trim instruction below; the marker text is parenthesized so it never reads
+ * as a spoken line). 8000 chars keep the total prompt near ~10KB - inside
+ * both budgets even for token-heavy scripts such as Arabic.
+ */
+export const ANALYSIS_PROMPT_MAX_DIALOGUE_CHARS = 8000;
+const ANALYSIS_PROMPT_TRIM_MARKER = "[transcript trimmed to fit the analysis window: only the excerpt above was provided]";
+
 export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: string): string {
   const names = new Map(transcript.speakers.map((speaker) => [speaker.speakerId, speaker.displayName ?? speaker.speakerId]));
-  const dialogue = transcript.segments.map((segment) => {
+  const fullDialogue = transcript.segments.map((segment) => {
     if (segment.speakerId === undefined) {
       // Speaker-less segments (e.g. local Whisper output) carry no speaker
       // identity; render them as bare transcript lines so no phantom
@@ -537,6 +561,10 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
     const speaker = names.get(segment.speakerId) ?? segment.speakerId;
     return `${speaker}: ${segment.text}`;
   }).join("\n");
+  const trimmed = fullDialogue.length > ANALYSIS_PROMPT_MAX_DIALOGUE_CHARS;
+  const dialogue = trimmed
+    ? `${fullDialogue.slice(0, ANALYSIS_PROMPT_MAX_DIALOGUE_CHARS)}\n${ANALYSIS_PROMPT_TRIM_MARKER}`
+    : fullDialogue;
   return [
     "Return minified JSON only: one object, no extra spaces or newlines, no markdown, no commentary.",
     "Do not invent people, dates, decisions, or tasks. Do not paste the full transcript into any field.",
@@ -548,7 +576,7 @@ export function buildAnalysisPrompt(transcript: TranscriptDocument, createdAt: s
     "Numbered decisions may appear as digits (Decision 1, Decision 2, Decision 3) or as spoken words (Decision one, Decision two, Decision three); treat both forms, and any equivalent numbered-decision wording in the transcript, as numbered decisions with one separate decisions[] object each, and never merge them into one object.",
     "owner and assignee are optional: NEVER output \"N/A\", \"NA\", \"n/a\", \"unknown\", \"none\", \"null\", \"not specified\", or similar placeholder text as an owner or assignee; omit the field when no single person is clearly assigned. Never combine multiple people into one owner/assignee string; a comma-separated list of people is invalid for owner/assignee. Keep each task's own wording and set a single assignee only when the transcript clearly assigns that task to one person.",
     "Summary: one sentence that names this meeting, states its main decision, and mentions the product or system the meeting is about, using the names as they appear in the transcript.",
-    "Summary quality contract: the one-sentence summary must contain at least one exact core decision phrase copied from the transcript: \"local only\", \"meeting files\", or \"Windows verification\". Do not invent the phrase, copy the wording actually spoken.",
+    "If the transcript ends with a bracketed trim notice, only the excerpt above it was provided: ground every decision, task, and summary wording in that excerpt and never guess content beyond it.",
     "Short ids d1/t1. One short sentence per decision and task, using the speakers' words for systems, owners, and dates.",
     "Questions are not decisions. Omit optional keys or use [] when unstated.",
     `meetingId=${transcript.meetingId}`,

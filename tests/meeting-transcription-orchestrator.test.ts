@@ -57,7 +57,7 @@ class FakeTranscriptionEngine implements TranscriptionEngine {
       timestamps: true,
       engine: this.descriptor,
       createdAt: new Date().toISOString(),
-      segments: [{ segmentId: randomUUID(), startMs: 0, endMs: 1000, text: `Fake transcript for ${request.recordingId} local only meeting files windows verification encryption of transcripts fail-closed tests install guide` }]
+      segments: [{ segmentId: randomUUID(), startMs: 0, endMs: 1000, text: `Fake transcript for ${request.recordingId}. We keep analysis local only on Windows and meeting files stay on the machine. Omar will write the install guide. Samir will add fail closed tests.` }]
     };
     return result;
   }
@@ -78,9 +78,9 @@ class FakeAIProvider implements AIProvider {
     const analysis: FakeAnalysisDocument = {
       meetingId: request.meetingId,
       createdAt: new Date().toISOString(),
-      summary: "Fake summary local only",
-      decisions: [{ decisionId: randomUUID(), text: "Fake decision local only", createdAt: new Date().toISOString() }, { decisionId: randomUUID(), text: "Fake decision meeting files", createdAt: new Date().toISOString() }],
-      tasks: [{ taskId: randomUUID(), text: "Fake task encryption of transcripts", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { taskId: randomUUID(), text: "Fake task fail-closed tests", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+      summary: "We keep analysis local only on Windows and meeting files stay on the machine.",
+      decisions: [{ decisionId: randomUUID(), text: "We keep analysis local only on Windows.", createdAt: new Date().toISOString() }, { decisionId: randomUUID(), text: "Meeting files stay on the machine.", createdAt: new Date().toISOString() }],
+      tasks: [{ taskId: randomUUID(), text: "Omar will write the install guide", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { taskId: randomUUID(), text: "Samir will add fail closed tests", status: "OPEN", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
       risks: [],
       questions: [],
       followups: []
@@ -623,6 +623,50 @@ test("Processing Orchestrator 30 - analysis artifact SHA missing fails reuse", a
   await orchestrator.processCompletedMeeting(meetingId);
   const newA = store.database.listAnalysis(meetingId)[0]!;
   assert.notStrictEqual(newA.analysisId, a.analysisId);
-  
+
+  await disposeTestEnv(store, root);
+});
+
+test("Processing Orchestrator 31 - real Arabic transcript plus faithful Arabic analysis completes", async () => {
+  const { root, store, orchestrator, transcriptionEngine, analysisProvider } = await createTestEnv();
+  const meetingId = await setupMeetingAndRecordings(store, true, false);
+
+  transcriptionEngine.transcribe = async (request: TranscriptionRequest): Promise<FakeTranscriptionEngineResult> => ({
+    meetingId: request.meetingId,
+    recordingId: request.recordingId!,
+    language: "ar",
+    speakers: [],
+    timestamps: true,
+    engine: transcriptionEngine.descriptor,
+    createdAt: new Date().toISOString(),
+    segments: [
+      { segmentId: randomUUID(), startMs: 0, endMs: 1000, text: "القرار الأول. نبقي تحليل الاجتماعات محليا فقط على نظام ويندوز." },
+      { segmentId: randomUUID(), startMs: 1000, endMs: 2000, text: "سيكتب عمر دليل التثبيت قبل يوم الجمعة." },
+    ],
+  });
+  analysisProvider.process = async (request: AIProcessRequest): Promise<AIProcessResult> => {
+    const analysis: AnalysisDocument = {
+      meetingId: request.meetingId,
+      createdAt: new Date().toISOString(),
+      summary: "أبقى الفريق تحليل الاجتماعات محليا فقط على نظام ويندوز.",
+      decisions: [{ decisionId: randomUUID(), text: "نبقي تحليل الاجتماعات محليا فقط على نظام ويندوز." }],
+      tasks: [{ taskId: randomUUID(), text: "سيكتب عمر دليل التثبيت", assignee: "عمر", status: "OPEN" }],
+      risks: [],
+      questions: [],
+      followups: [],
+    };
+    return {
+      providerId: "fake-ai",
+      persistedByProvider: false,
+      processedAt: new Date().toISOString(),
+      output: JSON.stringify(analysis),
+    };
+  };
+
+  await orchestrator.processCompletedMeeting(meetingId);
+
+  assert.strictEqual(store.getMeeting(meetingId)?.status, "COMPLETED");
+  assert.ok(store.database.listAnalysis(meetingId).length > 0, "faithful Arabic analysis must persist rows");
+
   await disposeTestEnv(store, root);
 });
