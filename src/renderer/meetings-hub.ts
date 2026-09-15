@@ -91,11 +91,26 @@ function timeLabel(summary: HubMeetingSummary): string {
   return sameDay ? time : `${day} ${time}`;
 }
 
+let noticeTimer: number | undefined;
+
 function showNoticeMessage(message: string, error = false): void {
   notice.textContent = message;
   notice.classList.toggle("error", error);
   notice.classList.add("visible");
-  window.setTimeout(() => notice.classList.remove("visible"), error ? 8000 : 3500);
+  // One shared notice element: a newer notice supersedes any earlier one, so
+  // cancel the earlier auto-hide first. Without this, a stale timer (e.g.
+  // from an "already in progress" busy click, or an earlier error) fires
+  // after the newer notice appears and hides it — on slow Windows IPC the
+  // busy timer lands ~immediately after the refresh success, so the success
+  // feedback never becomes visible. Same clear-then-schedule idiom as the
+  // search debounce below.
+  if (noticeTimer !== undefined) {
+    window.clearTimeout(noticeTimer);
+  }
+  noticeTimer = window.setTimeout(() => {
+    notice.classList.remove("visible");
+    noticeTimer = undefined;
+  }, error ? 8000 : 3500);
 }
 
 function formatBytes(value: number): string {

@@ -82,6 +82,7 @@ test("Meetings Refresh invokes the real hub load and visibly updates the page", 
   assert.equal(harness.element("hub-capture-status").textContent, "Local capture ready (microphone, system audio, screen, window)");
   // Success is confirmed only after the real load resolved and rendered.
   assert.equal(harness.element("hub-notice").textContent, "Meeting hub refreshed.");
+  assert.equal(harness.element("hub-notice").classList.contains("visible"), true);
   assert.equal(refresh.disabled, false);
   assert.equal(refresh.textContent, REFRESH_LABEL);
 });
@@ -131,6 +132,71 @@ test("Meetings Refresh shows a loading state and never fakes success while busy"
   assert.equal(harness.element("hub-today-count").textContent, "1");
   assert.equal(harness.element("hub-notice").textContent, "Meeting hub refreshed.");
   assert.equal(refresh.textContent, REFRESH_LABEL);
+});
+
+test("stale notice timers never hide a newer refresh success", async () => {
+  let release: ((value: MeetingHubOverview) => void) | undefined;
+  let calls = 0;
+  const harness = bootHub({
+    getOverview: () => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve(overviewWith([]));
+      }
+      return new Promise<MeetingHubOverview>((resolve) => {
+        release = resolve;
+      });
+    },
+    getCaptureCapabilities: () => Promise.resolve(fullCaps()),
+  });
+  await harness.waitFor(
+    () =>
+      harness.calls.overview === 1 &&
+      harness.element("hub-refresh-button").disabled === false &&
+      harness.element("hub-today-count").textContent === "0",
+    "initial hub load",
+  );
+  const refresh = harness.element("hub-refresh-button");
+  const notice = harness.element("hub-notice");
+
+  // Refreshing state appears while IPC is pending.
+  harness.click("hub-refresh-button");
+  await tick();
+  assert.equal(harness.calls.overview, 2);
+  assert.equal(refresh.disabled, true);
+  assert.equal(refresh.textContent, "↻ Refreshing…");
+
+  // Second click while busy: no duplicate IPC, truthful busy notice.
+  harness.click("hub-refresh-button");
+  await tick();
+  assert.equal(harness.calls.overview, 2);
+  assert.equal(notice.textContent, "A refresh is already in progress…");
+  assert.equal(notice.classList.contains("visible"), true);
+
+  // Age the busy notice so its stale 3.5s hide timer would fire first.
+  harness.advanceTime(3000);
+  assert.equal(notice.classList.contains("visible"), true);
+
+  // IPC resolves: success notice present AND visible, button restored.
+  assert.ok(release !== undefined, "deferred overview must be releasable");
+  release(overviewWith([summary("meeting-9", "Retro")]));
+  await harness.waitFor(
+    () => refresh.disabled === false && notice.textContent === "Meeting hub refreshed.",
+    "refresh success notice",
+  );
+  assert.equal(notice.classList.contains("visible"), true);
+  assert.equal(refresh.textContent, REFRESH_LABEL);
+  assert.equal(harness.element("hub-today-count").textContent, "1");
+
+  // Advance past the STALE busy timer's due (3500) but before the success
+  // timer's due (3000 + 3500): the newer success notice must survive.
+  harness.advanceTime(600);
+  assert.equal(notice.textContent, "Meeting hub refreshed.");
+  assert.equal(notice.classList.contains("visible"), true, "a stale busy timer must not hide the newer success notice");
+
+  // The success notice still auto-hides on its own schedule.
+  harness.advanceTime(6000);
+  assert.equal(notice.classList.contains("visible"), false);
 });
 
 test("Meetings Refresh surfaces hub errors safely without fake success", async () => {
@@ -212,6 +278,8 @@ interface HubHarness {
   element(id: string): FakeHubElement;
   click(id: string): void;
   waitFor(condition: () => boolean, label: string): Promise<void>;
+  /** Advances the virtual window-timer clock, firing due callbacks in order. */
+  advanceTime(ms: number): void;
   calls: { overview: number; captureCapabilities: number };
   location: { hash: string };
 }
@@ -303,14 +371,21 @@ function bootHub(options: HubBootOptions): HubHarness {
 
   const location = { hash: "#meetings" };
   const windowListeners = new Map<string, Array<(event: unknown) => void>>();
-  // Notice auto-hide timers (3.5s/8s) must not hold the test runner open.
+  // Virtual clock for window timers: the real script's setTimeout/clearTimeout
+  // calls (notice auto-hide, search debounce) run on this clock, so timer
+  // races reproduce deterministically without wall-clock waits, and pending
+  // timers never hold the test runner open.
+  let virtualNow = 0;
+  let nextTimerId = 1;
+  const pendingTimers = new Map<number, { due: number; callback: () => void }>();
   const windowSetTimeout = ((callback: (...args: unknown[]) => void, ms?: number): unknown => {
-    const handle = setTimeout(callback, ms);
-    handle.unref();
-    return handle;
+    const id = nextTimerId;
+    nextTimerId += 1;
+    pendingTimers.set(id, { due: virtualNow + (ms ?? 0), callback: () => callback() });
+    return id;
   }) as unknown as typeof setTimeout;
   const windowClearTimeout = ((handle: unknown): void => {
-    clearTimeout(handle as ReturnType<typeof setTimeout>);
+    pendingTimers.delete(handle as number);
   }) as unknown as typeof clearTimeout;
   const windowObject: Record<string, unknown> = {
     location,
@@ -375,6 +450,16 @@ function bootHub(options: HubBootOptions): HubHarness {
         }
         assert.ok(Date.now() < deadline, `timed out waiting for ${label}`);
         await tick();
+      }
+    },
+    advanceTime: (ms: number): void => {
+      virtualNow += ms;
+      const due = [...pendingTimers.entries()]
+        .filter(([, timer]) => timer.due <= virtualNow)
+        .sort((left, right) => left[1].due - right[1].due || left[0] - right[0]);
+      for (const [id, timer] of due) {
+        pendingTimers.delete(id);
+        timer.callback();
       }
     },
     calls,
