@@ -68,6 +68,9 @@ export class NotificationCenterService {
   private readonly presenter?: (notification: HubNotification) => void;
   private readonly onChanged?: () => void;
   private timer: ReturnType<typeof setInterval> | undefined;
+  // Prevents two runAutomation() calls from overlapping if a tick ever takes
+  // longer than the interval (e.g. a slow storage backend or large digest).
+  private automationInFlight = false;
 
   public constructor(options: NotificationCenterOptions) {
     this.store = options.store;
@@ -303,9 +306,19 @@ export class NotificationCenterService {
   public start(intervalMs = AUTOMATION_INTERVAL_MS): void {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => {
-      void this.runAutomation().catch((error: unknown) => {
-        console.error("Notification automation tick failed", error);
-      });
+      if (this.automationInFlight) {
+        // Previous tick has not finished yet; skip this firing rather than
+        // running two runAutomation() passes concurrently.
+        return;
+      }
+      this.automationInFlight = true;
+      void this.runAutomation()
+        .catch((error: unknown) => {
+          console.error("Notification automation tick failed", error);
+        })
+        .finally(() => {
+          this.automationInFlight = false;
+        });
     }, intervalMs);
     // Never keep the app alive on its own; the tick only runs while the app
     // (or a test harness) is already running.
