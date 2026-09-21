@@ -813,6 +813,32 @@ test("meeting capture: a meeting can only host one active capture flow at a time
   });
 });
 
+test("meeting capture: two truly concurrent start() calls for the same brand-new meetingId never both succeed", async () => {
+  await withTempStore(async (store) => {
+    const adapter = new ScriptedNativeAdapter();
+    const { orchestrator } = orchestratorStack(adapter, store);
+    const meetingId = randomUUID();
+    // Fire both calls without awaiting the first, so both race the meeting
+    // creation step before either has reserved the active-flow slot on a
+    // *previous* implementation. With the fix, the in-memory reservation
+    // happens synchronously before any `await`, so the second caller is
+    // rejected immediately with a clean "already active" error instead of a
+    // raw SQLite unique-constraint failure or a silently duplicated flow.
+    const results = await Promise.allSettled([
+      orchestrator.start(ALL_SOURCES, { meetingId }),
+      orchestrator.start(ALL_SOURCES, { meetingId }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    assert.equal(fulfilled.length, 1, "exactly one concurrent start() call must succeed");
+    assert.equal(rejected.length, 1, "the other concurrent start() call must be rejected");
+    const rejection = rejected[0] as PromiseRejectedResult;
+    assert.match(String((rejection.reason as Error).message), /already active/);
+    assert.equal(store.database.listMeetings().length, 1, "only one meeting row is ever created");
+    await orchestrator.abort(meetingId);
+  });
+});
+
 test("meeting capture: window sourceId rejects path-like values", async () => {
   await withTempStore(async (store) => {
     const adapter = new ScriptedNativeAdapter();
