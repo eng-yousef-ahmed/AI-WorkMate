@@ -178,13 +178,26 @@ async function bootstrap(): Promise<void> {
   startAutomationTicks();
 }
 
+let automationTickInFlight = false;
+
 function startAutomationTicks(): void {
   if (automationTick !== undefined || runtime === undefined) return;
   const engine = runtime;
   const tick = (): void => {
-    void engine.automation?.runTick().catch((error: unknown) => {
-      console.error("AI WorkMate automation tick failed", error);
-    });
+    if (automationTickInFlight) {
+      // A previous tick is still running (e.g. slow storage or AI
+      // processing); skip this firing instead of running two ticks at once.
+      return;
+    }
+    automationTickInFlight = true;
+    void engine.automation
+      ?.runTick()
+      .catch((error: unknown) => {
+        console.error("AI WorkMate automation tick failed", error);
+      })
+      .finally(() => {
+        automationTickInFlight = false;
+      });
   };
   tick();
   automationTick = setInterval(tick, 60_000);
