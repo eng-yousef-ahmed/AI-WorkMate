@@ -1,6 +1,6 @@
 # AI WorkMate
 
-AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 calendar discovery, Phase 5–6C native Windows capture, Phase 7A local transcription pipeline, Phase 7B real local whisper.cpp speech-to-text (when installed), and Phase 8 unified meeting capture orchestration: one real meeting capture lifecycle (start/run/stop/abort/recover/commit) coordinating MICROPHONE, SYSTEM_LOOPBACK, SCREEN, and WINDOW as independent sources under a single meeting at the storage/main-process level. Existing meeting data is owned by the desktop process:
+AI WorkMate is being built as a **local-first Windows desktop meeting workspace**. This checkout contains the hardened storage foundation, Phase 4 Microsoft 365 and Google calendar discovery, Phase 5–6C native Windows capture, Phase 7A local transcription pipeline, Phase 7B real local whisper.cpp speech-to-text (when installed), and Phase 8 unified meeting capture orchestration: one real meeting capture lifecycle (start/run/stop/abort/recover/commit) coordinating MICROPHONE, SYSTEM_LOOPBACK, SCREEN, and WINDOW as independent sources under a single meeting at the storage/main-process level. Existing meeting data is owned by the desktop process:
 
 ```text
 Windows desktop
@@ -235,6 +235,63 @@ npm run verify:windows-local-analysis
 - **Qwen2.5-7B-Instruct Q4_K_M** (official split GGUF, two shards) is the **intended production** local analysis model. Default `AI_WORKMATE_LOCAL_LLM_MODEL_ID` is `qwen2.5-7b-instruct-q4_k_m`.
 - `windowsVerified` / `realAiVerified` mean the CLI produced schema-valid JSON that was journaled. **REAL-AI-QUALITY-VERIFIED** is true only after a real Windows run with the **7B** model yields an informative summary and multiple real decisions/tasks from the fixture. Linux fail-closes. This sandbox is **not REAL-AI-QUALITY-VERIFIED**.
 
+## Bundled installer: shipping the local AI runtime with the app
+
+Historically, using local transcription/analysis meant six manual steps from
+this README (copy an exe, run `install:whisper-model`, copy another exe, run
+`install:local-llm-model`, set an env var, run a verifier). That is real
+friction compared to a cloud tool that "just works" on first launch — and
+manual steps are exactly where a real end user gets something wrong.
+
+The Windows installer now bundles a small, working-out-of-the-box local AI
+runtime by default, using the **same verified, allowlisted download path**
+end users already had — nothing about the security model changes, only when
+the download happens:
+
+- `npm run prepare:bundled-ai-models` runs on the Windows build machine as
+  part of `npm run package:win`. It calls the exact same
+  `installWhisperModel()` / `installLocalLlmModel()` functions described
+  above (fixed HTTPS allowlist, hardcoded SHA-256, atomic write) to fetch the
+  Whisper `ggml-tiny.bin` model (~78 MB) and the Qwen2.5-0.5B-Instruct
+  smoke-test model (~491 MB), independently re-verifies the SHA-256 of the
+  copy, and stages the verified files into `native/windows-transcription/models/`
+  and `native/windows-llm/models/`.
+- `npm run check:bundled-ai-binaries` runs immediately after, also as part of
+  `npm run package:win`, and **fails the build** with the exact official
+  release URL and expected file layout if `whisper-cli.exe`/`llama-cli.exe`
+  and their required DLLs are not already sitting in those same two
+  directories. Those CLIs are official third-party release binaries
+  (whisper.cpp / llama.cpp) this repo does not build from source, so a
+  maintainer places them there once (extract the official release ZIP
+  directly into the directory); every `package:win` after that picks them up
+  automatically. This is a deliberate fail-closed gate, consistent with the
+  rest of the project: it is better for packaging to stop loudly than to
+  ship an installer with models but no engine to run them.
+- Both staged directories are declared as `extraResources` in this
+  package.json's `build` config, so `electron-builder` copies them into the
+  installed app under `resources/native/windows-transcription/` and
+  `resources/native/windows-llm/`. `WindowsLocalWhisperEngine` and
+  `LocalLlmProvider` already look under `process.resourcesPath` first (before
+  `%LOCALAPPDATA%`), so a fresh install finds the bundled binary and model
+  with **no manual step, no terminal command, and no network request** on
+  the end user's machine.
+
+**What this does and does not solve.** Transcription and a first pass at
+meeting analysis work immediately after install. The bundled Qwen2.5-0.5B
+model is the documented **smoke-test** tier — it proves the local AI runtime
+runs, not production-quality analysis. The **production** 7B model
+(`qwen2.5-7b-instruct-q4_k_m`, ~4.7 GB total) is deliberately kept out of the
+default installer: bundling several extra gigabytes into every download is
+its own UX cost, so upgrading remains one explicit command,
+`npm run install:local-llm-model -- qwen2.5-7b-instruct-q4_k_m`, or an
+equivalent one-click action from **Settings → Privacy** once that UI action
+is wired up. This has not been validated end-to-end on a real Windows build
+machine in this environment (this sandbox is Linux, and the model-download
+step depends on Hugging Face network access this sandbox does not have); the
+staging/copy/re-verify code itself was exercised here, but the full
+`package:win` pipeline is **WINDOWS-UNVERIFIED** until run on Windows with
+real internet access.
+
 ## Location migration
 
 Changing the location is an explicit migration:
@@ -261,6 +318,18 @@ Discovered meetings are associated through `calendar_event_associations` in the 
 The Microsoft credential boundary uses the existing Electron `safeStorage`-backed credential store for an opaque MSAL-style token cache outside `DATA_ROOT`. Access tokens, refresh tokens, client secrets, and raw credential objects are not stored in SQLite and are not exposed to the renderer. The renderer-facing sync IPC returns only safe counts and sanitized error codes.
 
 **Environment note:** live Microsoft OAuth/MSAL sign-in, tenant consent, Windows DPAPI execution, and live Microsoft Graph connectivity were not executed in this Linux/headless sandbox. They remain documented as **NOT TESTED** or **WINDOWS-UNVERIFIED** rather than claimed as verified.
+
+## Google Calendar discovery
+
+AI WorkMate also ships a second, independent calendar provider boundary for Google Calendar, built the same way as the Microsoft 365 layer above: `GoogleCalendarProvider` returns normalized events only (subject, start/end, organizer, attendees, location, online-meeting link, cancellation state) and never touches the network itself. `GoogleApiClient` handles auth, retries, and rate limiting behind that boundary; `GoogleCalendarConnection` implements the OAuth flow. Tests inject fake transports and never call the real Google Calendar API.
+
+- **Scope:** only the **primary calendar of the signed-in Google account** is synchronized. Event times are requested in UTC so local persistence stays deterministic regardless of the calendar's own time zone.
+- **Auth flow:** Authorization Code + PKCE with a loopback (`http://localhost`/`127.0.0.1`) redirect — the same desktop-app OAuth pattern as Microsoft 365, not a client-secret flow. Sign-in and the manual "paste the callback URL" fallback are surfaced in **Settings → Integrations**, next to the Microsoft 365 card.
+- **Requested scopes:** `openid`, `email`, and `profile` (to show the signed-in account) plus the read-only `https://www.googleapis.com/auth/calendar.readonly` scope. AI WorkMate never requests write access to a Google Calendar.
+- **Credential boundary:** tokens are held by `GoogleTokenSessionStore`, backed by the same Electron `safeStorage`/Windows DPAPI vault used for Microsoft 365 — never written into `DATA_ROOT`, never included in backups, and never exposed to the renderer.
+- **Local association:** discovered events are associated to local meetings the same way as Microsoft events, keyed by `(provider, external_event_id)` in `calendar_event_associations`, so the same idempotent, non-destructive sync guarantees apply (existing recordings/transcripts/analysis and progressed lifecycle states are preserved; new events only ever create meetings as `SCHEDULED`).
+
+**Environment note:** as with Microsoft 365, live Google OAuth sign-in, consent, and live Google Calendar API connectivity were not executed in this Linux/headless sandbox and remain **NOT TESTED**/**WINDOWS-UNVERIFIED** rather than claimed as verified.
 
 ## Storage services
 

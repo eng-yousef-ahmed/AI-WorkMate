@@ -22,7 +22,7 @@ interface PackageJson {
   };
 }
 
-test("NSIS packaging contract matches package.json and never ships models", async () => {
+test("NSIS packaging contract matches package.json and ships only the declared default AI models", async () => {
   const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as PackageJson;
   assert.equal(typeof pkg.author, "string");
   assert.ok((pkg.author ?? "").length > 0);
@@ -45,10 +45,24 @@ test("NSIS packaging contract matches package.json and never ships models", asyn
     destinations.some((to) => to.includes("windows-screen")),
     WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeScreenHelper,
   );
-  assert.equal(destinations.some((to) => /whisper/i.test(to)), WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeWhisperRuntime);
+  // WindowsLocalWhisperEngine/LocalLlmProvider resolve bundled binaries and
+  // models under process.resourcesPath + "native/windows-transcription" and
+  // "native/windows-llm" (see src/transcription/WindowsLocalWhisperEngine.ts
+  // and src/ai/LocalLlmProvider.ts) — check against those real folder names,
+  // not a guessed-at "whisper"/"models" naming that predates this feature.
+  assert.equal(
+    destinations.some((to) => to.includes("windows-transcription")),
+    WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeWhisperRuntime,
+  );
   assert.equal(destinations.some((to) => /llm|llama|qwen/i.test(to)), WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeLlmRuntime);
-  const sources = extras.map((entry) => `${entry.from ?? ""} ${entry.to ?? ""}`).join("\n").toLowerCase();
-  assert.equal(sources.includes("models"), WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeWhisperModels);
+  assert.equal(
+    destinations.some((to) => to.includes("windows-transcription/models")),
+    WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeWhisperModels,
+  );
+  assert.equal(
+    destinations.some((to) => to.includes("windows-llm/models")),
+    WINDOWS_RELEASE_CONTRACT.extraResourcesIncludeLlmModels,
+  );
   assert.equal(WINDOWS_RELEASE_CONTRACT.firstRunRequiresUserDataRootSelection, true);
   assert.equal(WINDOWS_RELEASE_CONTRACT.credentialStoreUsesOsSafeStorage, true);
   assert.equal(WINDOWS_RELEASE_CONTRACT.uninstallPreservesUserData, true);
