@@ -1,871 +1,804 @@
-import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "node:test";
+import { randomUUID } from "node:crypto";
 
+import type { MeetingStatus } from "../domain/models";
+import type { LocalFirstStore } from "../storage/LocalFirstStore";
+import { DataRootValidationError, StorageError } from "../storage/errors";
+import type { CaptureStateSnapshot } from "./CaptureEngine";
+import type { LocalRecordingCaptureEngine } from "./LocalRecordingCaptureEngine";
+import type {
+  NativeCaptureCapabilities,
+  NativeCaptureErrorCode,
+  NativeCaptureErrorInfo,
+  NativeCaptureKind,
+  NativeCaptureStateSnapshot,
+} from "./NativeCaptureAdapter";
+import type { NativeCaptureCoordinator } from "./NativeCaptureCoordinator";
 import {
-  LocalFirstStore,
-  LocalRecordingCaptureEngine,
-  MeetingCaptureOrchestrator,
-  MEETING_CAPTURE_KIND_TO_NATIVE,
-  NativeCaptureCoordinator,
-  NativeCaptureError,
-  NATIVE_CAPTURE_KINDS,
-  type MeetingCaptureConfig,
-  type MeetingCaptureFlowSnapshot,
-  type MeetingCaptureSourceKind,
-  type NativeCaptureAdapter,
-  type NativeCaptureCapabilities,
-  type NativeCaptureCapability,
-  type NativeCaptureKind,
-  type NativeCapturePolicy,
-  type NativeCaptureSession,
-  type NativeCaptureStartRequest,
-} from "../src";
-import { withTempStore } from "./helpers";
+  WINDOWS_AUDIO_CAPTURE_FORMAT,
+  WINDOWS_AUDIO_CAPTURE_MIME_TYPE,
+} from "./WindowsNativeAudioProvider";
+import {
+  WINDOWS_SCREEN_CAPTURE_FORMAT,
+  WINDOWS_SCREEN_CAPTURE_MIME_TYPE,
+} from "./WindowsNativeScreenProvider";
+import { defaultSourceId } from "./WindowsRuntimeScreenCaptureVerification";
+import { selectDeterministicWindowSource } from "./WindowsRuntimeWindowCaptureVerification";
 
-const ALLOWED_POLICY: Partial<NativeCapturePolicy> = {
-  MICROPHONE_AUDIO: "ALLOW",
-  SYSTEM_AUDIO: "ALLOW",
-  SCREEN: "ALLOW",
-  WINDOW: "ALLOW",
+/**
+ * Unified meeting capture orchestrator (Phase 8).
+ *
+ * Coordinates several independent capture sources under ONE meeting lifecycle:
+ *   STARTING (storage PREPARING) -> RECORDING -> STOPPING (storage FINALIZING)
+ *   -> COMPLETED, with INCOMPLETE/FAILED recovery outcomes.
+ *
+ * Source model: MICROPHONE / SYSTEM_LOOPBACK / SCREEN / WINDOW. Each source is
+ * started through the existing native-capture boundary (NativeCaptureAdapter ->
+ * NativeCaptureCoordinator -> LocalRecordingCaptureEngine) with its own
+ * captureId, artifact-operation journal entry, SQLite artifact/recording rows,
+ * sequence counter, SHA-256 and staged-file lifecycle. Sources run concurrently
+ * and remain independent; the meeting status transitions exactly once per flow.
+ *
+ * The orchestrator never exposes absolute DATA_ROOT paths in snapshots and never
+ * stores recording bytes in SQLite (artifacts live on the LocalStorageService
+ * filesystem, indexed by relative path only).
+ */
+export type MeetingCaptureSourceKind = "MICROPHONE" | "SYSTEM_LOOPBACK" | "SCREEN" | "WINDOW";
+
+export const MEETING_CAPTURE_SOURCE_KINDS: readonly MeetingCaptureSourceKind[] = Object.freeze([
+  "MICROPHONE",
+  "SYSTEM_LOOPBACK",
+  "SCREEN",
+  "WINDOW",
+]);
+
+export const MEETING_CAPTURE_KIND_TO_NATIVE: Readonly<Record<MeetingCaptureSourceKind, NativeCaptureKind>> = {
+  MICROPHONE: "MICROPHONE_AUDIO",
+  SYSTEM_LOOPBACK: "SYSTEM_AUDIO",
+  SCREEN: "SCREEN",
+  WINDOW: "WINDOW",
 };
 
-const ALL_SOURCES: MeetingCaptureConfig = { microphone: true, systemLoopback: true, screen: true };
+export const MEETING_CAPTURE_KIND_LABELS: Readonly<Record<MeetingCaptureSourceKind, string>> = {
+  MICROPHONE: "Microphone",
+  SYSTEM_LOOPBACK: "System loopback",
+  SCREEN: "Screen",
+  WINDOW: "Window",
+};
 
-interface ScriptedSessionOptions {
-  /** Capability this session belongs to (used by the script to identify sessions). */
-  capability: NativeCaptureKind;
-  chunkIntervalMs: number;
-  /** Number of chunks to emit before the stream ends naturally (undefined = stream until stopped). */
-  emit?: number;
-  /** Emit this many chunks, then throw a native stream failure. */
-  failAfter?: number;
-  failWith?: NativeCaptureError;
-  /** stop() throws this error when set. */
-  stopError?: NativeCaptureError;
-  /** abort() throws this error when set. */
-  abortError?: NativeCaptureError;
-  tag?: string;
+/**
+ * Typed capture configuration. `window` requests the WINDOW source and is a
+ * native WINDOW sourceId; the empty string "" requests WINDOW with the
+ * deterministic default selection (the same validated path the Windows window
+ * verification uses). The orchestrator never accepts renderer-controlled
+ * filesystem paths.
+ */
+export interface MeetingCaptureConfig {
+  microphone: boolean;
+  systemLoopback: boolean;
+  screen: boolean;
+  window?: string;
 }
 
-const SCRIPT_DEFAULTS = { chunkIntervalMs: 8, tag: "test" };
+export interface MeetingCaptureStartOptions {
+  /** Start a flow for an existing meeting. */
+  meetingId?: string;
+  /** Title used when the flow creates a new meeting. */
+  title?: string;
+}
 
-class ScriptedNativeSession implements NativeCaptureSession {
-  public readonly nativeSessionId: string;
-  public readonly capability: NativeCaptureKind;
-  public readonly format: string;
-  public readonly mimeType: string;
-  public readonly startedAt: string;
-  public readonly chunks: AsyncIterable<Uint8Array>;
-  public stopCalls = 0;
-  public abortCalls = 0;
-  private stopped = false;
-  private aborted = false;
-  private readonly emitted: string[] = [];
-  private readonly options: ScriptedSessionOptions;
+export type MeetingCapturePhase =
+  | "STARTING"
+  | "RECORDING"
+  | "STOPPING"
+  | "COMPLETED"
+  | "INCOMPLETE"
+  | "FAILED"
+  | "CANCELLED";
 
-  public constructor(source: NativeCaptureStartRequest, options: ScriptedSessionOptions) {
-    this.options = { ...SCRIPT_DEFAULTS, ...options };
-    this.capability = source.capability;
-    this.nativeSessionId = `${source.capability.toLowerCase()}-session-${Math.floor(Math.random() * 1_000_000)}`;
-    this.format = source.format;
-    this.mimeType = source.mimeType;
-    this.startedAt = new Date().toISOString();
-    this.chunks = this.generate();
+export type MeetingCaptureSourceState =
+  | "STARTING"
+  | "RECORDING"
+  | "STOPPING"
+  | "COMMITTED"
+  | "INCOMPLETE"
+  | "FAILED"
+  | "NOT_STARTED";
+
+export type MeetingCaptureJournalState =
+  | "STARTED"
+  | "WRITING"
+  | "FINALIZING"
+  | "COMMITTED"
+  | "INCOMPLETE"
+  | "FAILED";
+
+export interface MeetingCaptureSourceSnapshot {
+  kind: MeetingCaptureSourceKind;
+  capability: NativeCaptureKind;
+  captureId?: string;
+  sourceId?: string;
+  /** Renderer-safe display label (never a filesystem path). */
+  sourceLabel: string;
+  state: MeetingCaptureSourceState;
+  journalState: MeetingCaptureJournalState | "NOT_STARTED";
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  chunksWritten: number;
+  bytesWritten: number;
+  /** First and last contiguous sequence numbers written (chunk index base 0). */
+  firstSequence?: number;
+  lastSequence?: number;
+  sha256?: string;
+  /** True only after the per-source artifact and recording rows are committed. */
+  artifactCommitted: boolean;
+  error?: NativeCaptureErrorInfo;
+}
+
+export interface MeetingCaptureFlowSnapshot {
+  flowId: string;
+  meetingId: string;
+  meetingStatus: MeetingStatus;
+  phase: MeetingCapturePhase;
+  requestedCapabilities: MeetingCaptureSourceKind[];
+  startedCapabilities: MeetingCaptureSourceKind[];
+  /** Sources that are still running (RECORDING or STOPPING). */
+  activeSources: MeetingCaptureSourceKind[];
+  sources: MeetingCaptureSourceSnapshot[];
+  startedAt: string;
+  endedAt?: string;
+  durationMs?: number;
+  failure?: { failed: boolean; reason: string; source?: MeetingCaptureSourceKind };
+}
+
+export interface MeetingCaptureRunOptions {
+  durationMs?: number;
+  pollIntervalMs?: number;
+}
+
+export interface MeetingCaptureOrchestratorDependencies {
+  store: LocalFirstStore;
+  coordinator: NativeCaptureCoordinator;
+  engine: LocalRecordingCaptureEngine;
+  clock?: () => Date;
+}
+
+const DEFAULT_RUN_DURATION_MS = 3_000;
+const DEFAULT_POLL_INTERVAL_MS = 250;
+
+interface ActiveFlowSource {
+  kind: MeetingCaptureSourceKind;
+  capability: NativeCaptureKind;
+  captureId: string;
+  sourceId?: string;
+  descriptorLabel?: string;
+  /** Last native coordinator snapshot (may be stale; engine state is authoritative). */
+  nativeSnapshot?: NativeCaptureStateSnapshot;
+}
+
+interface ActiveFlow {
+  flowId: string;
+  meetingId: string;
+  requestedCapabilities: MeetingCaptureSourceKind[];
+  startedCapabilities: MeetingCaptureSourceKind[];
+  startedAt: string;
+  sources: ActiveFlowSource[];
+  startFinished: boolean;
+}
+
+/**
+ * Storage/main-process capture lifecycle for one meeting with multiple
+ * independent capture sources. Production path only: native sessions come from
+ * a real NativeCaptureAdapter (test doubles are confined to tests behind the
+ * NativeCaptureAdapter interface).
+ */
+export class MeetingCaptureOrchestrator {
+  private readonly store: LocalFirstStore;
+  private readonly coordinator: NativeCaptureCoordinator;
+  private readonly engine: LocalRecordingCaptureEngine;
+  private readonly clock: () => Date;
+  private readonly activeByMeetingId = new Map<string, ActiveFlow>();
+  private readonly activeByFlowId = new Map<string, ActiveFlow>();
+
+  public constructor(dependencies: MeetingCaptureOrchestratorDependencies) {
+    this.store = dependencies.store;
+    this.coordinator = dependencies.coordinator;
+    this.engine = dependencies.engine;
+    this.clock = dependencies.clock ?? (() => new Date());
   }
 
-  private async *generate(): AsyncIterable<Uint8Array> {
-    let produced = 0;
-    const base = `{"source":"${this.options.capability}","tag":"${this.options.tag}","sequence":`;
-    while (true) {
-      if (this.stopped || this.aborted) {
-        return;
-      }
-      if (this.options.failAfter !== undefined && produced >= this.options.failAfter) {
-        throw this.options.failWith ?? new NativeCaptureError({
-          code: "NATIVE_CAPTURE_STREAM_FAILED",
-          message: `Scripted stream failure after ${produced} chunks.`,
-          capability: this.options.capability,
-          retryable: true,
+  public getActiveMeetingIds(): string[] {
+    return [...this.activeByMeetingId.keys()];
+  }
+
+  /**
+   * Sanitized live snapshots of every active capture flow. Used by the meeting
+   * hub to render recording controls from the real orchestrator state; flows
+   * started in this process are the only ones reported (crash recovery of
+   * interrupted flows is handled by persisted meeting status recovery).
+   */
+  public getActiveFlowSnapshots(): MeetingCaptureFlowSnapshot[] {
+    return [...this.activeByMeetingId.values()].map((flow) => this.snapshot(flow));
+  }
+
+  /** Native capture capability discovery (delegates to the coordinator). */
+  public discoverCapabilities(): Promise<NativeCaptureCapabilities> {
+    return this.coordinator.discoverCapabilities();
+  }
+
+  /**
+   * Transactional flow start: create/reuse the meeting in STARTING (PREPARING),
+   * validate requested capabilities, resolve SCREEN/WINDOW/audio sources through
+   * the existing deterministic selection paths, then start each requested source
+   * through the native capture boundary. Every per-source capture is recorded
+   * only after its native session actually started. If any required source
+   * cannot start, already-started sources are aborted, no committed recording
+   * is left behind, and the meeting is marked FAILED (recoverable via the
+   * existing FAILED -> PREPARING retry path).
+   */
+  public async start(config: MeetingCaptureConfig, options: MeetingCaptureStartOptions = {}): Promise<MeetingCaptureFlowSnapshot> {
+    const requested = requestedKinds(config);
+    validateWindowSourceId(config.window);
+    if (requested.length === 0) {
+      throw new DataRootValidationError("A meeting capture flow requires at least one capture source.");
+    }
+    const meetingId = options.meetingId ?? randomUUID();
+    // Reserve the active-flow slot synchronously, before any `await`. This
+    // closes a race where two concurrent start() calls for the same brand-new
+    // meetingId could both pass a "does an active flow already exist" check
+    // taken *before* the meeting row is created (the only guard that existed
+    // previously ran only when the meeting already existed, so it never
+    // protected a not-yet-created meeting from a concurrent duplicate call).
+    if (this.activeByMeetingId.has(meetingId)) {
+      throw new StorageError(`A capture flow is already active for meeting ${meetingId}.`);
+    }
+    const flowId = randomUUID();
+    const startedAt = this.clock().toISOString();
+    const flow: ActiveFlow = {
+      flowId,
+      meetingId,
+      requestedCapabilities: requested,
+      startedCapabilities: [],
+      startedAt,
+      sources: [],
+      startFinished: false,
+    };
+    this.activeByMeetingId.set(meetingId, flow);
+    this.activeByFlowId.set(flowId, flow);
+
+    try {
+      const existing = this.store.getMeeting(meetingId);
+      if (existing === undefined) {
+        await this.store.createMeeting({
+          meetingId,
+          title: options.title?.trim() || "Meeting capture",
+          // meetingDate is a LOCAL day everywhere the hub buckets by day; the
+          // UTC startedAt alone would park late-evening local recordings on
+          // "tomorrow" and hide them from Today.
+          meetingDate: localDateKey(this.clock()),
+          startedAt: this.clock().toISOString(),
         });
       }
-      if (this.options.emit !== undefined && produced >= this.options.emit) {
-        return;
+      this.store.startCaptureFlow({
+        meetingId,
+        flowId,
+        requestedCapabilities: requested,
+      });
+    } catch (error: unknown) {
+      // Setup failed before any native capture source was touched: release
+      // the reservation instead of leaking a permanently "active" slot.
+      this.removeFlow(flow);
+      throw error;
+    }
+
+    // Validate every requested capability and resolve sources BEFORE any native
+    // session starts so a missing provider cannot silently drop a requested
+    // source after other sources are already running.
+    let capabilities: NativeCaptureCapabilities;
+    try {
+      capabilities = await this.coordinator.discoverCapabilities();
+    } catch (error: unknown) {
+      return this.finishStartFailure(flow, "Native capture capability discovery failed.", errorMessage(error));
+    }
+
+    const preflight: Array<{ kind: MeetingCaptureSourceKind; capability: NativeCaptureKind; sourceId?: string; descriptorLabel?: string }> = [];
+    for (const kind of requested) {
+      const capabilityKind = MEETING_CAPTURE_KIND_TO_NATIVE[kind];
+      const capability = capabilities.capabilities[capabilityKind];
+      if (!capabilities.supported || capability === undefined || !capability.available) {
+        const message = capability?.error?.message ?? `Native capture capability ${capabilityKind} is unavailable.`;
+        return this.finishStartFailure(flow, `Required source ${kind} cannot start: ${message}`, message);
       }
-      await new Promise((resolve) => setTimeout(resolve, this.options.chunkIntervalMs));
-      if (this.stopped || this.aborted) {
-        return;
+      const explicitSourceId = kind === "WINDOW" && (config.window?.length ?? 0) > 0 ? config.window : undefined;
+      let sourceId: string | undefined;
+      if (explicitSourceId !== undefined) {
+        sourceId = explicitSourceId;
+        if (capability.sources !== undefined && !capability.sources.some((source) => source.sourceId === explicitSourceId)) {
+          return this.finishStartFailure(
+            flow,
+            `Required source ${kind} cannot start: sourceId ${explicitSourceId} is not listed by the native provider.`,
+            `WINDOW source ${explicitSourceId} is not listed by the native provider.`,
+          );
+        }
+      } else if (kind === "WINDOW") {
+        sourceId = selectDeterministicWindowSource(capability.sources)?.sourceId;
+        if (sourceId === undefined) {
+          return this.finishStartFailure(
+            flow,
+            `Required source ${kind} cannot start: no capturable window is available.`,
+            "No capturable window is available for deterministic WINDOW selection.",
+          );
+        }
+      } else {
+        sourceId = defaultSourceId(capability);
       }
-      const line = `${base}${produced},"payload":"${"x".repeat(24)}"}\n`;
-      const chunk = Buffer.from(line, "utf8");
-      this.emitted.push(chunk.toString("utf8"));
-      produced += 1;
-      yield chunk;
+      const descriptor = capability.sources?.find((source) => source.sourceId === sourceId);
+      preflight.push({
+        kind,
+        capability: capabilityKind,
+        ...(sourceId === undefined ? {} : { sourceId }),
+        ...(descriptor?.label === undefined ? {} : { descriptorLabel: descriptor.label }),
+      });
+    }
+
+    // Start each source through the existing capture boundary, in the fixed
+    // canonical order (deterministic). Sessions run concurrently once started.
+    for (const item of preflight) {
+      if (!this.activeByFlowId.has(flow.flowId)) {
+        // A concurrent abort() already terminated the flow.
+        return this.snapshot(flow);
+      }
+      try {
+        const started = await this.coordinator.startCapture({
+          meetingId,
+          capability: item.capability,
+          ...(item.sourceId === undefined ? {} : { sourceId: item.sourceId }),
+          format: formatFor(item.kind),
+          mimeType: mimeTypeFor(item.kind),
+          flowId,
+        });
+        flow.sources.push({
+          kind: item.kind,
+          capability: item.capability,
+          captureId: started.captureId,
+          ...(item.sourceId === undefined ? {} : { sourceId: item.sourceId }),
+          ...(item.descriptorLabel === undefined ? {} : { descriptorLabel: item.descriptorLabel }),
+          nativeSnapshot: started,
+        });
+        flow.startedCapabilities.push(item.kind);
+      } catch (error: unknown) {
+        const reason = errorMessage(error);
+        await this.abortSources(flow, `Rolling back started sources after ${item.kind} failed to start.`);
+        return this.finishStartFailure(flow, `Required source ${item.kind} could not start: ${reason}`, reason, item.kind);
+      }
+    }
+
+    if (!this.activeByFlowId.has(flow.flowId)) {
+      // A concurrent abort() terminated the flow between source starts.
+      return this.snapshot(flow);
+    }
+    try {
+      this.store.markCaptureFlowRecording(meetingId);
+    } catch (error: unknown) {
+      await this.abortSources(flow, "Rolling back started sources; the flow could not enter RECORDING.");
+      return this.finishStartFailure(flow, errorMessage(error), errorMessage(error));
+    }
+    flow.startFinished = true;
+    return this.snapshot(flow);
+  }
+
+  /**
+   * STOPPING: stops every active source, finalizes every artifact, verifies
+   * files/journals/SQLite through the existing commit path, and only then marks
+   * the meeting COMPLETED. Any required-source finalization failure prevents
+   * COMPLETED and leaves the meeting INCOMPLETE/FAILED through the existing
+   * recovery semantics.
+   */
+  public async stop(meetingId: string, options: { endedAt?: string } = {}): Promise<MeetingCaptureFlowSnapshot> {
+    const flow = this.requireActiveFlow(meetingId);
+    if (!flow.startFinished) {
+      throw new StorageError(`Capture flow for meeting ${meetingId} is still starting; stop() is not valid while STARTING.`);
+    }
+    const meeting = this.store.getMeeting(meetingId);
+    if (meeting === undefined) {
+      throw new StorageError(`Meeting not found: ${meetingId}`);
+    }
+    if (meeting.status === "PREPARING") {
+      // Every source started but the RECORDING mark raced a terminal outcome;
+      // an orderly stop of the sources that did start is still deterministic.
+      this.store.markCaptureFlowRecording(meetingId);
+    }
+    if (meeting.status === "INCOMPLETE" || meeting.status === "FAILED") {
+      // A concurrent failure already made the meeting terminal. Stop whatever
+      // is still running and report the existing outcome.
+      await this.abortSources(flow, "The capture flow was already INCOMPLETE/FAILED; stopping remaining sources.");
+      this.removeFlow(flow);
+      return this.snapshot(flow, {
+        failure: { failed: meeting.status === "FAILED", reason: "The capture flow ended INCOMPLETE/FAILED before the stop completed." },
+      });
+    }
+    this.store.markCaptureFlowStopping(meetingId);
+
+    const endedAt = options.endedAt ?? this.clock().toISOString();
+    const activeSources = [...flow.sources];
+    // Sources stop independently and concurrently; one failing stop cannot
+    // deadlock the others.
+    const settled = await Promise.allSettled(activeSources.map((source) =>
+      this.coordinator.stopCapture({
+        captureId: source.captureId,
+        meetingId,
+        ...(endedAt === undefined ? {} : { endedAt }),
+      }),
+    ));
+    settled.forEach((outcome, index) => {
+      const source = activeSources[index];
+      if (source !== undefined && outcome.status === "fulfilled") {
+        source.nativeSnapshot = outcome.value;
+      }
+    });
+
+    // Deterministic terminal evaluation in canonical source order: a FAILED
+    // source marks the meeting FAILED; an INCOMPLETE source marks it
+    // INCOMPLETE; COMPLETED is only reachable when every required source
+    // committed.
+    let worst: { failed: boolean; reason: string; source?: MeetingCaptureSourceKind } | undefined;
+    for (const source of flow.sources) {
+      const outcome = settled[flow.sources.indexOf(source)];
+      if (outcome?.status === "fulfilled" && outcome.value.state === "COMPLETED") {
+        continue;
+      }
+      const live = this.liveEngineState(source);
+      if (live !== undefined && live.state === "COMPLETED") {
+        continue;
+      }
+      const failed = live?.state === "FAILED";
+      const reason =
+        live?.error?.message ??
+        (outcome?.status === "rejected"
+          ? outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)
+          : `Source ${source.kind} did not reach COMMITTED (${live?.state ?? "no state"})`);
+      if (worst === undefined || (failed && !worst.failed)) {
+        worst = { failed, reason, source: source.kind };
+      }
+    }
+
+    if (worst === undefined) {
+      this.store.completeCaptureFlow(meetingId, endedAt);
+    } else {
+      this.store.failCaptureFlow(meetingId, worst.reason, worst.failed);
+    }
+    this.removeFlow(flow);
+    return this.snapshot(flow, worst === undefined ? {} : { failure: worst });
+  }
+
+  /**
+   * Abort: stops all active captures, never claims COMPLETED, keeps the meeting
+   * and artifact-operation journals recoverable, and preserves failure
+   * evidence. A meeting that already ended FAILED or CANCELLED is never
+   * downgraded to INCOMPLETE; otherwise the meeting is marked INCOMPLETE.
+   */
+  public async abort(meetingId: string, reason = "Capture flow aborted by the caller."): Promise<MeetingCaptureFlowSnapshot> {
+    const flow = this.requireActiveFlow(meetingId);
+    const meeting = this.store.getMeeting(meetingId);
+    if (meeting === undefined) {
+      throw new StorageError(`Meeting not found: ${meetingId}`);
+    }
+    const terminalStatus = meeting.status;
+    if (terminalStatus === "FAILED" || terminalStatus === "CANCELLED") {
+      // Keep the stronger outcome; journal the abort as evidence.
+      this.store.journalCaptureFlowOutcome(meetingId, "CAPTURE_FLOW_ABORTED", reason);
+    } else {
+      this.store.failCaptureFlow(meetingId, reason, false);
+    }
+    await this.abortSources(flow, reason);
+    this.removeFlow(flow);
+    return this.snapshot(flow, { failure: { failed: terminalStatus === "FAILED", reason } });
+  }
+
+  /** Abort every active flow (runtime shutdown path). */
+  public async abortAllActive(reason: string): Promise<void> {
+    const flows = [...this.activeByMeetingId.values()];
+    for (const flow of flows) {
+      await this.abort(flow.meetingId, reason).catch(() => undefined);
     }
   }
 
-  public async stop(): Promise<void> {
-    this.stopCalls += 1;
-    if (this.options.stopError !== undefined) {
-      throw this.options.stopError;
+  /**
+   * Convenience lifecycle used by verification and tests: start the flow, keep
+   * sources running for durationMs, then stop. If any required source fails
+   * while the others run, the remaining sources are aborted deterministically
+   * and the meeting ends INCOMPLETE (existing failure semantics) with the
+   * failure evidence preserved.
+   */
+  public async run(config: MeetingCaptureConfig, options: MeetingCaptureStartOptions & MeetingCaptureRunOptions = {}): Promise<MeetingCaptureFlowSnapshot> {
+    const durationMs = options.durationMs ?? DEFAULT_RUN_DURATION_MS;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const started = await this.start(config, options);
+    if (started.meetingStatus === "FAILED" || started.meetingStatus === "INCOMPLETE" || started.meetingStatus === "CANCELLED") {
+      return started;
     }
-    this.stopped = true;
-  }
-
-  public async abort(_reason: string): Promise<void> {
-    this.abortCalls += 1;
-    if (this.options.abortError !== undefined) {
-      throw this.options.abortError;
+    const deadline = Date.now() + durationMs;
+    while (Date.now() < deadline) {
+      await wait(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+      const flow = this.activeByFlowId.get(started.flowId);
+      if (flow === undefined) {
+        // A concurrent abort() ended the flow; the abort caller owns the result.
+        return this.snapshotForRemovedFlow(started.meetingId);
+      }
+      for (const source of [...flow.sources]) {
+        const live = this.liveEngineState(source);
+        if (live !== undefined && (live.state === "INCOMPLETE" || live.state === "FAILED")) {
+          const reason = live.error?.message ?? `Source ${source.kind} failed while the flow was running.`;
+          await this.abortSources(flow, `A required source failed while running; stopping the remaining sources. (${reason})`);
+          if (this.activeByFlowId.has(flow.flowId)) {
+            this.store.failCaptureFlow(flow.meetingId, reason, live.state === "FAILED");
+            this.removeFlow(flow);
+          }
+          return this.snapshot(flow, { failure: { failed: live.state === "FAILED", reason, source: source.kind } });
+        }
+      }
     }
-    this.aborted = true;
-    this.stopped = true;
+    return this.stop(started.meetingId);
   }
 
-  public emittedChunkCount(): number {
-    return this.emitted.length;
-  }
-}
-
-interface ScriptedAdapterOptions {
-  capabilities?: Partial<Record<NativeCaptureKind, NativeCaptureCapability>>;
-  supported?: boolean;
-  platform?: string;
-  /** Per-capability session factory; throws to simulate a start failure. */
-  sessions?: (source: NativeCaptureStartRequest) => ScriptedNativeSession;
-  /** Session creation hook that can throw for specific capabilities. */
-  startFailure?: Partial<Record<NativeCaptureKind, Error>>;
-  startedCapabilities?: NativeCaptureKind[];
-}
-
-function availableCapability(kind: NativeCaptureKind, sources: Array<{ sourceId: string; label?: string; isDefault?: boolean }>): NativeCaptureCapability {
-  return {
-    kind,
-    status: "AVAILABLE",
-    available: true,
-    canListSources: true,
-    requiresPermission: false,
-    sources: sources.map((source) => ({ ...source, kind })),
-  };
-}
-
-function unavailableCapability(kind: NativeCaptureKind, message: string): NativeCaptureCapability {
-  return {
-    kind,
-    status: "UNAVAILABLE",
-    available: false,
-    canListSources: false,
-    requiresPermission: false,
-    error: { code: "NATIVE_CAPABILITY_UNAVAILABLE", message, capability: kind, retryable: true },
-  };
-}
-
-const DEFAULT_CAPABILITIES: Record<NativeCaptureKind, NativeCaptureCapability> = {
-  MICROPHONE_AUDIO: availableCapability("MICROPHONE_AUDIO", [
-    { sourceId: "mic-default-1", label: "Default microphone", isDefault: true },
-    { sourceId: "mic-2", label: "Second microphone" },
-  ]),
-  SYSTEM_AUDIO: availableCapability("SYSTEM_AUDIO", [
-    { sourceId: "loopback-default-1", label: "Default loopback", isDefault: true },
-  ]),
-  SCREEN: availableCapability("SCREEN", [
-    { sourceId: "screen-1", label: "Primary display" },
-    { sourceId: "screen-2", label: "Secondary display", isDefault: true },
-  ]),
-  WINDOW: availableCapability("WINDOW", [
-    { sourceId: "hwnd:1000", label: "Program Manager" },
-    { sourceId: "hwnd:2000", label: "Notepad - notes.txt" },
-    { sourceId: "hwnd:3000", label: "Excel - Budget.xlsx" },
-  ]),
-};
-
-class ScriptedNativeAdapter implements NativeCaptureAdapter {
-  public readonly adapterId = "scripted-native-capture";
-  public readonly sessions: ScriptedNativeSession[] = [];
-  public maxConcurrentSessions = 0;
-  private liveSessions = 0;
-  private readonly options: ScriptedAdapterOptions;
-
-  public constructor(options: ScriptedAdapterOptions = {}) {
-    this.options = options;
+  private async abortSources(flow: ActiveFlow, reason: string): Promise<void> {
+    const sources = [...flow.sources];
+    const settled = await Promise.allSettled(sources.map((source) =>
+      this.coordinator.abortCapture({
+        captureId: source.captureId,
+        meetingId: flow.meetingId,
+        reason,
+      }),
+    ));
+    settled.forEach((outcome, index) => {
+      const source = sources[index];
+      if (source !== undefined && outcome.status === "fulfilled") {
+        source.nativeSnapshot = outcome.value;
+      }
+    });
   }
 
-  public async discoverCapabilities(): Promise<NativeCaptureCapabilities> {
-    if (this.options.supported === false) {
-      return {
-        platform: this.options.platform ?? "linux",
-        adapterId: this.adapterId,
-        checkedAt: new Date().toISOString(),
-        supported: false,
-        capabilities: Object.fromEntries(
-          NATIVE_CAPTURE_KINDS.map((kind) => [
-            kind,
-            unavailableCapability(kind, "Native capture is unsupported on this platform."),
-          ]),
-        ) as Record<NativeCaptureKind, NativeCaptureCapability>,
-      };
+  private finishStartFailure(flow: ActiveFlow, reason: string, detail: string, source?: MeetingCaptureSourceKind): MeetingCaptureFlowSnapshot {
+    this.store.failCaptureFlow(flow.meetingId, detail, true);
+    this.removeFlow(flow);
+    return this.snapshot(flow, { failure: { failed: true, reason, ...(source === undefined ? {} : { source }) } });
+  }
+
+  private removeFlow(flow: ActiveFlow): void {
+    this.activeByMeetingId.delete(flow.meetingId);
+    this.activeByFlowId.delete(flow.flowId);
+  }
+
+  private requireActiveFlow(meetingId: string): ActiveFlow {
+    const flow = this.activeByMeetingId.get(meetingId);
+    if (flow === undefined) {
+      throw new StorageError(`No active capture flow for meeting ${meetingId}.`);
     }
+    return flow;
+  }
+
+  private snapshotForRemovedFlow(meetingId: string): MeetingCaptureFlowSnapshot {
+    const meeting = this.store.getMeeting(meetingId);
+    if (meeting === undefined) {
+      throw new StorageError(`Meeting not found: ${meetingId}`);
+    }
+    const status = meeting.status;
     return {
-      platform: this.options.platform ?? "win32",
-      adapterId: this.adapterId,
-      checkedAt: new Date().toISOString(),
-      supported: true,
-      capabilities: {
-        MICROPHONE_AUDIO: this.options.capabilities?.MICROPHONE_AUDIO ?? DEFAULT_CAPABILITIES.MICROPHONE_AUDIO,
-        SYSTEM_AUDIO: this.options.capabilities?.SYSTEM_AUDIO ?? DEFAULT_CAPABILITIES.SYSTEM_AUDIO,
-        SCREEN: this.options.capabilities?.SCREEN ?? DEFAULT_CAPABILITIES.SCREEN,
-        WINDOW: this.options.capabilities?.WINDOW ?? DEFAULT_CAPABILITIES.WINDOW,
-      },
+      flowId: "",
+      meetingId,
+      meetingStatus: status,
+      phase: phaseForStatus(status),
+      requestedCapabilities: [],
+      startedCapabilities: [],
+      activeSources: [],
+      sources: [],
+      startedAt: meeting.startedAt ?? meeting.createdAt,
+      ...(meeting.endedAt === undefined ? {} : { endedAt: meeting.endedAt }),
     };
   }
 
-  public async startCapture(request: NativeCaptureStartRequest): Promise<NativeCaptureSession> {
-    const failure = this.options.startFailure?.[request.capability];
-    if (failure !== undefined) {
-      throw failure;
+  private snapshot(flow: ActiveFlow, extra: { failure?: MeetingCaptureFlowSnapshot["failure"] } = {}): MeetingCaptureFlowSnapshot {
+    const meeting = this.store.getMeeting(flow.meetingId);
+    const meetingStatus = meeting?.status ?? "FAILED";
+    const phase = phaseForStatus(meetingStatus);
+    const terminal = phase === "COMPLETED" || phase === "INCOMPLETE" || phase === "FAILED" || phase === "CANCELLED";
+    const sources: MeetingCaptureSourceSnapshot[] = flow.sources.map((source) => this.sourceSnapshot(source));
+    for (const kind of flow.requestedCapabilities) {
+      if (!sources.some((source) => source.kind === kind)) {
+        sources.push({
+          kind,
+          capability: MEETING_CAPTURE_KIND_TO_NATIVE[kind],
+          sourceLabel: MEETING_CAPTURE_KIND_LABELS[kind],
+          state: "NOT_STARTED",
+          journalState: "NOT_STARTED",
+          chunksWritten: 0,
+          bytesWritten: 0,
+          artifactCommitted: false,
+        });
+      }
     }
-    const session = this.options.sessions?.(request) ?? new ScriptedNativeSession(request, {
-      capability: request.capability,
-      chunkIntervalMs: 8,
-    });
-    this.sessions.push(session);
-    this.liveSessions += 1;
-    this.maxConcurrentSessions = Math.max(this.maxConcurrentSessions, this.liveSessions);
-    void this.watchSessionEnd(session).catch(() => undefined);
-    this.options.startedCapabilities?.push(request.capability);
-    return session;
+    const snapshot: MeetingCaptureFlowSnapshot = {
+      flowId: flow.flowId,
+      meetingId: flow.meetingId,
+      meetingStatus,
+      phase,
+      requestedCapabilities: [...flow.requestedCapabilities],
+      startedCapabilities: [...flow.startedCapabilities],
+      activeSources: sources.filter((source) => source.state === "RECORDING" || source.state === "STOPPING").map((source) => source.kind),
+      sources,
+      startedAt: flow.startedAt,
+      ...(extra.failure === undefined ? {} : { failure: extra.failure }),
+    };
+    if (terminal) {
+      const endedAt = meeting?.endedAt ?? this.clock().toISOString();
+      snapshot.endedAt = endedAt;
+      const elapsed = durationMs(flow.startedAt, endedAt);
+      if (elapsed !== undefined) {
+        snapshot.durationMs = elapsed;
+      }
+    }
+    return snapshot;
   }
 
-  private async watchSessionEnd(session: ScriptedNativeSession): Promise<void> {
-    await Promise.resolve();
-    // The session stream ends on stop/abort; keep the live count until both
-    // native stop/abort has been requested.
-    const started = Date.now();
-    while (Date.now() - started < 30_000 && session.stopCalls === 0 && session.abortCalls === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+  /** Live per-source state from the engine (authoritative), else last coordinator snapshot. */
+  private liveEngineState(source: ActiveFlowSource): CaptureStateSnapshot | undefined {
+    try {
+      return this.engine.getCaptureState(source.captureId);
+    } catch {
+      return source.nativeSnapshot;
     }
-    this.liveSessions -= 1;
   }
 
-  public sessionFor(capability: NativeCaptureKind): ScriptedNativeSession | undefined {
-    return this.sessions.find((session) => session.nativeSessionId.startsWith(capability.toLowerCase()));
+  private sourceSnapshot(source: ActiveFlowSource): MeetingCaptureSourceSnapshot {
+    const live = source.captureId === undefined ? undefined : this.liveEngineState(source);
+    const state: MeetingCaptureSourceState = live === undefined
+      ? "NOT_STARTED"
+      : live.state === "COMPLETED"
+        ? "COMMITTED"
+        : live.state === "FINALIZING"
+          ? "STOPPING"
+          : live.state === "RECORDING"
+            ? "RECORDING"
+            : live.state === "FAILED"
+              ? "FAILED"
+              : live.state === "INCOMPLETE"
+                ? "INCOMPLETE"
+                : "STARTING";
+    const journalState: MeetingCaptureJournalState | "NOT_STARTED" = state === "NOT_STARTED" || state === "STARTING"
+      ? "STARTED"
+      : state === "RECORDING"
+        ? "WRITING"
+        : state === "STOPPING"
+          ? "FINALIZING"
+          : state === "COMMITTED"
+            ? "COMMITTED"
+            : state;
+    const snapshot: MeetingCaptureSourceSnapshot = {
+      kind: source.kind,
+      capability: source.capability,
+      captureId: source.captureId,
+      ...(source.sourceId === undefined ? {} : { sourceId: source.sourceId }),
+      sourceLabel: source.descriptorLabel === undefined ? MEETING_CAPTURE_KIND_LABELS[source.kind] : source.descriptorLabel,
+      state,
+      journalState,
+      chunksWritten: live?.chunksWritten ?? 0,
+      bytesWritten: live?.bytesWritten ?? 0,
+      artifactCommitted: live?.artifact !== undefined || live?.state === "COMPLETED",
+    };
+    addOptional(snapshot, "startedAt", live?.startedAt);
+    addOptional(snapshot, "endedAt", live?.endedAt);
+    addOptional(snapshot, "durationMs", live?.durationMs);
+    addOptional(snapshot, "sha256", live?.sha256);
+    if (live !== undefined && live.chunksWritten > 0) {
+      snapshot.firstSequence = 0;
+      snapshot.lastSequence = live.chunksWritten - 1;
+    }
+    const error = live?.error;
+    if (error !== undefined) {
+      const native = source.nativeSnapshot?.nativeError;
+      snapshot.error = native ?? { code: error.code as NativeCaptureErrorCode, message: error.message, retryable: false };
+    }
+    return snapshot;
   }
 }
 
-function orchestratorStack(adapter: NativeCaptureAdapter, store: LocalFirstStore): {
-  orchestrator: MeetingCaptureOrchestrator;
-  coordinator: NativeCaptureCoordinator;
-  engine: LocalRecordingCaptureEngine;
-} {
-  const engine = new LocalRecordingCaptureEngine(store);
-  const coordinator = new NativeCaptureCoordinator(adapter, engine, { policy: ALLOWED_POLICY });
-  const orchestrator = new MeetingCaptureOrchestrator({ store, coordinator, engine });
-  return { orchestrator, coordinator, engine };
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-async function runFlow(
-  store: LocalFirstStore,
-  adapter: NativeCaptureAdapter,
-  config: MeetingCaptureConfig,
-  options: { durationMs?: number; pollIntervalMs?: number; meetingId?: string } = {},
-): Promise<MeetingCaptureFlowSnapshot> {
-  const { orchestrator } = orchestratorStack(adapter, store);
-  return orchestrator.run(config, {
-    ...(options.meetingId === undefined ? {} : { meetingId: options.meetingId }),
-    durationMs: options.durationMs ?? 250,
-    pollIntervalMs: options.pollIntervalMs ?? 40,
-  });
+function requestedKinds(config: MeetingCaptureConfig): MeetingCaptureSourceKind[] {
+  const kinds: MeetingCaptureSourceKind[] = [];
+  if (config.microphone === true) kinds.push("MICROPHONE");
+  if (config.systemLoopback === true) kinds.push("SYSTEM_LOOPBACK");
+  if (config.screen === true) kinds.push("SCREEN");
+  // Presence of `window` requests WINDOW; an empty string selects the
+  // deterministic default window through the existing validated path.
+  if (config.window !== undefined) kinds.push("WINDOW");
+  return kinds;
 }
 
-function sourceOf(snapshot: MeetingCaptureFlowSnapshot, kind: MeetingCaptureSourceKind) {
-  const source = snapshot.sources.find((item) => item.kind === kind);
-  assert.ok(source !== undefined, `expected source ${kind}`);
-  return source;
+function formatFor(kind: MeetingCaptureSourceKind): string {
+  return kind === "MICROPHONE" || kind === "SYSTEM_LOOPBACK"
+    ? WINDOWS_AUDIO_CAPTURE_FORMAT
+    : WINDOWS_SCREEN_CAPTURE_FORMAT;
 }
 
-/** Recording artifacts only; every meeting also carries a MEETING_MANIFEST artifact. */
-function recordingArtifacts(store: LocalFirstStore, meetingId: string) {
-  return store.database.listArtifacts(meetingId).filter((artifact) => artifact.artifactType !== "MEETING_MANIFEST");
+function mimeTypeFor(kind: MeetingCaptureSourceKind): string {
+  return kind === "MICROPHONE" || kind === "SYSTEM_LOOPBACK"
+    ? WINDOWS_AUDIO_CAPTURE_MIME_TYPE
+    : WINDOWS_SCREEN_CAPTURE_MIME_TYPE;
 }
 
-test("meeting capture: start one source and commit one artifact", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const started = await runFlow(store, adapter, { microphone: true, systemLoopback: false, screen: false });
-
-    assert.equal(started.requestedCapabilities.join(","), "MICROPHONE");
-    assert.equal(started.startedCapabilities.join(","), "MICROPHONE");
-    assert.equal(started.meetingStatus, "COMPLETED");
-    assert.equal(started.phase, "COMPLETED");
-    assert.equal(started.sources.length, 1);
-    const source = sourceOf(started, "MICROPHONE");
-    assert.equal(source.state, "COMMITTED");
-    assert.equal(source.journalState, "COMMITTED");
-    assert.equal(source.artifactCommitted, true);
-    assert.ok(source.sha256 !== undefined && source.sha256.length === 64);
-    assert.ok((source.chunksWritten ?? 0) > 0);
-    assert.equal(source.firstSequence, 0);
-    assert.equal(source.lastSequence, source.chunksWritten - 1);
-    assert.equal(source.sourceId, "mic-default-1");
-    assert.equal(source.sourceLabel, "Default microphone");
-
-    const meeting = store.getMeeting(started.meetingId);
-    assert.equal(meeting?.status, "COMPLETED");
-    assert.ok(meeting?.endedAt !== undefined);
-    const artifacts = recordingArtifacts(store, started.meetingId);
-    assert.equal(artifacts.length, 1);
-    assert.equal(artifacts[0]?.artifactType, "RECORDING_ORIGINAL");
-    assert.equal(artifacts[0]?.status, "AVAILABLE");
-    assert.equal(artifacts[0]?.sha256, source.sha256);
-    const recordings = store.database.listRecordings(started.meetingId);
-    assert.equal(recordings.length, 1);
-    assert.equal(recordings[0]?.sha256, source.sha256);
-    assert.equal(recordings[0]?.finalStatus, "COMMITTED");
-    assert.equal(recordings[0]?.captureSource, "scripted-native-capture:MICROPHONE_AUDIO");
-    const operations = store.database.listArtifactOperations().filter((operation) => operation.meetingId === started.meetingId);
-    assert.equal(operations.length, 1);
-    assert.equal(operations[0]?.state, "COMMITTED");
-    assert.equal(operations[0]?.actualSha256, source.sha256);
-    const bytes = await store.readArtifactBytes(artifacts[0]?.relativePath ?? "");
-    assert.equal(createHash("sha256").update(bytes).digest("hex"), source.sha256);
-  });
-});
-
-test("meeting capture: start multiple sources under one meeting with deterministic ordering", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const started = await runFlow(store, adapter, ALL_SOURCES);
-
-    assert.equal(started.meetingStatus, "COMPLETED");
-    assert.deepEqual(started.requestedCapabilities, ["MICROPHONE", "SYSTEM_LOOPBACK", "SCREEN"]);
-    assert.deepEqual(
-      started.sources.map((source) => source.kind),
-      ["MICROPHONE", "SYSTEM_LOOPBACK", "SCREEN"],
-    );
-    for (const kind of ["MICROPHONE", "SYSTEM_LOOPBACK", "SCREEN"] as const) {
-      const source = sourceOf(started, kind);
-      assert.equal(source.state, "COMMITTED", `${kind} committed`);
-      assert.equal(source.artifactCommitted, true);
-      assert.ok((source.chunksWritten ?? 0) > 0, `${kind} produced chunks`);
-      assert.ok(source.sha256 !== undefined);
-    }
-    const artifacts = recordingArtifacts(store, started.meetingId);
-    assert.equal(artifacts.length, 3);
-    const recordings = store.database.listRecordings(started.meetingId);
-    assert.equal(recordings.length, 3);
-    assert.ok(new Set(recordings.map((record) => record.captureSource)).size === 3);
-  });
-});
-
-test("meeting capture: concurrent sources run with independent pipelines", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const config: MeetingCaptureConfig = { microphone: true, systemLoopback: true, screen: false };
-    const started = await orchestrator.start(config, {});
-    assert.equal(started.meetingStatus, "RECORDING");
-    // Both sources are active in the same snapshot: independent pipelines.
-    assert.deepEqual(started.activeSources, ["MICROPHONE", "SYSTEM_LOOPBACK"]);
-    assert.ok(adapter.maxConcurrentSessions >= 2, "native sessions overlapped concurrently");
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const stopped = await orchestrator.stop(started.meetingId);
-    assert.equal(stopped.meetingStatus, "COMPLETED");
-    assert.ok(adapter.maxConcurrentSessions >= 2);
-    const mic = adapter.sessionFor("MICROPHONE_AUDIO");
-    const loop = adapter.sessionFor("SYSTEM_AUDIO");
-    assert.ok(mic !== undefined && loop !== undefined);
-    assert.ok(mic.emittedChunkCount() > 0 && loop.emittedChunkCount() > 0);
-  });
-});
-
-test("meeting capture: required-source startup failure leaves FAILED with no committed recording", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter({
-      capabilities: {
-        ...DEFAULT_CAPABILITIES,
-        SCREEN: unavailableCapability("SCREEN", "No screen available in this environment."),
-      },
-    });
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start({ microphone: true, systemLoopback: false, screen: true });
-    assert.equal(started.meetingStatus, "FAILED");
-    assert.equal(started.phase, "FAILED");
-    assert.equal(started.startedCapabilities.length, 0);
-    assert.equal(started.failure?.failed, true);
-    assert.ok(started.failure?.reason.includes("SCREEN"));
-    assert.deepEqual(started.sources.map((source) => source.state), ["NOT_STARTED", "NOT_STARTED"]);
-    assert.equal(store.getMeeting(started.meetingId)?.status, "FAILED");
-    assert.equal(recordingArtifacts(store, started.meetingId).length, 0);
-    assert.equal(store.database.listArtifactOperations().filter((operation) => operation.meetingId === started.meetingId).length, 0);
-    assert.equal(store.database.listRecordings(started.meetingId).length, 0);
-  });
-});
-
-test("meeting capture: partial startup rollback aborts started sources and leaves no misleading recording", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter({
-      startFailure: {
-        SYSTEM_AUDIO: new NativeCaptureError({
-          code: "NATIVE_CAPTURE_START_FAILED",
-          message: "Loopback device vanished at start.",
-          capability: "SYSTEM_AUDIO",
-          retryable: true,
-        }),
-      },
-    });
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start({ microphone: true, systemLoopback: true, screen: true });
-    assert.equal(started.meetingStatus, "FAILED");
-    assert.equal(started.failure?.source, "SYSTEM_LOOPBACK");
-    assert.ok(started.failure?.reason.includes("SYSTEM_LOOPBACK"));
-    // MICROPHONE started first and was rolled back: aborted, never committed.
-    const mic = sourceOf(started, "MICROPHONE");
-    assert.equal(mic.state, "INCOMPLETE");
-    assert.equal(mic.artifactCommitted, false);
-    assert.ok(mic.error !== undefined);
-    const loop = sourceOf(started, "SYSTEM_LOOPBACK");
-    assert.equal(loop.state, "NOT_STARTED");
-    const screen = sourceOf(started, "SCREEN");
-    assert.equal(screen.state, "NOT_STARTED");
-    assert.equal(recordingArtifacts(store, started.meetingId).length, 0);
-    assert.equal(store.database.listRecordings(started.meetingId).length, 0);
-    // The aborted microphone operation stays in the journal as evidence.
-    const operations = store.database.listArtifactOperations().filter((operation) => operation.meetingId === started.meetingId);
-    assert.equal(operations.length, 1);
-    assert.equal(operations[0]?.state, "INCOMPLETE");
-  });
-});
-
-test("meeting capture: stop finalizes every source and verifies artifacts before COMPLETED", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    const stopped = await orchestrator.stop(started.meetingId);
-    assert.equal(stopped.meetingStatus, "COMPLETED");
-    assert.equal(stopped.phase, "COMPLETED");
-    assert.equal(stopped.failure, undefined);
-    assert.deepEqual(stopped.activeSources, []);
-    for (const kind of ["MICROPHONE", "SYSTEM_LOOPBACK", "SCREEN"] as const) {
-      const source = sourceOf(stopped, kind);
-      assert.equal(source.state, "COMMITTED");
-      assert.equal(source.journalState, "COMMITTED");
-      assert.equal(source.artifactCommitted, true);
-      assert.ok(source.endedAt !== undefined);
-      assert.ok(source.durationMs !== undefined && source.durationMs > 0);
-    }
-    const report = await store.recovery.verifyStorage();
-    assert.deepEqual(report.issues, []);
-  });
-});
-
-test("meeting capture: partial stop/finalization failure prevents COMPLETED and keeps committed siblings", async () => {
-  await withTempStore(async (store) => {
-    const failing = new NativeCaptureError({
-      code: "NATIVE_CAPTURE_STOP_FAILED",
-      message: "The loopback capture could not stop cleanly.",
-      capability: "SYSTEM_AUDIO",
-      retryable: true,
-    });
-    const adapter = new ScriptedNativeAdapter({
-      sessions: (request) => new ScriptedNativeSession(request, {
-        capability: request.capability,
-        chunkIntervalMs: 8,
-        ...(request.capability === "SYSTEM_AUDIO" ? { stopError: failing } : {}),
-      }),
-    });
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    const stopped = await orchestrator.stop(started.meetingId);
-
-    assert.notEqual(stopped.meetingStatus, "COMPLETED");
-    assert.equal(stopped.meetingStatus, "INCOMPLETE");
-    assert.equal(stopped.failure?.failed, false);
-    assert.equal(stopped.failure?.source, "SYSTEM_LOOPBACK");
-    assert.ok(stopped.failure?.reason.includes("stop cleanly"));
-    // The healthy sources still committed; the failing one did not.
-    assert.equal(sourceOf(stopped, "MICROPHONE").state, "COMMITTED");
-    assert.equal(sourceOf(stopped, "SCREEN").state, "COMMITTED");
-    assert.equal(sourceOf(stopped, "SYSTEM_LOOPBACK").state, "INCOMPLETE");
-    const recordings = store.database.listRecordings(started.meetingId);
-    assert.equal(recordings.filter((record) => record.finalStatus === "COMMITTED").length, 2);
-    assert.equal(recordings.filter((record) => record.finalStatus === "COMMITTED" && record.captureSource?.includes("SYSTEM_AUDIO")).length, 0);
-  });
-});
-
-test("meeting capture: abort stops sources, never claims COMPLETED, and keeps the meeting recoverable", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const aborted = await orchestrator.abort(started.meetingId, "User cancelled the capture.");
-    assert.equal(aborted.meetingStatus, "INCOMPLETE");
-    assert.equal(aborted.phase, "INCOMPLETE");
-    assert.equal(aborted.failure?.failed, false);
-    assert.equal(aborted.failure?.reason, "User cancelled the capture.");
-    for (const kind of ["MICROPHONE", "SYSTEM_LOOPBACK", "SCREEN"] as const) {
-      assert.equal(sourceOf(aborted, kind).state, "INCOMPLETE");
-      assert.equal(sourceOf(aborted, kind).artifactCommitted, false);
-    }
-    assert.equal(recordingArtifacts(store, started.meetingId).length, 0);
-    assert.equal(store.database.listRecordings(started.meetingId).length, 0);
-    const operations = store.database.listArtifactOperations().filter((operation) => operation.meetingId === started.meetingId);
-    assert.equal(operations.filter((operation) => operation.state === "INCOMPLETE").length, 3);
-    // INCOMPLETE is recoverable: a new flow can retry the same meeting.
-    const retried = await runFlow(store, adapter, { microphone: true, systemLoopback: false, screen: false }, {
-      meetingId: started.meetingId,
-    });
-    assert.equal(retried.meetingStatus, "COMPLETED");
-  });
-});
-
-test("meeting capture: crash during RECORDING is detected and recovered as INCOMPLETE on next startup", async () => {
-  const root = await mkdtemp(join(tmpdir(), "ai-workmate-flow-crash-"));
-  let first: LocalFirstStore | undefined;
-  let second: LocalFirstStore | undefined;
-  try {
-    first = new LocalFirstStore(root);
-    await first.initialize();
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator, coordinator } = orchestratorStack(adapter, first);
-    const started = await orchestrator.start(ALL_SOURCES);
-    assert.equal(started.meetingStatus, "RECORDING");
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    // Simulate a crash: per-source pipelines are torn down abruptly WITHOUT the
-    // orchestrator stop/abort path (meeting stays RECORDING, operations stay in
-    // flight), then the store closes as a process death would leave it.
-    await coordinator.abortAllActive("Simulated process death during RECORDING.");
-    assert.equal(first.getMeeting(started.meetingId)?.status, "RECORDING");
-    first.close();
-
-    second = new LocalFirstStore(root);
-    await second.initialize();
-    const meeting = second.getMeeting(started.meetingId);
-    assert.equal(meeting?.status, "INCOMPLETE");
-    const operations = second.database.listArtifactOperations().filter((operation) => operation.meetingId === started.meetingId);
-    assert.ok(operations.length > 0);
-    for (const operation of operations) {
-      assert.notEqual(operation.state, "COMMITTED");
-      assert.ok(operation.state === "INCOMPLETE" || operation.state === "FAILED");
-    }
-    // The interrupted meeting is reported by the recovery scanner, not deleted.
-    const report = await second.recovery.verifyStorage();
-    const recordingIssue = report.issues.some((issue) =>
-      issue.kind === "INCOMPLETE_RECORDING" && issue.meetingId === started.meetingId,
-    );
-    assert.equal(recordingIssue, true);
-    assert.equal(second.database.listArtifacts(started.meetingId).filter((artifact) => artifact.artifactType !== "MEETING_MANIFEST").length, 0);
-  } finally {
-    second?.close();
-    first?.close();
-    await rm(root, { recursive: true, force: true });
+function validateWindowSourceId(sourceId: string | undefined): void {
+  if (sourceId === undefined || sourceId.length === 0) {
+    return;
   }
-});
-
-test("meeting capture: crash during STARTING and STOPPING phases is recovered via the flow journal", async () => {
-  const root = await mkdtemp(join(tmpdir(), "ai-workmate-flow-phases-"));
-  let first: LocalFirstStore | undefined;
-  let second: LocalFirstStore | undefined;
-  try {
-    first = new LocalFirstStore(root);
-    await first.initialize();
-    const meetingId = randomUUID();
-    await first.createMeeting({ meetingId, title: "Phase crash" });
-    // STARTING crash: flow journaled, meeting left PREPARING, no sources ran.
-    first.startCaptureFlow({ meetingId, flowId: "phase-starting", requestedCapabilities: ["MICROPHONE"] });
-    // STOPPING crash: simulate a source that began while the flow stopped.
-    first.markCaptureFlowRecording(meetingId);
-    first.markCaptureFlowStopping(meetingId);
-    const operation = await first.beginRecordingCapture({
-      meetingId,
-      extension: "aiwpcm",
-      mimeType: "application/x-ai-workmate-pcm-jsonl",
-      captureSource: "scripted-native-capture:MICROPHONE_AUDIO",
-      flowManaged: true,
-    });
-    first.markRecordingCaptureWriting(operation.operationId);
-    assert.equal(first.getMeeting(meetingId)?.status, "FINALIZING");
-    first.close();
-
-    second = new LocalFirstStore(root);
-    await second.initialize();
-    const meeting = second.getMeeting(meetingId);
-    assert.equal(meeting?.status, "INCOMPLETE");
-    const operations = second.database.listArtifactOperations().filter((operation) => operation.meetingId === meetingId);
-    assert.equal(operations.length, 1);
-    assert.equal(operations[0]?.state, "INCOMPLETE");
-    // Evidence is preserved: the flow journal audit is still present.
-    const audits = second.database.listAuditRecords(500).filter((record) => record.meetingId === meetingId);
-    assert.ok(audits.some((record) => record.action === "CAPTURE_FLOW_STARTED"));
-    assert.ok(audits.some((record) => record.action === "CAPTURE_FLOW_STOPPING"));
-    assert.ok(audits.some((record) => record.action === "RECORDING_RECOVERED_INCOMPLETE"));
-  } finally {
-    second?.close();
-    first?.close();
-    await rm(root, { recursive: true, force: true });
+  if (containsControlCharacters(sourceId) || sourceId.includes("/") || sourceId.includes("\\")) {
+    throw new DataRootValidationError("WINDOW capture sourceId must identify a native capture source, not a path.");
   }
-});
+  if (sourceId.length > 300) {
+    throw new DataRootValidationError("WINDOW capture sourceId is too long.");
+  }
+  if (/^[a-zA-Z]:/.test(sourceId) || /^file:\/\//i.test(sourceId)) {
+    throw new DataRootValidationError("WINDOW capture sourceId must identify a native capture source, not a path.");
+  }
+}
 
-test("meeting capture: a source failing mid-run aborts the remaining sources deterministically", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter({
-      sessions: (request) => new ScriptedNativeSession(request, {
-        capability: request.capability,
-        chunkIntervalMs: 8,
-        ...(request.capability === "SYSTEM_AUDIO" ? { failAfter: 2 } : {}),
-      }),
-    });
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const finished = await orchestrator.run(ALL_SOURCES, {
-      durationMs: 2_000,
-      pollIntervalMs: 30,
-    });
-    assert.equal(finished.meetingStatus, "INCOMPLETE");
-    assert.equal(finished.failure?.source, "SYSTEM_LOOPBACK");
-    assert.equal(finished.failure?.failed, false);
-    assert.equal(sourceOf(finished, "SYSTEM_LOOPBACK").state, "INCOMPLETE");
-    assert.equal(sourceOf(finished, "MICROPHONE").state, "INCOMPLETE");
-    assert.equal(sourceOf(finished, "SCREEN").state, "INCOMPLETE");
-    assert.equal(store.database.listRecordings(finished.meetingId).filter((record) => record.finalStatus === "COMMITTED").length, 0);
-    // The failing source's journal entry preserves the failure evidence.
-    const operations = store.database.listArtifactOperations().filter((operation) => operation.meetingId === finished.meetingId);
-    assert.ok(operations.every((operation) => operation.state === "INCOMPLETE" && operation.error !== undefined));
-  });
-});
-
-test("meeting capture: SCREEN and WINDOW capabilities stay isolated and resolve deterministically", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start({ microphone: false, systemLoopback: false, screen: true });
-    assert.equal(sourceOf(started, "SCREEN").sourceId, "screen-2"); // isDefault wins deterministically
-    assert.equal(started.meetingStatus, "RECORDING");
-
-    // WINDOW selects deterministically through the validated window path
-    // (prefers ordinary windows over the shell desktop).
-    const windowed = await orchestrator.start({ microphone: false, systemLoopback: false, screen: false, window: "hwnd:3000" });
-    assert.equal(windowed.meetingStatus, "RECORDING");
-    assert.equal(sourceOf(windowed, "WINDOW").sourceId, "hwnd:3000");
-    assert.equal(sourceOf(windowed, "WINDOW").sourceLabel, "Excel - Budget.xlsx");
-
-    // Deterministic default WINDOW selection: prefers ordinary windows over
-    // the shell desktop, ordered by numeric HWND.
-    const windowDefault = await orchestrator.start({
-      microphone: false, systemLoopback: false, screen: false,
-      window: "",
-    });
-    assert.equal(windowDefault.meetingStatus, "RECORDING");
-    assert.equal(sourceOf(windowDefault, "WINDOW").sourceId, "hwnd:2000");
-    assert.equal(sourceOf(windowDefault, "WINDOW").sourceLabel, "Notepad - notes.txt");
-    await orchestrator.abort(windowDefault.meetingId);
-
-    const windowInvalid = await orchestrator.start({
-      microphone: false, systemLoopback: false, screen: false,
-      window: "hwnd:9999",
-    });
-    assert.equal(windowInvalid.meetingStatus, "FAILED");
-    assert.ok(windowInvalid.failure?.reason.includes("not listed"));
-
-    const stoppedWindow = await orchestrator.stop(windowed.meetingId);
-    assert.equal(stoppedWindow.meetingStatus, "COMPLETED");
-    const stoppedScreen = await orchestrator.stop(started.meetingId);
-    assert.equal(stoppedScreen.meetingStatus, "COMPLETED");
-    // SCREEN and WINDOW never fall back to each other.
-    const windowArtifact = store.database.listRecordings(windowed.meetingId)[0];
-    const screenArtifact = store.database.listRecordings(started.meetingId)[0];
-    assert.ok(windowArtifact?.captureSource?.includes(":WINDOW"));
-    assert.ok(screenArtifact?.captureSource?.includes(":SCREEN"));
-  });
-});
-
-test("meeting capture: microphone and system-loopback capabilities stay isolated", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter({
-      capabilities: {
-        ...DEFAULT_CAPABILITIES,
-        SYSTEM_AUDIO: unavailableCapability("SYSTEM_AUDIO", "No loopback device."),
-      },
-    });
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const failed = await orchestrator.start({ microphone: true, systemLoopback: true, screen: false });
-    assert.equal(failed.meetingStatus, "FAILED");
-    assert.equal(sourceOf(failed, "SYSTEM_LOOPBACK").state, "NOT_STARTED");
-
-    // A microphone-only flow still works when loopback is unavailable.
-    const micOnly = await runFlow(store, adapter, { microphone: true, systemLoopback: false, screen: false });
-    assert.equal(micOnly.meetingStatus, "COMPLETED");
-    const record = store.database.listRecordings(micOnly.meetingId)[0];
-    assert.equal(record?.captureSource, "scripted-native-capture:MICROPHONE_AUDIO");
-  });
-});
-
-test("meeting capture: snapshots never expose absolute DATA_ROOT paths", async () => {
-  await withTempStore(async (store, root) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    const json = JSON.stringify(started);
-    assert.equal(json.includes(root), false);
-    assert.equal(/([A-Za-z]:[\\/])|(file:\/\/)/.test(json), false);
-    assert.equal(json.includes("relativePath"), false);
-    const stopped = await orchestrator.stop(started.meetingId);
-    assert.equal(JSON.stringify(stopped).includes(root), false);
-  });
-});
-
-test("meeting capture: recording bytes never enter SQLite; artifacts stay on disk only", async () => {
-  await withTempStore(async (store, root) => {
-    const adapter = new ScriptedNativeAdapter();
-    const started = await runFlow(store, adapter, ALL_SOURCES);
-    const recordings = store.database.listRecordings(started.meetingId);
-    const artifacts = recordingArtifacts(store, started.meetingId);
-    assert.equal(recordings.length, 3);
-    assert.equal(artifacts.length, 3);
-    const marker = `"source":"SCREEN","tag":"test","sequence":0`;
-    const databaseBytes = await store.storage.readFile("Database/ai-workmate.sqlite");
-    assert.equal(databaseBytes.includes(marker), false);
-    for (const artifact of artifacts) {
-      assert.ok(!artifact.relativePath.includes(".tmp-"));
-      assert.ok(artifact.size > 0);
-      const bytes = await store.readArtifactBytes(artifact.relativePath);
-      assert.equal(bytes.length, artifact.size);
-      const fileDatabase = await store.storage.readFile("Database/ai-workmate.sqlite");
-      const needle = Buffer.from(bytes.subarray(0, 24)).toString("utf8");
-      assert.equal(fileDatabase.includes(needle), false, "artifact payload is not copied into SQLite");
+function containsControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code !== undefined && (code < 0x20 || code === 0x7f)) {
+      return true;
     }
-    const files = await store.storage.listFiles();
-    assert.ok(files.every((file) => !file.relativePath.includes(".tmp-")), "no temporary files remain after commit");
-    void root;
-  });
-});
+  }
+  return false;
+}
 
-test("meeting capture: journal and SQLite commit ordering completes the meeting last", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    const meetingId = started.meetingId;
-    const before = store.getMeeting(meetingId);
-    assert.equal(before?.status, "RECORDING");
-    assert.equal(store.database.listArtifactOperations().filter((operation) => operation.meetingId === meetingId).length, 3);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const stopped = await orchestrator.stop(meetingId);
-    assert.equal(stopped.meetingStatus, "COMPLETED");
-    const operations = store.database.listArtifactOperations().filter((operation) => operation.meetingId === meetingId);
-    assert.equal(operations.filter((operation) => operation.state === "COMMITTED").length, 3);
-    for (const operation of operations) {
-      assert.ok(operation.fileId !== undefined);
-      assert.equal(operation.actualSha256?.length, 64);
-    }
-    const audits = store.database.listAuditRecords(500).filter((record) => record.meetingId === meetingId);
-    const order = audits.map((record) => record.action);
-    const indexOf = (action: string): number => order.indexOf(action);
-    const lastIndexOf = (action: string): number => order.lastIndexOf(action);
-    // Newest-first audit ordering: flow completion must be the newest terminal
-    // entry, and every per-source CAPTURE_COMMITTED precedes it.
-    assert.ok(indexOf("CAPTURE_FLOW_COMPLETED") < indexOf("CAPTURE_FLOW_STARTED"));
-    for (const action of ["CAPTURE_STARTED", "CAPTURE_COMMITTED"]) {
-      assert.ok(lastIndexOf(action) > indexOf("CAPTURE_FLOW_COMPLETED"), `${action} precedes flow completion`);
-    }
-    assert.ok(indexOf("CAPTURE_FLOW_RECORDING") > indexOf("CAPTURE_FLOW_STOPPING"));
-  });
-});
+function phaseForStatus(status: MeetingStatus): MeetingCapturePhase {
+  switch (status) {
+    case "PREPARING":
+      return "STARTING";
+    case "RECORDING":
+      return "RECORDING";
+    case "FINALIZING":
+      return "STOPPING";
+    case "COMPLETED":
+      return "COMPLETED";
+    case "INCOMPLETE":
+      return "INCOMPLETE";
+    case "FAILED":
+      return "FAILED";
+    case "CANCELLED":
+      return "CANCELLED";
+    default:
+      return "INCOMPLETE";
+  }
+}
 
-test("meeting capture: SHA-256 verification matches engine, artifact row, and file", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const started = await runFlow(store, adapter, ALL_SOURCES);
-    for (const kind of ["MICROPHONE", "SYSTEM_LOOPBACK", "SCREEN"] as const) {
-      const source = sourceOf(started, kind);
-      const artifact = recordingArtifacts(store, started.meetingId).find((item) =>
-        store.database.listRecordings(started.meetingId).some(
-          (record) => record.artifactId === item.fileId && record.captureSource?.includes(MEETING_CAPTURE_KIND_TO_NATIVE[kind]),
-        ),
-      );
-      assert.ok(artifact !== undefined);
-      assert.equal(artifact.sha256, source.sha256);
-      const bytes = await store.readArtifactBytes(artifact.relativePath);
-      const fileHash = createHash("sha256").update(bytes).digest("hex");
-      assert.equal(fileHash, source.sha256);
-      const verification = await store.storage.inspectFile(artifact.relativePath, source.sha256);
-      assert.equal(verification.status, "AVAILABLE");
-    }
-  });
-});
+function durationMs(startedAt: string, endedAt: string): number | undefined {
+  const start = new Date(startedAt).getTime();
+  const end = new Date(endedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return undefined;
+  }
+  return end - start;
+}
 
-test("meeting capture: a meeting can only host one active capture flow at a time", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    await assert.rejects(
-      orchestrator.start({ microphone: true, systemLoopback: false, screen: false }, { meetingId: started.meetingId }),
-      /already active/,
-    );
-    await orchestrator.abort(started.meetingId);
-    await assert.rejects(orchestrator.stop(started.meetingId), /No active capture flow/);
-    await assert.rejects(orchestrator.abort(started.meetingId), /No active capture flow/);
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
-});
+}
 
-test("meeting capture: two truly concurrent start() calls for the same brand-new meetingId never both succeed", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const meetingId = randomUUID();
-    // Fire both calls without awaiting the first, so both race the meeting
-    // creation step before either has reserved the active-flow slot on a
-    // *previous* implementation. With the fix, the in-memory reservation
-    // happens synchronously before any `await`, so the second caller is
-    // rejected immediately with a clean "already active" error instead of a
-    // raw SQLite unique-constraint failure or a silently duplicated flow.
-    const results = await Promise.allSettled([
-      orchestrator.start(ALL_SOURCES, { meetingId }),
-      orchestrator.start(ALL_SOURCES, { meetingId }),
-    ]);
-    const fulfilled = results.filter((result) => result.status === "fulfilled");
-    const rejected = results.filter((result) => result.status === "rejected");
-    assert.equal(fulfilled.length, 1, "exactly one concurrent start() call must succeed");
-    assert.equal(rejected.length, 1, "the other concurrent start() call must be rejected");
-    const rejection = rejected[0] as PromiseRejectedResult;
-    assert.match(String((rejection.reason as Error).message), /already active/);
-    assert.equal(store.database.listMeetings().length, 1, "only one meeting row is ever created");
-    await orchestrator.abort(meetingId);
-  });
-});
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-test("meeting capture: window sourceId rejects path-like values", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter();
-    const { orchestrator } = orchestratorStack(adapter, store);
-    await assert.rejects(
-      orchestrator.start({ microphone: false, systemLoopback: false, screen: false, window: "C:\\Users\\secret" }),
-      /not a path/,
-    );
-    await assert.rejects(
-      orchestrator.start({ microphone: false, systemLoopback: false, screen: false, window: "/etc/passwd" }),
-      /not a path/,
-    );
-    await assert.rejects(
-      orchestrator.start({ microphone: false, systemLoopback: false, screen: false }),
-      /requires at least one capture source/,
-    );
-    assert.equal(store.database.listMeetings().length, 0, "validation failures never create meetings");
-  });
-});
-
-test("meeting capture: unsupported platform fails closed before any source starts", async () => {
-  await withTempStore(async (store) => {
-    const adapter = new ScriptedNativeAdapter({ supported: false, platform: "linux" });
-    const { orchestrator } = orchestratorStack(adapter, store);
-    const started = await orchestrator.start(ALL_SOURCES);
-    assert.equal(started.meetingStatus, "FAILED");
-    assert.equal(started.sources.every((source) => source.state === "NOT_STARTED"), true);
-    assert.equal(store.database.listArtifactOperations().filter((operation) => operation.meetingId === started.meetingId).length, 0);
-  });
-});
+function addOptional<T extends object, K extends keyof T>(object: T, key: K, value: T[K] | undefined): void {
+  if (value !== undefined) {
+    object[key] = value;
+  }
+}
