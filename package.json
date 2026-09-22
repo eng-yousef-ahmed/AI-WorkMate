@@ -16,8 +16,10 @@
     "test": "npm run build && node --expose-gc --test \"dist/tests/*.test.js\"",
     "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
     "desktop": "npm run build && electron dist/src/desktop/main.js",
-    "package:win": "npm run build && npm run build:native:win && electron-builder --win",
+    "package:win": "npm run build && npm run build:native:win && npm run prepare:bundled-ai-models && npm run check:bundled-ai-binaries && electron-builder --win",
     "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true && dotnet publish native/windows-screen/AIWorkMate.WindowsScreenCapture.csproj -c Release -r win-x64 --self-contained true",
+    "prepare:bundled-ai-models": "npm run build && node dist/scripts/prepare-bundled-ai-assets.js",
+    "check:bundled-ai-binaries": "npm run build && node dist/scripts/check-bundled-ai-binaries.js",
     "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js",
     "verify:windows-native-screen-capture": "npm run build && node dist/scripts/verify-windows-native-screen-capture.js",
     "verify:windows-native-window-capture": "npm run build && node dist/scripts/verify-windows-native-window-capture.js",
@@ -82,6 +84,26 @@
       {
         "from": "native/windows-screen/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/",
         "to": "native/windows-screen",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "native/windows-transcription/",
+        "to": "native/windows-transcription",
+        "filter": ["**/*", "!models/**"]
+      },
+      {
+        "from": "native/windows-transcription/models/",
+        "to": "native/windows-transcription/models",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "native/windows-llm/",
+        "to": "native/windows-llm",
+        "filter": ["**/*", "!models/**"]
+      },
+      {
+        "from": "native/windows-llm/models/",
+        "to": "native/windows-llm/models",
         "filter": ["**/*"]
       }
     ]
