@@ -1,0 +1,20 @@
+node_modules/
+dist/
+release/
+*.log
+.DS_Store
+Thumbs.db
+
+# Never commit local user data or credentials
+.ai-workmate-phase6c-verify-*/
+.ai-workmate-migration-*/
+.ai-workmate-restore-*/
+AI WorkMate Data/
+ai-workmate-data/
+credential-vault.json
+
+# Native helper build output
+native/windows-audio/bin/
+native/windows-audio/obj/
+native/windows-screen/bin/
+native/windows-screen/obj/

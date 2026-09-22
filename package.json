@@ -1,0 +1,89 @@
+{
+  "name": "ai-workmate",
+  "version": "0.1.0",
+  "description": "Local-first meeting workspace for AI WorkMate",
+  "author": "AI WorkMate",
+  "private": true,
+  "main": "dist/src/desktop/main.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/copy-renderer.mjs && node scripts/bundle-sandboxed-preload.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests scripts --max-warnings=0",
+    "test": "npm run build && node --expose-gc --test \"dist/tests/*.test.js\"",
+    "test:storage": "npm run build && node --test dist/tests/storage*.test.js",
+    "desktop": "npm run build && electron dist/src/desktop/main.js",
+    "package:win": "npm run build && npm run build:native:win && electron-builder --win",
+    "build:native:win": "dotnet publish native/windows-audio/AIWorkMate.WindowsAudioCapture.csproj -c Release -r win-x64 --self-contained true && dotnet publish native/windows-screen/AIWorkMate.WindowsScreenCapture.csproj -c Release -r win-x64 --self-contained true",
+    "verify:windows-native-capture": "npm run build && node dist/scripts/verify-windows-native-capture.js",
+    "verify:windows-native-screen-capture": "npm run build && node dist/scripts/verify-windows-native-screen-capture.js",
+    "verify:windows-native-window-capture": "npm run build && node dist/scripts/verify-windows-native-window-capture.js",
+    "verify:meeting-capture": "npm run build && node dist/scripts/verify-meeting-capture.js",
+    "verify:windows-local-transcription": "npm run build && node dist/scripts/verify-windows-local-transcription.js",
+    "install:whisper-model": "npm run build && node dist/scripts/install-whisper-model.js",
+    "install:local-llm-model": "npm run build && node dist/scripts/install-local-llm-model.js",
+    "verify:windows-local-analysis": "npm run build && node dist/scripts/verify-windows-local-analysis.js",
+    "verify:meeting-processing": "npm run build && node dist/scripts/verify-meeting-processing.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eng-yousef-ahmed/AI-WorkMate.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "unzipper": "^0.12.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/archiver": "^8.0.0",
+    "@types/node": "^26.4.0",
+    "@types/unzipper": "^0.10.11",
+    "electron": "^44.1.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.9.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0"
+  },
+  "build": {
+    "appId": "com.aiworkmate.desktop",
+    "productName": "AI WorkMate",
+    "copyright": "Copyright © AI WorkMate",
+    "icon": "build/icon.png",
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "AI-WorkMate-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "include": "installer/nsis.nsh"
+    },
+    "extraResources": [
+      {
+        "from": "native/windows-audio/bin/Release/net8.0-windows/win-x64/publish/",
+        "to": "native/windows-audio",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "native/windows-screen/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/",
+        "to": "native/windows-screen",
+        "filter": ["**/*"]
+      }
+    ]
+  }
+}

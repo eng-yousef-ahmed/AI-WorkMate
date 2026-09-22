@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI WorkMate · Storage</title>
+    <link rel="stylesheet" href="./storage-settings.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">✦</span><span>AI WorkMate</span></div>
+        <div class="workspace-label">WORKSPACE</div>
+        <nav aria-label="Workspace">
+          <a href="#overview"><span class="nav-icon">◈</span> Overview</a>
+          <a href="#meetings"><span class="nav-icon">◷</span> Meetings</a>
+          <a href="#tasks"><span class="nav-icon">✓</span> Tasks</a>
+          <a href="#notifications"><span class="nav-icon">⚑</span> Notifications</a>
+          <a href="#projects"><span class="nav-icon">▦</span> Projects</a>
+        </nav>
+        <div class="workspace-label settings-label">SETTINGS</div>
+        <nav aria-label="Settings">
+          <a class="active" href="#storage" aria-current="page"><span class="nav-icon">◫</span> Storage <span class="active-dot"></span></a>
+          <a href="#privacy"><span class="nav-icon">◉</span> Privacy</a>
+          <a href="#capture"><span class="nav-icon">●</span> Capture</a>
+          <a href="#integrations"><span class="nav-icon">⌁</span> Integrations</a>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="local-badge"><span class="status-dot"></span><div><strong>Local workspace</strong><small>Your data stays on this device</small></div></div>
+          <div class="version">AI WorkMate <span>v0.1 foundation</span></div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div><div class="eyebrow" id="page-eyebrow">SETTINGS / STORAGE</div><h1 id="page-title">AI WorkMate Storage</h1></div>
+          <div class="topbar-actions">
+            <span id="sync-status" class="sync-status"><span class="status-dot"></span> Local-first</span>
+            <div class="notifications-wrap" id="notifications-wrap">
+              <button id="notifications-toggle" class="icon-button notifications-bell" type="button" aria-haspopup="true" aria-expanded="false" title="Notifications" aria-label="Notifications">🔔<span id="notifications-unread" class="bell-badge" hidden>0</span></button>
+              <div id="notifications-panel" class="notifications-panel" hidden>
+                <div class="notifications-header">
+                  <div class="notifications-title"><strong>Notifications</strong><small>Created on this device from your meetings and tasks</small></div>
+                  <button id="notifications-mark-all" class="button secondary small-button" type="button">Mark all read</button>
+                </div>
+                <div id="notifications-list" class="notifications-list" role="list" aria-label="Notifications"></div>
+                <div id="notifications-empty" class="notifications-empty" hidden>Nothing yet — meeting results, due tasks, and your daily digest will appear here.</div>
+                <details class="notifications-settings">
+                  <summary>Alerts &amp; automation</summary>
+                  <label class="toggle-row" for="notifications-enabled">
+                    <span class="toggle-copy"><strong>Notifications</strong><small>Allow popups while the window is in the background; due-date and digest alerts are generated only while this is on.</small></span>
+                    <input id="notifications-enabled" type="checkbox" />
+                  </label>
+                  <label class="toggle-row" for="notifications-digest">
+                    <span class="toggle-copy"><strong>Daily review digest</strong><small>Opt-in summary of open tasks and follow-ups, at most once per day while the app is open. Nothing is scheduled or sent anywhere else.</small></span>
+                    <input id="notifications-digest" type="checkbox" />
+                  </label>
+                  <div class="toggle-row digest-time-row">
+                    <label class="field-label digest-time-label" for="notifications-digest-time">DIGEST TIME<input id="notifications-digest-time" type="time" step="60" /></label>
+                    <button id="notifications-run-now" class="button secondary small-button" type="button">Run checks now</button>
+                  </div>
+                  <p id="notifications-run-result" class="helper" role="status"></p>
+                </details>
+              </div>
+            </div>
+            <button id="refresh-button" class="icon-button" title="Refresh storage statistics">↻</button>
+          </div>
+        </header>
+
+        <section id="overview" class="section-block workspace-page" data-workspace-page="overview" hidden aria-label="Overview">
+          <div class="section-heading">
+            <div>
+              <h2>Overview</h2>
+              <p>Meetings, tasks, and recordings stay on this device. Nothing is uploaded as a primary data store.</p>
+            </div>
+          </div>
+          <section class="hero-card">
+            <div class="hero-icon">⌂</div>
+            <div class="hero-copy"><div class="section-kicker">LOCAL WORKSPACE</div><h2>Local by default</h2><p>Open Meetings to record and review, Tasks for follow-ups, or Storage for the folder that owns this workspace.</p></div>
+            <div class="hero-pill"><span class="status-dot"></span> LOCAL</div>
+          </section>
+          <nav class="workspace-links" aria-label="Overview shortcuts">
+            <a href="#meetings">Meetings</a>
+            <a href="#tasks">Tasks</a>
+            <a href="#storage">Storage</a>
+          </nav>
+        </section>
+
+        <section id="meetings" class="meetings-hub" data-workspace-page="meetings" hidden aria-label="Meeting hub">
+          <div class="section-heading">
+            <div><h2>Meeting hub</h2><p id="hub-day-label">Your meetings and recordings, stored on this device.</p></div>
+            <div class="hub-heading-actions">
+              <span id="hub-capture-status" class="calendar-badge neutral" role="status">Capture status…</span>
+              <span id="hub-recording-status" class="status-pill recording" role="status" hidden></span>
+              <button id="hub-record-button" class="button primary" type="button" title="Start a local recording">● Start recording</button>
+              <button id="hub-refresh-button" class="button secondary" title="Refresh meeting hub">↻ Refresh</button>
+            </div>
+          </div>
+
+          <div class="hub-grid">
+            <div class="hub-column">
+              <div class="panel">
+                <div class="panel-heading">
+                  <div class="panel-icon">◷</div>
+                  <div><h3>Today</h3><p>Synced meetings happening today</p></div>
+                  <span id="hub-today-count" class="count-badge">0</span>
+                </div>
+                <div id="hub-today" class="meeting-list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-heading">
+                  <div class="panel-icon">⌁</div>
+                  <div><h3>Upcoming</h3><p>Synced meetings in the coming days</p></div>
+                  <span id="hub-upcoming-count" class="count-badge">0</span>
+                </div>
+                <div id="hub-upcoming" class="meeting-list"></div>
+              </div>
+            </div>
+            <div class="hub-column">
+              <div class="panel">
+                <div class="panel-heading">
+                  <div class="panel-icon">▤</div>
+                  <div><h3>History</h3><p>Recorded meetings, transcripts and analysis</p></div>
+                  <span id="hub-history-count" class="count-badge">0</span>
+                </div>
+                <label class="hub-search-label" for="hub-search-input">SEARCH TRANSCRIPTS</label>
+                <input id="hub-search-input" type="search" spellcheck="false" placeholder="Search your local transcripts…" autocomplete="off" />
+                <div id="hub-search-status" class="calendar-line" hidden></div>
+                <div id="hub-search-results" class="meeting-list" hidden></div>
+                <div id="hub-history-filters" class="tasks-filters" role="group" aria-label="Filter history">
+                  <button type="button" class="tasks-filter active" data-history="ALL">All</button>
+                  <button type="button" class="tasks-filter" data-history="COMPLETED">Completed</button>
+                  <button type="button" class="tasks-filter" data-history="INCOMPLETE">Incomplete</button>
+                  <button type="button" class="tasks-filter" data-history="MICROSOFT_GRAPH">Microsoft 365</button>
+                  <button type="button" class="tasks-filter" data-history="GOOGLE_CALENDAR">Google</button>
+                </div>
+                <div id="hub-recent" class="meeting-list"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="hub-chat-panel" id="meeting-chat-panel">
+            <div class="panel-heading">
+              <div class="panel-icon">?</div>
+              <div><h3>Ask your meetings</h3><p>Grounded answers from your local transcripts — every fact carries a <code>[meeting · …]</code> citation or a refusal. Nothing you ask is sent to the cloud.</p></div>
+              <span class="calendar-badge connected" id="chat-local-badge"><span class="status-dot"></span> Local model only</span>
+            </div>
+            <div id="chat-thread" class="chat-thread" role="log" aria-live="polite">
+              <div id="chat-empty" class="chat-empty">
+                <p>Ask what happened, who said what, which decisions were made, or when something is due — using only the meetings recorded on this device.</p>
+                <div id="chat-suggestions" class="chat-suggestions"></div>
+              </div>
+            </div>
+            <form id="chat-form" class="chat-form">
+              <label class="hub-search-label" for="chat-question">QUESTION</label>
+              <div class="chat-input-row">
+                <input id="chat-question" type="text" maxlength="600" spellcheck="true" autocomplete="off" placeholder="e.g. What did we decide about the data migration?" />
+                <button id="chat-send-button" type="submit" class="button primary">Ask <span>→</span></button>
+              </div>
+              <div class="chat-form-foot">
+                <label id="chat-scope-wrap" class="chat-scope-toggle" hidden>
+                  <input id="chat-scope-current" type="checkbox" />
+                  <span>Only ask about the meeting currently open</span>
+                </label>
+                <div id="chat-status" class="calendar-line" hidden role="status"></div>
+              </div>
+            </form>
+          </div>
+
+          <div id="hub-detail" class="hub-detail" hidden></div>
+          <div id="hub-notice" class="notice" role="status" aria-live="polite"></div>
+        </section>
+
+        <section id="tasks" class="section-block tasks-section" data-workspace-page="tasks" hidden aria-label="Tasks and follow-ups">
+          <div class="section-heading">
+            <div><h2>Tasks &amp; follow-ups</h2><p>Action items from your meetings — each task keeps its meeting and analysis provenance, stored on this device.</p></div>
+            <div class="hub-heading-actions">
+              <span id="tasks-summary-badge" class="calendar-badge neutral">Loading…</span>
+              <button id="tasks-refresh-button" class="button secondary" title="Refresh tasks">↻ Refresh</button>
+            </div>
+          </div>
+
+          <div class="tasks-grid">
+            <div class="panel tasks-composer">
+              <div class="panel-heading">
+                <div class="panel-icon">＋</div>
+                <div><h3>New task</h3><p>Tasks always belong to a meeting so their origin is never lost.</p></div>
+              </div>
+              <form id="tasks-create-form" class="chat-form" autocomplete="off">
+                <label class="hub-search-label" for="tasks-new-meeting">ORIGIN MEETING</label>
+                <select id="tasks-new-meeting" class="tasks-meeting-select"></select>
+                <label class="hub-search-label" for="tasks-new-text">TASK</label>
+                <input id="tasks-new-text" type="text" maxlength="2000" spellcheck="true" placeholder="e.g. Verify the backup restore flow on Windows" autocomplete="off" />
+                <div class="tasks-field-row">
+                  <label class="field-label" for="tasks-new-assignee">OWNER / ASSIGNEE<input id="tasks-new-assignee" type="text" maxlength="200" placeholder="Optional" autocomplete="off" /></label>
+                  <label class="field-label" for="tasks-new-due">DUE DATE<input id="tasks-new-due" type="date" /></label>
+                </div>
+                <div class="config-actions">
+                  <button id="tasks-create-button" type="submit" class="button primary">Add task</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="panel tasks-list-panel">
+              <div class="panel-heading">
+                <div class="panel-icon">✓</div>
+                <div><h3>Action items</h3><p>Complete tasks here or reopen them; edits keep provenance.</p></div>
+              </div>
+              <div id="tasks-filters" class="tasks-filters" role="group" aria-label="Filter tasks by status">
+                <button type="button" class="tasks-filter active" data-status="ALL">All</button>
+                <button type="button" class="tasks-filter" data-status="OPEN">Open</button>
+                <button type="button" class="tasks-filter" data-status="IN_PROGRESS">In progress</button>
+                <button type="button" class="tasks-filter" data-status="DONE">Done</button>
+                <button type="button" class="tasks-filter" data-status="CANCELLED">Cancelled</button>
+              </div>
+              <div id="tasks-list" class="meeting-list"></div>
+              <div id="tasks-status" class="calendar-line" hidden role="status"></div>
+            </div>
+          </div>
+
+          <details id="tasks-followups" class="tasks-followups">
+            <summary>Follow-ups from meeting analysis <span id="tasks-followups-count" class="count-badge">0</span></summary>
+            <p class="helper">Follow-ups noted by analysis are suggestions — convert the ones you want to track into tasks above. They stay local.</p>
+            <div id="tasks-followups-list" class="meeting-list"></div>
+          </details>
+        </section>
+
+        <section id="notifications" class="section-block notifications-section" data-workspace-page="notifications" hidden aria-label="Notifications">
+          <div class="section-heading">
+            <div><h2>Notifications</h2><p>Local reminders only. Nothing is emailed or sent to the cloud unless you explicitly connect a calendar.</p></div>
+            <div class="hub-heading-actions">
+              <span id="notifications-badge" class="calendar-badge neutral">Loading…</span>
+              <button id="notifications-refresh-button" class="button secondary" title="Refresh notifications">↻ Refresh</button>
+            </div>
+          </div>
+          <div id="automation-notifications-list" class="meeting-list"></div>
+        </section>
+
+        <section id="projects" class="section-block workspace-page" data-workspace-page="projects" hidden aria-label="Projects">
+          <div class="section-heading">
+            <div>
+              <h2>Projects</h2>
+              <p>Project grouping is not enabled yet. Meetings and tasks remain in this local workspace.</p>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-heading">
+              <div class="panel-icon">▦</div>
+              <div>
+                <h2>Local only</h2>
+                <p>When project grouping ships, it will use the data already stored on this computer. Nothing is uploaded.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="capture" class="section-block" data-workspace-page="capture" hidden aria-label="Capture and reminders">
+          <div class="section-heading">
+            <div><h2>Capture &amp; reminders</h2><p>Local detection, reminder, and capture defaults. Nothing is emailed or sent to the cloud.</p></div>
+            <button id="automation-save-button" class="button primary" type="button">Save settings</button>
+          </div>
+          <div class="panel">
+            <label class="toggle-row" for="pref-detect"><span class="toggle-copy"><strong>Detect upcoming meetings</strong><small>Mark scheduled meetings as detected when they are about to start.</small></span><input id="pref-detect" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-prep"><span class="toggle-copy"><strong>Preparation reminders</strong><small>Remind me to join and start a local recording.</small></span><input id="pref-prep" type="checkbox" /></label>
+            <label class="field-label" for="pref-prep-minutes">PREPARATION LEAD (MINUTES)<input id="pref-prep-minutes" type="number" min="1" max="180" value="15" /></label>
+            <label class="toggle-row" for="pref-summaries"><span class="toggle-copy"><strong>Summary ready</strong></span><input id="pref-summaries" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-assigned"><span class="toggle-copy"><strong>Assigned tasks</strong></span><input id="pref-assigned" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-overdue"><span class="toggle-copy"><strong>Overdue reminders</strong></span><input id="pref-overdue" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-daily"><span class="toggle-copy"><strong>Daily meeting report</strong></span><input id="pref-daily" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-followups"><span class="toggle-copy"><strong>Unresolved follow-ups</strong></span><input id="pref-followups" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-capture-mic"><span class="toggle-copy"><strong>Capture microphone</strong></span><input id="pref-capture-mic" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-capture-loopback"><span class="toggle-copy"><strong>Capture system audio</strong></span><input id="pref-capture-loopback" type="checkbox" /></label>
+            <label class="toggle-row" for="pref-capture-screen"><span class="toggle-copy"><strong>Capture screen</strong></span><input id="pref-capture-screen" type="checkbox" /></label>
+          </div>
+        </section>
+
+        <section class="hero-card" data-workspace-page="storage">
+          <div class="hero-icon">⌂</div>
+          <div class="hero-copy"><div class="section-kicker">DATA STORAGE</div><h2>Local by default</h2><p>Recordings, transcripts, analysis, tasks, and your local database are stored on your computer. Nothing is uploaded as a primary data store.</p></div>
+          <div class="hero-pill"><span class="status-dot"></span> LOCAL</div>
+        </section>
+
+        <section class="section-block" id="storage" data-workspace-page="storage">
+          <div class="section-heading"><div><h2>Data location</h2><p>The selected folder owns your AI WorkMate workspace.</p></div><button id="change-location-button" class="button primary">Change location <span>→</span></button></div>
+          <div class="location-card"><div class="folder-icon">⌁</div><div class="location-copy"><span class="label">DATA LOCATION</span><strong id="data-location">Loading…</strong><small id="last-check">Integrity has not been checked yet</small></div><button id="open-folder-button" class="button secondary">Open folder</button></div>
+        </section>
+
+        <section class="section-block" id="local-runtime" data-workspace-page="storage">
+          <div class="section-heading">
+            <div>
+              <h2>Local AI runtime</h2>
+              <p>Whisper and Qwen install into this computer’s app data, never into your workspace folder. Nothing is sent to the cloud.</p>
+            </div>
+            <span id="runtime-badge" class="calendar-badge neutral">Checking…</span>
+          </div>
+          <div class="panel">
+            <div class="location-card">
+              <div class="folder-icon">◎</div>
+              <div class="location-copy">
+                <span class="label">TRANSCRIPTION</span>
+                <strong id="runtime-transcription-status">Loading…</strong>
+                <small>Allowlisted tiny Whisper model · SHA-256 verified · local only</small>
+              </div>
+              <button id="runtime-install-transcription" class="button primary" type="button">Install transcription</button>
+            </div>
+            <div class="location-card">
+              <div class="folder-icon">✦</div>
+              <div class="location-copy">
+                <span class="label">ANALYSIS</span>
+                <strong id="runtime-analysis-status">Loading…</strong>
+                <small>Allowlisted Qwen 7B instruct · SHA-256 verified · local only</small>
+              </div>
+              <button id="runtime-install-analysis" class="button primary" type="button">Install analysis</button>
+            </div>
+            <p id="runtime-status" class="helper" role="status">Models are not packaged in the installer. Install them here after setup.</p>
+          </div>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading"><div><h2>Storage overview</h2><p>Live size information from the local filesystem.</p></div><span id="availability" class="availability">Checking space…</span></div>
+          <div class="stat-grid">
+            <div class="stat-card stat-total"><span class="stat-label">STORAGE USED</span><strong id="total-size">—</strong><div class="stat-meta"><span id="file-count">— files</span><span id="meeting-count">— meetings</span></div></div>
+            <div class="stat-card"><span class="stat-label">RECORDINGS</span><strong id="recordings-size">—</strong><div class="progress"><span id="recordings-bar"></span></div><small>Original and normalized media</small></div>
+            <div class="stat-card"><span class="stat-label">AUDIO</span><strong id="audio-size">—</strong><div class="progress blue"><span id="audio-bar"></span></div><small>Local audio artifacts</small></div>
+            <div class="stat-card"><span class="stat-label">TRANSCRIPTS</span><strong id="transcripts-size">—</strong><div class="progress violet"><span id="transcripts-bar"></span></div><small>JSON, TXT, VTT, and SRT</small></div>
+            <div class="stat-card"><span class="stat-label">DOCUMENTS</span><strong id="documents-size">—</strong><div class="progress green"><span id="documents-bar"></span></div><small>Analysis, exports, attachments</small></div>
+            <div class="stat-card"><span class="stat-label">LOCAL DATABASE</span><strong id="database-size">—</strong><div class="db-chip">SQLite · indexed metadata</div></div>
+          </div>
+        </section>
+
+        <section class="section-block" id="privacy" data-workspace-page="privacy" hidden aria-label="Privacy">
+          <div class="panel"><div class="panel-heading"><div class="panel-icon shield">◇</div><div><h2>Cloud processing policy</h2><p>Local storage does not automatically mean local AI.</p></div></div><label class="select-label" for="ai-policy">AI PROCESSING</label><select id="ai-policy"><option value="ASK_EACH_TIME">Ask each time</option><option value="LOCAL_ONLY">Local models only</option><option value="CLOUD_ALLOWED">Cloud allowed</option></select><p id="policy-description" class="helper">You will be told what content leaves this computer, why, and which provider receives it before each cloud request.</p></div>
+        </section>
+
+        <section class="section-block" data-workspace-page="storage">
+          <div class="panel actions-panel"><div class="panel-heading"><div class="panel-icon">⚙</div><div><h2>Protect your workspace</h2><p>Portable, verifiable, and recoverable.</p></div></div><div class="action-list"><button id="verify-button" class="action-row"><span class="action-symbol">✓</span><span><strong>Verify storage</strong><small>Check hashes and relationships</small></span><span>›</span></button><button id="repair-button" class="action-row"><span class="action-symbol">⌁</span><span><strong>Repair index</strong><small>Re-index known orphaned files</small></span><span>›</span></button><button id="backup-button" class="action-row"><span class="action-symbol">↓</span><span><strong>Create backup</strong><small>Standard ZIP, locally selected</small></span><span>›</span></button><button id="restore-button" class="action-row"><span class="action-symbol">↑</span><span><strong>Restore backup</strong><small>Restore into a separate folder</small></span><span>›</span></button></div></div>
+        </section>
+
+        <section class="section-block" id="integrations" data-workspace-page="integrations" hidden>
+          <div class="section-heading">
+            <div><h2>Calendars</h2><p>Sign in to keep your meetings in sync locally. Calendar data is read-only and never sent to cloud AI.</p></div>
+            <span class="helper-inline">Outlook &amp; Microsoft 365 · Google</span>
+          </div>
+
+          <div class="calendar-card">
+            <div class="section-heading compact">
+              <div><h2>Microsoft 365 Calendar</h2><p>Sync your Microsoft work or personal calendar.</p></div>
+              <span id="ms-badge" class="calendar-badge neutral">Checking…</span>
+            </div>
+            <div class="calendar-main">
+              <div class="calendar-identity">
+                <div class="calendar-provider-mark">M</div>
+                <div class="calendar-identity-copy">
+                  <span class="label">ACCOUNT</span>
+                  <strong id="ms-account-name">—</strong>
+                  <small id="ms-account-email">Microsoft 365 calendar</small>
+                </div>
+              </div>
+              <div class="calendar-actions">
+                <button id="ms-connect-button" class="button primary">Connect Microsoft 365</button>
+                <button id="ms-sync-button" class="button secondary" disabled>Sync calendar</button>
+                <button id="ms-cancel-button" class="button secondary" hidden>Cancel sign-in</button>
+                <button id="ms-disconnect-button" class="button secondary danger-text" hidden>Disconnect</button>
+              </div>
+            </div>
+            <div id="ms-status-line" class="calendar-line" hidden></div>
+            <div id="ms-manual" class="calendar-manual" hidden>
+              <p>Waiting for the browser callback. If it does not finish automatically, open the address shown in the status line above in your browser, then paste the final address here:</p>
+              <div class="manual-row">
+                <input id="ms-manual-url" type="text" spellcheck="false" placeholder="http://localhost:…/?code=…" />
+                <button id="ms-manual-submit" class="button secondary">Finish sign-in</button>
+              </div>
+            </div>
+            <details class="calendar-config" id="ms-config">
+              <summary>Microsoft app registration settings <span class="helper-inline">(advanced)</span></summary>
+              <p class="helper">AI WorkMate is a public desktop client using the Authorization Code + PKCE flow — it never uses or asks for a client secret. In Azure create an app registration as a <strong>public client/native application</strong> with redirect URI <code>http://localhost</code> and delegated permissions <code>User.Read</code>, <code>Calendars.Read</code>, and <code>offline_access</code>, then paste its Application (client) ID here. Tenant may be left as <code>common</code>.</p>
+              <div class="config-grid">
+                <label class="field-label" for="ms-client-id">APPLICATION (CLIENT) ID<input id="ms-client-id" type="text" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+                <label class="field-label" for="ms-tenant">TENANT<input id="ms-tenant" type="text" spellcheck="false" placeholder="common" /></label>
+                <label class="field-label" for="ms-redirect-uri">REDIRECT URI (optional)<input id="ms-redirect-uri" type="text" spellcheck="false" placeholder="http://localhost" /></label>
+              </div>
+              <div class="config-actions">
+                <button id="ms-config-save" class="button primary">Save integration settings</button>
+                <span class="helper">Stored next to the app, never inside your data folder, and contains no secrets.</span>
+              </div>
+            </details>
+          </div>
+
+          <div class="calendar-card google-card">
+            <div class="section-heading compact">
+              <div><h2>Google Calendar</h2><p>Sync your Google Calendar (primary calendar of the signed-in account).</p></div>
+              <span id="google-badge" class="calendar-badge neutral">Checking…</span>
+            </div>
+            <div class="calendar-main">
+              <div class="calendar-identity">
+                <div class="calendar-provider-mark google">G</div>
+                <div class="calendar-identity-copy">
+                  <span class="label">ACCOUNT</span>
+                  <strong id="google-account-name">—</strong>
+                  <small id="google-account-email">Google Calendar</small>
+                </div>
+              </div>
+              <div class="calendar-actions">
+                <button id="google-connect-button" class="button primary">Connect Google Calendar</button>
+                <button id="google-sync-button" class="button secondary" disabled>Sync calendar</button>
+                <button id="google-cancel-button" class="button secondary" hidden>Cancel sign-in</button>
+                <button id="google-disconnect-button" class="button secondary danger-text" hidden>Disconnect</button>
+              </div>
+            </div>
+            <div id="google-status-line" class="calendar-line" hidden></div>
+            <div id="google-manual" class="calendar-manual" hidden>
+              <p>Waiting for the browser callback. If it does not finish automatically, open the address shown in the status line above in your browser, then paste the final address here:</p>
+              <div class="manual-row">
+                <input id="google-manual-url" type="text" spellcheck="false" placeholder="http://localhost:…/?code=…" />
+                <button id="google-manual-submit" class="button secondary">Finish sign-in</button>
+              </div>
+            </div>
+            <details class="calendar-config" id="google-config">
+              <summary>Google Cloud OAuth client settings <span class="helper-inline">(advanced)</span></summary>
+              <p class="helper">AI WorkMate is a desktop (installed app) OAuth client using Authorization Code + PKCE — the client secret is optional and treated as non-confidential. In Google Cloud Console, enable the <strong>Google Calendar API</strong>, create an OAuth client of type <strong>Desktop app</strong> (any localhost redirect is accepted automatically), and paste its client ID here. Requested scopes are <code>openid email profile</code> and read-only <code>calendar.readonly</code>.</p>
+              <div class="config-grid">
+                <label class="field-label" for="google-client-id">OAUTH CLIENT ID<input id="google-client-id" type="text" spellcheck="false" placeholder="…apps.googleusercontent.com" /></label>
+                <label class="field-label" for="google-client-secret">CLIENT SECRET (optional)<input id="google-client-secret" type="text" spellcheck="false" placeholder="Leave empty with PKCE" /></label>
+                <label class="field-label" for="google-redirect-uri">REDIRECT URI (optional)<input id="google-redirect-uri" type="text" spellcheck="false" placeholder="http://127.0.0.1" /></label>
+              </div>
+              <div class="config-actions">
+                <button id="google-config-save" class="button primary">Save integration settings</button>
+                <span class="helper">Stored next to the app, never inside your data folder.</span>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <div id="notice" class="notice" role="status" aria-live="polite"></div>
+        <footer class="privacy-footnote"><span class="status-dot"></span><strong>Privacy by architecture</strong><span>DATA_ROOT is controlled by the desktop process. The web renderer receives authorized operations only.</span></footer>
+      </main>
+    </div>
+    <script src="./workspace-nav.js"></script>
+    <script src="./storage-settings.js"></script>
+    <script src="./meetings-hub.js"></script>
+    <script src="./tasks.js"></script>
+    <script src="./automation.js"></script>
+    <script src="./notifications.js"></script>
+  </body>
+</html>
